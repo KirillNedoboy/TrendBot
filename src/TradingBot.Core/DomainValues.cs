@@ -162,6 +162,12 @@ internal static class ContractGuard
         ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
     }
 
+    public static string RequireDescription(string value, string parameterName)
+    {
+        RequireText(value, parameterName);
+        return value;
+    }
+
     public static void RequireDefined<TEnum>(TEnum value, string parameterName)
         where TEnum : struct, Enum
     {
