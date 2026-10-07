@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>TradingBot.DataTool</AssemblyName>
+    <RootNamespace>TradingBot.DataTool</RootNamespace>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TradingBot.Infrastructure\TradingBot.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\TradingBot.Backtesting\TradingBot.Backtesting.csproj" />
+  </ItemGroup>
+</Project>

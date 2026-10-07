@@ -1,0 +1,26 @@
+# Build output
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+.vs/
+.idea/
+
+# Local tooling and caches
+graft/
+.cache/
+*.user
+*.suo
+*.tmp
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pfx
+*.snk
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>TradingBot.Backtesting</AssemblyName>
+    <RootNamespace>TradingBot.Backtesting</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TradingBot.Core\TradingBot.Core.csproj" />
+  </ItemGroup>
+</Project>

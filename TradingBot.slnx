@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TradingBot.Core/TradingBot.Core.csproj" />
+    <Project Path="src/TradingBot.Exchange.Binance/TradingBot.Exchange.Binance.csproj" />
+    <Project Path="src/TradingBot.Infrastructure/TradingBot.Infrastructure.csproj" />
+    <Project Path="src/TradingBot.Backtesting/TradingBot.Backtesting.csproj" />
+    <Project Path="src/TradingBot.App/TradingBot.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj" />
+    <Project Path="tests/TradingBot.Exchange.Binance.Tests/TradingBot.Exchange.Binance.Tests.csproj" />
+    <Project Path="tests/TradingBot.Infrastructure.Tests/TradingBot.Infrastructure.Tests.csproj" />
+    <Project Path="tests/TradingBot.IntegrationTests/TradingBot.IntegrationTests.csproj" />
+    <Project Path="tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/TradingBot.DataTool/TradingBot.DataTool.csproj" />
+  </Folder>
+</Solution>
