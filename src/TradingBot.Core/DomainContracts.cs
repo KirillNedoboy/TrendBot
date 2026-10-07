@@ -59,6 +59,201 @@ public enum OrderRole
     Emergency
 }
 
+/// <summary>
+/// Captures every immutable input needed by shared risk math.
+/// The contract is consumed by deterministic replay, paper simulation, and execution planning.
+/// </summary>
+public sealed record RiskMathInput
+{
+    /// <summary>Gets the instrument being sized.</summary>
+    public InstrumentId InstrumentId { get; }
+
+    /// <summary>Gets the intended position direction.</summary>
+    public Direction Direction { get; }
+
+    /// <summary>Gets the positive account equity used as the risk basis.</summary>
+    public Money Equity { get; }
+
+    /// <summary>Gets the fractional share of equity allowed by this input.</summary>
+    public decimal RiskFraction { get; }
+
+    /// <summary>Gets the positive entry reference price.</summary>
+    public Price EntryPrice { get; }
+
+    /// <summary>Gets the protective stop price on the loss side of the entry.</summary>
+    public Price ProtectiveStopPrice { get; }
+
+    /// <summary>Gets the non-negative fee cost per raw quantity unit.</summary>
+    public MoneyPerQuantityUnit FeePerUnit { get; }
+
+    /// <summary>Gets the non-negative estimated slippage per raw quantity unit.</summary>
+    public MoneyPerQuantityUnit EstimatedSlippagePerUnit { get; }
+
+    /// <summary>Creates and validates an immutable risk-math input snapshot.</summary>
+    [System.Text.Json.Serialization.JsonConstructor]
+    public RiskMathInput(InstrumentId instrumentId, Direction direction, Money equity,
+        decimal riskFraction, Price entryPrice, Price protectiveStopPrice,
+        MoneyPerQuantityUnit feePerUnit, MoneyPerQuantityUnit estimatedSlippagePerUnit)
+    {
+        ArgumentNullException.ThrowIfNull(instrumentId);
+        ContractGuard.RequireDefined(direction, nameof(direction));
+        ArgumentNullException.ThrowIfNull(equity);
+        ArgumentNullException.ThrowIfNull(entryPrice);
+        ArgumentNullException.ThrowIfNull(protectiveStopPrice);
+        ArgumentNullException.ThrowIfNull(feePerUnit);
+        ArgumentNullException.ThrowIfNull(estimatedSlippagePerUnit);
+
+        if (equity.Amount <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(equity), equity.Amount,
+                "Risk-math equity must be greater than zero.");
+        }
+
+        if (riskFraction <= 0m || riskFraction > 1m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(riskFraction), riskFraction,
+                "Risk fraction must be greater than zero and no greater than one.");
+        }
+
+        RequireMatchingCurrency(equity.Currency, feePerUnit.Currency, nameof(feePerUnit));
+        RequireMatchingCurrency(equity.Currency, estimatedSlippagePerUnit.Currency,
+            nameof(estimatedSlippagePerUnit));
+
+        bool protectiveStopOnLossSide = direction switch
+        {
+            Direction.Long => protectiveStopPrice.Value < entryPrice.Value,
+            Direction.Short => protectiveStopPrice.Value > entryPrice.Value,
+            _ => false
+        };
+        if (!protectiveStopOnLossSide)
+        {
+            throw new ArgumentException(
+                "A protective stop must be below a long entry or above a short entry.",
+                nameof(protectiveStopPrice));
+        }
+
+        InstrumentId = instrumentId;
+        Direction = direction;
+        Equity = equity;
+        RiskFraction = riskFraction;
+        EntryPrice = entryPrice;
+        ProtectiveStopPrice = protectiveStopPrice;
+        FeePerUnit = feePerUnit;
+        EstimatedSlippagePerUnit = estimatedSlippagePerUnit;
+    }
+
+    private static void RequireMatchingCurrency(string expected, string actual,
+        string parameterName)
+    {
+        if (!StringComparer.Ordinal.Equals(expected, actual))
+        {
+            throw new ArgumentException("All risk-math monetary values must use the same currency.",
+                parameterName);
+        }
+    }
+}
+
+/// <summary>
+/// Carries versioned, side-effect-free risk-math outputs and the complete input snapshot.
+/// Values are reusable by replay, paper simulation, and execution planning; no mode is encoded.
+/// </summary>
+public sealed record RiskMathResult
+{
+    /// <summary>Gets the version of the risk-math contract that produced the result.</summary>
+    public RiskMathVersion Version { get; }
+
+    /// <summary>Gets the immutable input snapshot used for this result.</summary>
+    public RiskMathInput Input { get; }
+
+    /// <summary>Gets the positive monetary risk budget.</summary>
+    public Money RiskBudget { get; }
+
+    /// <summary>Gets the positive loss per raw quantity unit.</summary>
+    public MoneyPerQuantityUnit LossPerUnit { get; }
+
+    /// <summary>Gets the positive, pre-venue-quantization quantity.</summary>
+    public Quantity RawQuantity { get; }
+
+    /// <summary>Gets the positive notional exposure.</summary>
+    public Money NotionalExposure { get; }
+
+    /// <summary>Creates and validates a risk-math result without recomputing any output.</summary>
+    [System.Text.Json.Serialization.JsonConstructor]
+    public RiskMathResult(RiskMathVersion version, RiskMathInput input, Money riskBudget,
+        MoneyPerQuantityUnit lossPerUnit, Quantity rawQuantity, Money notionalExposure)
+    {
+        ArgumentNullException.ThrowIfNull(version);
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(riskBudget);
+        ArgumentNullException.ThrowIfNull(lossPerUnit);
+        ArgumentNullException.ThrowIfNull(rawQuantity);
+        ArgumentNullException.ThrowIfNull(notionalExposure);
+
+        if (riskBudget.Amount <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(riskBudget), riskBudget.Amount,
+                "Risk budget must be greater than zero.");
+        }
+
+        if (lossPerUnit.Amount <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(lossPerUnit), lossPerUnit.Amount,
+                "Loss per unit must be greater than zero.");
+        }
+
+        if (rawQuantity.Value <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawQuantity), rawQuantity.Value,
+                "Raw quantity must be greater than zero.");
+        }
+
+        if (notionalExposure.Amount <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(notionalExposure), notionalExposure.Amount,
+                "Notional exposure must be greater than zero.");
+        }
+
+        RequireMatchingCurrency(input.Equity.Currency, riskBudget.Currency, nameof(riskBudget));
+        RequireMatchingCurrency(input.Equity.Currency, lossPerUnit.Currency, nameof(lossPerUnit));
+        RequireMatchingCurrency(input.Equity.Currency, notionalExposure.Currency,
+            nameof(notionalExposure));
+
+        Version = version;
+        Input = new RiskMathInput(input.InstrumentId, input.Direction, input.Equity,
+            input.RiskFraction, input.EntryPrice, input.ProtectiveStopPrice,
+            input.FeePerUnit, input.EstimatedSlippagePerUnit);
+        RiskBudget = riskBudget;
+        LossPerUnit = lossPerUnit;
+        RawQuantity = rawQuantity;
+        NotionalExposure = notionalExposure;
+    }
+
+    private static void RequireMatchingCurrency(string expected, string actual,
+        string parameterName)
+    {
+        if (!StringComparer.Ordinal.Equals(expected, actual))
+        {
+            throw new ArgumentException("Risk-math result currencies must match the input currency.",
+                parameterName);
+        }
+    }
+}
+
+/// <summary>
+/// Defines deterministic, side-effect-free risk math shared by replay, paper simulation, and planning.
+/// Implementations return the same result for the same input and calculator version, perform no side effects,
+/// and stamp each result with their own Version. Implementations do not encode an execution mode or replace
+/// the separate RiskDecision contract.
+/// </summary>
+public interface IRiskMathCalculator
+{
+    /// <summary>Gets the immutable version identifier for this calculator's risk math.</summary>
+    RiskMathVersion Version { get; }
+
+    /// <summary>Calculates versioned risk outputs from an immutable input snapshot.</summary>
+    RiskMathResult Calculate(RiskMathInput input);
+}
+
 /// <summary>A passive market event with source identity and event time.</summary>
 [System.Text.Json.Serialization.JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [System.Text.Json.Serialization.JsonDerivedType(typeof(Trade), "trade")]

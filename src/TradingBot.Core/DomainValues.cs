@@ -65,6 +65,46 @@ public sealed record Money
     }
 }
 
+/// <summary>Identifies the immutable version of a risk-math contract.</summary>
+public sealed record RiskMathVersion
+{
+    /// <summary>Gets the non-empty, ordinally compared version value.</summary>
+    public string Value { get; }
+
+    /// <summary>Creates a risk-math version identifier.</summary>
+    [JsonConstructor]
+    public RiskMathVersion(string value)
+    {
+        ContractGuard.RequireText(value, nameof(value));
+        Value = value;
+    }
+}
+
+/// <summary>Represents a non-negative cost or loss amount per raw quantity unit.</summary>
+public sealed record MoneyPerQuantityUnit
+{
+    /// <summary>Gets the exact decimal amount.</summary>
+    public decimal Amount { get; }
+
+    /// <summary>Gets the exact, non-empty currency identifier.</summary>
+    public string Currency { get; }
+
+    /// <summary>Creates a per-quantity-unit money value without rounding.</summary>
+    [JsonConstructor]
+    public MoneyPerQuantityUnit(decimal amount, string currency)
+    {
+        if (amount < 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(amount), amount,
+                "A per-quantity-unit amount cannot be negative.");
+        }
+
+        ContractGuard.RequireText(currency, nameof(currency));
+        Amount = amount;
+        Currency = currency;
+    }
+}
+
 /// <summary>A timestamp value normalized to UTC.</summary>
 public sealed record UtcTimestamp
 {
