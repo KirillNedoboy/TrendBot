@@ -1,9 +1,9 @@
 # Current checkpoint
 
 - Phase: 02 — Core Contracts
-- Milestone: P02-M02 — Causal event and shared-risk contracts
-- Current task: P02-M02-T003 (DONE)
-- Next task: P02-M03-T001 (READY; first ready task with completed dependencies)
+- Milestone: P02-M03 — Core boundary evidence
+- Current task: P02-M03-T001 (DONE)
+- Next task: P02-M03-T002 (READY; first ready task with completed dependencies)
 
 ## Confirmed state
 
@@ -15,15 +15,18 @@
 - `RiskMathVersion`, `MoneyPerQuantityUnit`, `RiskMathInput`, `RiskMathResult`, and `IRiskMathCalculator` define versioned, deterministic, side-effect-free sizing/exposure contracts shared across replay, paper simulation, and planning. Inputs snapshot the required instrument, direction, equity, risk fraction, entry/stop prices, fee, and slippage. Results include risk budget, loss per unit, raw pre-venue-constraint quantity, and notional exposure. Constructors enforce positive outputs and matching currencies without recomputing formulas; no execution mode, risk decision, sizing implementation, or trading defaults were added. Calculation parity remains P09-M02-T001.
 - `FillSimulationVersion`, `FillSimulationAssumptions`, `FillSimulationInput`, `ResearchFill`, `FillSimulationResult`, and `IFillSimulator` define a separate passive research boundary. Inputs are identified hypothetical requests with positive quantity, optional reference price, request time, non-empty fee/slippage/latency/liquidity-queue/partial-fill/intrabar/data-limitation descriptions, and an immutable causal market snapshot. Snapshot events must match the instrument and be available by the request time. Results defensively retain the full input snapshot and only research fills; fill identifiers are unique and total filled quantity cannot exceed the hypothetical request. No fill contract references `OrderIntent`, `RiskDecision`, risk math, executor, or authorization state. Unknown assumptions remain prose, with no numeric defaults. Fill algorithms, replay integration, persistence, and paper execution remain future work.
 - Core contracts remain passive: no replay runner, persistence envelope, quality flags, transition logic, Binance integration, or order side effects.
+- `tests/Fixtures/CoreFixtureVectors.cs` is a linked test-only source in `TradingBot.Core.Tests` and `TradingBot.Replay.Tests`. It references only BCL APIs and `TradingBot.Core`, creates fresh deterministic values with fixed UTC timestamps, ordinal IDs, and decimal examples, and carries explicit expected exception types/parameters, causal order, event relations, risk outputs, and strict JSON cases.
+- Core fixture consumers cover value bounds, UTC normalization and ordinal identity, Bar/Setup/Position invariants, immutable collection defensive copies, duplicate/identity-conflict relations, causal availability and stable ordering, risk currencies/stops/result bounds, fill assumptions/snapshot visibility/unique IDs/overfill, strict JSON missing/unknown/invalid fields, Core BCL boundaries, and the unchanged production project graph. Replay tests use the same catalog for causal ordering and serialization without a replay runner.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
 
 ## Verification evidence
 
-- Locked restore: `dotnet restore TradingBot.slnx --locked-mode` — exit 0.
-- Release build: `dotnet build TradingBot.slnx -c Release --no-restore --warnaserror` — exit 0, zero warnings and errors.
+- Locked restore: `C:\temp\dotnet10\dotnet.exe restore TradingBot.slnx --locked-mode` — exit 0.
 - Release Core.Tests build: `C:\temp\dotnet10\dotnet.exe build tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --warnaserror` — exit 0, zero warnings and errors.
-- Focused Core tests: `C:\temp\dotnet10\dotnet.exe test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FillSimulationContractTests|FullyQualifiedName~RiskMathContractTests|FullyQualifiedName~CoreBoundaryTests|FullyQualifiedName~ArchitectureTests"` — 15 passed, 0 failed.
-- Format verification: `C:\temp\dotnet10\dotnet.exe format TradingBot.slnx --no-restore --verify-no-changes --include src/TradingBot.Core/FillSimulationContracts.cs src/TradingBot.Core/DomainValues.cs tests/TradingBot.Core.Tests/FillSimulationContractTests.cs` — exit 0.
-- Documentation validation: `pwsh -NoProfile -File tools/validate-docs.ps1` — exit 0; phases=19, milestones=41, tasks=119, ready=P02-M03-T001.
+- Release Replay.Tests build: `C:\temp\dotnet10\dotnet.exe build tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --no-restore --warnaserror` — exit 0, zero warnings and errors.
+- Focused Core fixture/boundary/architecture tests: `C:\temp\dotnet10\dotnet.exe test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CoreFixtureVectorTests|FullyQualifiedName~CoreBoundaryTests|FullyQualifiedName~ArchitectureTests"` — 13 passed, 0 failed; includes the exact normalized production project graph assertion.
+- Focused Replay fixture/architecture tests: `C:\temp\dotnet10\dotnet.exe test tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CoreFixtureReplayTests|FullyQualifiedName~ArchitectureTests"` — 3 passed, 0 failed.
+- Scoped format verification: `C:\temp\dotnet10\dotnet.exe format TradingBot.slnx --no-restore --verify-no-changes --include tests/Fixtures/CoreFixtureVectors.cs tests/TradingBot.Core.Tests/CoreFixtureVectorTests.cs tests/TradingBot.Replay.Tests/CoreFixtureReplayTests.cs` — exit 0.
+- Documentation validation: `pwsh -NoProfile -File tools/validate-docs.ps1` — exit 0; phases=19, milestones=41, tasks=119, ready=P02-M03-T002.
 - `git diff --check` — exit 0; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
-- Remote GitHub Actions has not run and remains unverified. No commit, push, deployment, production mutation, or live financial operation was performed.
+- GitHub Actions run `37657230108` for the previous pushed commit `207f7ac8f5ddfec9f676b885b66c333c370f0c65` exists and failed on `Verify formatting` in both Windows and Ubuntu jobs. This task has no commit or push; current local validation is reported separately from that remote result.

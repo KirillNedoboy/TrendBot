@@ -5,6 +5,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\Fixtures\CoreFixtureVectors.cs" Link="Fixtures\CoreFixtureVectors.cs" />
     <ProjectReference Include="..\..\src\TradingBot.Backtesting\TradingBot.Backtesting.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
