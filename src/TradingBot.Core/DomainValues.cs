@@ -1,3 +1,5 @@
+﻿using System.Text.Json.Serialization;
+
 namespace TradingBot.Core;
 
 /// <summary>An opaque, ordinally compared instrument identifier.</summary>
@@ -5,6 +7,7 @@ public sealed record InstrumentId
 {
     public string Value { get; }
 
+    [JsonConstructor]
     public InstrumentId(string value)
     {
         ContractGuard.RequireText(value, nameof(value));
@@ -17,6 +20,7 @@ public sealed record Price
 {
     public decimal Value { get; }
 
+    [JsonConstructor]
     public Price(decimal value)
     {
         if (value <= 0m)
@@ -33,6 +37,7 @@ public sealed record Quantity
 {
     public decimal Value { get; }
 
+    [JsonConstructor]
     public Quantity(decimal value)
     {
         if (value < 0m)
@@ -51,6 +56,7 @@ public sealed record Money
 
     public string Currency { get; }
 
+    [JsonConstructor]
     public Money(decimal amount, string currency)
     {
         ContractGuard.RequireText(currency, nameof(currency));
@@ -64,6 +70,7 @@ public sealed record UtcTimestamp
 {
     public DateTimeOffset Value { get; }
 
+    [JsonConstructor]
     public UtcTimestamp(DateTimeOffset value)
     {
         Value = value.ToUniversalTime();

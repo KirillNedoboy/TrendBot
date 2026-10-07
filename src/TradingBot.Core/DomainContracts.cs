@@ -60,6 +60,12 @@ public enum OrderRole
 }
 
 /// <summary>A passive market event with source identity and event time.</summary>
+[System.Text.Json.Serialization.JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(Trade), "trade")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(Bar), "bar")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(BookDelta), "bookDelta")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(FundingUpdate), "fundingUpdate")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(OIUpdate), "oiUpdate")]
 public abstract record MarketEvent
 {
     public string EventId { get; }
@@ -88,6 +94,7 @@ public sealed record Trade : MarketEvent
 
     public TradeSide Side { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public Trade(string eventId, InstrumentId instrumentId, UtcTimestamp eventTime,
         Price price, Quantity quantity, TradeSide side)
         : base(eventId, instrumentId, eventTime)
@@ -122,6 +129,7 @@ public sealed record Bar : MarketEvent
 
     public Quantity Volume { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public Bar(string eventId, InstrumentId instrumentId, UtcTimestamp eventTime,
         UtcTimestamp openTime, UtcTimestamp closeTime, Price open, Price high,
         Price low, Price close, Quantity volume)
@@ -165,6 +173,7 @@ public sealed record BookLevel
 
     public Quantity Quantity { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public BookLevel(Price price, Quantity quantity)
     {
         ArgumentNullException.ThrowIfNull(price);
@@ -188,6 +197,14 @@ public sealed record BookDelta : MarketEvent
         Asks = SnapshotLevels(asks, nameof(asks));
     }
 
+    [System.Text.Json.Serialization.JsonConstructor]
+    public BookDelta(string eventId, InstrumentId instrumentId, UtcTimestamp eventTime,
+        ImmutableValueList<BookLevel> bids, ImmutableValueList<BookLevel> asks)
+        : this(eventId, instrumentId, eventTime,
+            (IEnumerable<BookLevel>)bids, (IEnumerable<BookLevel>)asks)
+    {
+    }
+
     private static ImmutableValueList<BookLevel> SnapshotLevels(IEnumerable<BookLevel> levels,
         string parameterName)
     {
@@ -208,6 +225,7 @@ public sealed record FundingUpdate : MarketEvent
 
     public UtcTimestamp? NextFundingTime { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public FundingUpdate(string eventId, InstrumentId instrumentId, UtcTimestamp eventTime,
         decimal fundingRate, UtcTimestamp? nextFundingTime = null)
         : base(eventId, instrumentId, eventTime)
@@ -221,6 +239,7 @@ public sealed record OIUpdate : MarketEvent
 {
     public decimal OpenInterest { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public OIUpdate(string eventId, InstrumentId instrumentId, UtcTimestamp eventTime,
         decimal openInterest)
         : base(eventId, instrumentId, eventTime)
@@ -260,6 +279,7 @@ public sealed record Setup
 
     public string ContextVersion { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public Setup(string setupId, InstrumentId instrumentId, SetupType setupType,
         Direction direction, SetupState state, string structuralAnchorId,
         UtcTimestamp anchorTime, Price anchorPrice, Price anchorLevel,
@@ -323,6 +343,13 @@ public sealed record Decision
         Outcome = outcome;
         Reasons = ContractGuard.RequireReasons(reasons, nameof(reasons));
     }
+
+    [System.Text.Json.Serialization.JsonConstructor]
+    public Decision(string decisionId, string setupId, DecisionOutcome outcome,
+        ImmutableValueList<string> reasons)
+        : this(decisionId, setupId, outcome, (IEnumerable<string>)reasons)
+    {
+    }
 }
 
 public sealed record RiskDecision
@@ -345,6 +372,13 @@ public sealed record RiskDecision
         DecisionId = decisionId;
         Outcome = outcome;
         Reasons = ContractGuard.RequireReasons(reasons, nameof(reasons));
+    }
+
+    [System.Text.Json.Serialization.JsonConstructor]
+    public RiskDecision(string riskDecisionId, string decisionId, RiskDecisionOutcome outcome,
+        ImmutableValueList<string> reasons)
+        : this(riskDecisionId, decisionId, outcome, (IEnumerable<string>)reasons)
+    {
     }
 }
 
@@ -374,6 +408,7 @@ public sealed record OrderIntent
 
     public bool ReduceOnly { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public OrderIntent(string intentId, string strategyRunId, string setupId,
         string clientOrderId, InstrumentId instrumentId, Direction direction,
         OrderRole role, int attempt, Quantity quantity, Price? limitPrice = null,
@@ -430,6 +465,7 @@ public sealed record Position
 
     public Money? UnrealizedPnl { get; }
 
+    [System.Text.Json.Serialization.JsonConstructor]
     public Position(string positionId, InstrumentId instrumentId, Direction direction,
         Quantity quantity, UtcTimestamp openedAt, UtcTimestamp updatedAt,
         Price? averageEntryPrice = null, Money? unrealizedPnl = null)
