@@ -2,8 +2,8 @@
 
 - Phase: 02 — Core Contracts
 - Milestone: P02-M03 — Core boundary evidence
-- Current task: P02-M03-T001 (DONE)
-- Next task: P02-M03-T002 (READY; first ready task with completed dependencies)
+- Current task: P02-M03-T002 (DONE)
+- Next task: P03-M01-T001 (READY; first ready task with completed dependencies)
 
 ## Confirmed state
 
@@ -17,6 +17,8 @@
 - Core contracts remain passive: no replay runner, persistence envelope, quality flags, transition logic, Binance integration, or order side effects.
 - `tests/Fixtures/CoreFixtureVectors.cs` is a linked test-only source in `TradingBot.Core.Tests` and `TradingBot.Replay.Tests`. It references only BCL APIs and `TradingBot.Core`, creates fresh deterministic values with fixed UTC timestamps, ordinal IDs, and decimal examples, and carries explicit expected exception types/parameters, causal order, event relations, risk outputs, and strict JSON cases.
 - Core fixture consumers cover value bounds, UTC normalization and ordinal identity, Bar/Setup/Position invariants, immutable collection defensive copies, duplicate/identity-conflict relations, causal availability and stable ordering, risk currencies/stops/result bounds, fill assumptions/snapshot visibility/unique IDs/overfill, strict JSON missing/unknown/invalid fields, Core BCL boundaries, and the unchanged production project graph. Replay tests use the same catalog for causal ordering and serialization without a replay runner.
+- [`docs/architecture/core-contract-evidence.md`](docs/architecture/core-contract-evidence.md) records the current `RiskMathVersion` example `risk-v1`, `FillSimulationVersion` example `fill-v1`, and `Setup.ContextVersion` example `context-v1`; it also records the exact fixture matrix of 42 exception vectors, 28 strict JSON round trips, 8 invalid JSON cases, and 6 event comparisons. These strings are test examples, not released versions, and no global Core or wire-schema version exists.
+- The report records the exact BCL/project graph, separate passive risk/fill boundaries, causal order `event-first -> event-second` with `future-event` excluded, and the limits of the current evidence: no replay runner, risk/fill implementation, persistence, or migration compatibility proof.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
 
 ## Verification evidence
@@ -27,6 +29,6 @@
 - Focused Core fixture/boundary/architecture tests: `C:\temp\dotnet10\dotnet.exe test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CoreFixtureVectorTests|FullyQualifiedName~CoreBoundaryTests|FullyQualifiedName~ArchitectureTests"` — 13 passed, 0 failed; includes the exact normalized production project graph assertion.
 - Focused Replay fixture/architecture tests: `C:\temp\dotnet10\dotnet.exe test tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CoreFixtureReplayTests|FullyQualifiedName~ArchitectureTests"` — 3 passed, 0 failed.
 - Scoped format verification: `C:\temp\dotnet10\dotnet.exe format TradingBot.slnx --no-restore --verify-no-changes --include tests/Fixtures/CoreFixtureVectors.cs tests/TradingBot.Core.Tests/CoreFixtureVectorTests.cs tests/TradingBot.Replay.Tests/CoreFixtureReplayTests.cs` — exit 0.
-- Documentation validation: `pwsh -NoProfile -File tools/validate-docs.ps1` — exit 0; phases=19, milestones=41, tasks=119, ready=P02-M03-T002.
+- Documentation validation: `pwsh -NoProfile -File tools/validate-docs.ps1` — exit 0; phases=19, milestones=41, tasks=119, ready=P03-M01-T001.
 - `git diff --check` — exit 0; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
-- GitHub Actions run `37657230108` for the previous pushed commit `207f7ac8f5ddfec9f676b885b66c333c370f0c65` exists and failed on `Verify formatting` in both Windows and Ubuntu jobs. This task has no commit or push; current local validation is reported separately from that remote result.
+- GitHub Actions run `37668922127` for commit `6afd836b43760a45d7e7cf45a11817eb4adf3582` completed with failure on `Verify formatting` in both Windows and Ubuntu jobs. The run's line-ending/encoding findings remain a known CI limitation and are outside this documentation-only task.
