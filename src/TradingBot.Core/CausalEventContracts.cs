@@ -50,6 +50,53 @@ public sealed record CausalMarketEvent
     }
 }
 
+/// <summary>
+/// Identifies one versioned, immutable replay record for one caller-defined stream.
+/// </summary>
+/// <remarks>
+/// The format version belongs to the persisted envelope. It is deliberately
+/// separate from the Core contract types so an unknown persisted format fails
+/// closed instead of being interpreted as a newer event shape.
+/// </remarks>
+public sealed record ReplayEnvelope
+{
+    /// <summary>The only replay envelope format currently supported.</summary>
+    public const int CurrentFormatVersion = 1;
+
+    /// <summary>Gets the persisted envelope format version.</summary>
+    public int FormatVersion { get; }
+
+    /// <summary>Gets the caller-defined stream identity.</summary>
+    public string StreamId { get; }
+
+    /// <summary>Gets the complete causal event carried by this envelope.</summary>
+    public CausalMarketEvent CausalEvent { get; }
+
+    /// <summary>Creates a current-format replay envelope.</summary>
+    public ReplayEnvelope(string streamId, CausalMarketEvent causalEvent)
+        : this(CurrentFormatVersion, streamId, causalEvent)
+    {
+    }
+
+    /// <summary>Creates a replay envelope after validating its supported format.</summary>
+    [JsonConstructor]
+    public ReplayEnvelope(int formatVersion, string streamId, CausalMarketEvent causalEvent)
+    {
+        if (formatVersion != CurrentFormatVersion)
+        {
+            throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
+                $"Replay envelope format version {formatVersion} is not supported.");
+        }
+
+        ContractGuard.RequireText(streamId, nameof(streamId));
+        ArgumentNullException.ThrowIfNull(causalEvent);
+
+        FormatVersion = formatVersion;
+        StreamId = streamId;
+        CausalEvent = causalEvent;
+    }
+}
+
 /// <summary>Defines the causal visibility boundary for an event view.</summary>
 public sealed record CausalEventCursor
 {

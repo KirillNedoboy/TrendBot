@@ -16,7 +16,7 @@ namespace TradingBot.Infrastructure;
 /// </remarks>
 public sealed class SqliteEventJournal : IDisposable
 {
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 3;
     private const string JournalTable = "event_journal";
 
     private static readonly JournalColumn[] RequiredColumns =
@@ -27,7 +27,8 @@ public sealed class SqliteEventJournal : IDisposable
         new("event_time_ticks", "INTEGER", 1, 0),
         new("receive_time_ticks", "INTEGER", 1, 0),
         new("availability_time_ticks", "INTEGER", 1, 0),
-        new("exchange_time_ticks", "INTEGER", 0, 0)
+        new("exchange_time_ticks", "INTEGER", 0, 0),
+        new("envelope_version", "INTEGER", 1, 0)
     ];
 
     private readonly string _databasePath;
@@ -40,8 +41,8 @@ public sealed class SqliteEventJournal : IDisposable
     }
 
     /// <summary>
-    /// Opens a file backed journal and applies the transactional 0-to-1 schema
-    /// migration when the file is empty.
+    /// Opens a file-backed journal and applies supported transactional schema
+    /// migrations when the file is empty or on a prior supported version.
     /// </summary>
     public static SqliteEventJournal Open(string databasePath, int commandTimeoutSeconds = 30)
     {
@@ -73,33 +74,43 @@ public sealed class SqliteEventJournal : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
         ArgumentNullException.ThrowIfNull(causalEvent);
 
+        return Append(new ReplayEnvelope(streamId, causalEvent));
+    }
+
+    /// <summary>Appends a complete replay envelope to its declared stream.</summary>
+    /// <returns><see langword="false"/> when the same row is already present.</returns>
+    public bool Append(ReplayEnvelope envelope)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+
         using SqliteConnection connection = OpenConnection();
         using SqliteTransaction transaction = connection.BeginTransaction(
             IsolationLevel.Serializable, deferred: false);
 
-        JournalRow? existing = FindRow(connection, transaction, streamId,
-            causalEvent.StableSequence);
+        JournalRow? existing = FindRow(connection, transaction, envelope.StreamId,
+            envelope.CausalEvent.StableSequence);
         if (existing is not null)
         {
-            CausalMarketEvent stored = DeserializeRow(existing);
-            if (stored == causalEvent)
+            ReplayEnvelope stored = DeserializeRow(envelope.StreamId, existing);
+            if (stored == envelope)
             {
                 transaction.Commit();
                 return false;
             }
 
             throw new InvalidOperationException(
-                "The stream sequence already contains a different causal event.");
+                "The stream sequence already contains a different replay envelope.");
         }
 
-        long? maximumSequence = FindMaximumSequence(connection, transaction, streamId);
-        if (maximumSequence is not null && causalEvent.StableSequence <= maximumSequence.Value)
+        long? maximumSequence = FindMaximumSequence(connection, transaction, envelope.StreamId);
+        if (maximumSequence is not null
+            && envelope.CausalEvent.StableSequence <= maximumSequence.Value)
         {
             throw new InvalidOperationException(
                 "A new stream event must have a stable sequence greater than the current maximum.");
         }
 
-        InsertRow(connection, transaction, streamId, causalEvent);
+        InsertRow(connection, transaction, envelope);
         transaction.Commit();
         return true;
     }
@@ -107,29 +118,43 @@ public sealed class SqliteEventJournal : IDisposable
     /// <summary>Reads one stream as an immutable snapshot ordered by stable sequence.</summary>
     public IReadOnlyList<CausalMarketEvent> ReadStream(string streamId)
     {
+        return new ReadOnlyCollection<CausalMarketEvent>(
+            ReadEnvelopes(streamId).Select(static envelope => envelope.CausalEvent).ToList());
+    }
+
+    /// <summary>Reads one stream as immutable replay envelopes ordered by stable sequence.</summary>
+    public IReadOnlyList<ReplayEnvelope> ReadEnvelopes(string streamId)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
 
         using SqliteConnection connection = OpenConnection();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT stable_sequence, payload_json, event_time_ticks, receive_time_ticks,
-                   availability_time_ticks, exchange_time_ticks
+            SELECT stable_sequence, envelope_version, payload_json, event_time_ticks,
+                   receive_time_ticks, availability_time_ticks, exchange_time_ticks
             FROM event_journal
             WHERE stream_id = $stream_id COLLATE BINARY
             ORDER BY stable_sequence ASC;
             """;
         command.Parameters.AddWithValue("$stream_id", streamId);
 
-        List<CausalMarketEvent> events = [];
+        List<ReplayEnvelope> envelopes = [];
         using SqliteDataReader reader = command.ExecuteReader();
         while (reader.Read())
         {
-            events.Add(DeserializeRow(new JournalRow(
-                reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3),
-                reader.GetInt64(4), reader.IsDBNull(5) ? null : reader.GetInt64(5))));
+            envelopes.Add(DeserializeRow(streamId, new JournalRow(
+                reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2), reader.GetInt64(3),
+                reader.GetInt64(4), reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : reader.GetInt64(6))));
         }
 
-        return new ReadOnlyCollection<CausalMarketEvent>(events);
+        return new ReadOnlyCollection<ReplayEnvelope>(envelopes);
+    }
+
+    /// <summary>Alias for reading the immutable replay-envelope stream snapshot.</summary>
+    public IReadOnlyList<ReplayEnvelope> ReadEnvelopeStream(string streamId)
+    {
+        return ReadEnvelopes(streamId);
     }
 
     /// <summary>Releases no shared connection; each operation owns its connection.</summary>
@@ -155,10 +180,42 @@ public sealed class SqliteEventJournal : IDisposable
             long lockedVersion = ReadUserVersion(connection, transaction);
             if (lockedVersion == 0 && !HasUserObjects(connection, transaction))
             {
-                CreateSchema(connection, transaction);
+                CreateSchemaV1(connection, transaction);
+                SetUserVersion(connection, transaction, 1);
+                MigrateV1ToV2(connection, transaction);
+                SetUserVersion(connection, transaction, 2);
+                MigrateV2ToV3(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
             }
             else if (lockedVersion != CurrentSchemaVersion)
+            {
+                throw new InvalidDataException(
+                    $"SQLite schema version {lockedVersion} is not supported.");
+            }
+
+            transaction.Commit();
+            version = CurrentSchemaVersion;
+        }
+        else if (version is 1 or 2)
+        {
+            using SqliteTransaction transaction = connection.BeginTransaction(
+                IsolationLevel.Serializable, deferred: false);
+            long lockedVersion = ReadUserVersion(connection, transaction);
+            if (lockedVersion == 1)
+            {
+                MigrateV1ToV2(connection, transaction);
+                SetUserVersion(connection, transaction, 2);
+                lockedVersion = 2;
+            }
+
+            if (lockedVersion == 2)
+            {
+                MigrateV2ToV3(connection, transaction);
+                SetUserVersion(connection, transaction, CurrentSchemaVersion);
+                lockedVersion = CurrentSchemaVersion;
+            }
+
+            if (lockedVersion != CurrentSchemaVersion)
             {
                 throw new InvalidDataException(
                     $"SQLite schema version {lockedVersion} is not supported.");
@@ -174,6 +231,7 @@ public sealed class SqliteEventJournal : IDisposable
         }
 
         ValidateSchema(connection);
+        ValidateOrderIntentSchema(connection);
     }
 
     private SqliteConnection OpenConnection()
@@ -201,7 +259,7 @@ public sealed class SqliteEventJournal : IDisposable
         }
     }
 
-    private static void CreateSchema(SqliteConnection connection, SqliteTransaction transaction)
+    private static void CreateSchemaV1(SqliteConnection connection, SqliteTransaction transaction)
     {
         ExecuteNonQuery(connection, transaction, """
             CREATE TABLE event_journal
@@ -214,6 +272,26 @@ public sealed class SqliteEventJournal : IDisposable
                 availability_time_ticks INTEGER NOT NULL,
                 exchange_time_ticks INTEGER NULL,
                 PRIMARY KEY (stream_id, stable_sequence)
+            ) WITHOUT ROWID;
+            """);
+    }
+
+    private static void MigrateV1ToV2(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            ALTER TABLE event_journal
+            ADD COLUMN envelope_version INTEGER NOT NULL DEFAULT 1;
+            """);
+    }
+
+    private static void MigrateV2ToV3(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE order_intents
+            (
+                intent_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                client_order_id TEXT COLLATE BINARY NOT NULL UNIQUE,
+                intent_json TEXT NOT NULL
             ) WITHOUT ROWID;
             """);
     }
@@ -233,7 +311,7 @@ public sealed class SqliteEventJournal : IDisposable
 
         if (!RequiredColumns.SequenceEqual(actualColumns))
         {
-            throw new InvalidDataException("The event_journal schema does not match version 1.");
+            throw new InvalidDataException("The event_journal schema does not match version 3.");
         }
 
         using SqliteCommand sqlCommand = connection.CreateCommand();
@@ -247,6 +325,24 @@ public sealed class SqliteEventJournal : IDisposable
             || createSql.IndexOf("COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0)
         {
             throw new InvalidDataException("The event_journal stream key must use BINARY collation.");
+        }
+    }
+
+    private static void ValidateOrderIntentSchema(SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'order_intents';
+            """;
+        string? createSql = command.ExecuteScalar() as string;
+        if (createSql is null
+            || createSql.IndexOf("intent_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("client_order_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("UNIQUE", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            throw new InvalidDataException("The order_intents schema does not match version 3.");
         }
     }
 
@@ -286,8 +382,8 @@ public sealed class SqliteEventJournal : IDisposable
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT stable_sequence, payload_json, event_time_ticks, receive_time_ticks,
-                   availability_time_ticks, exchange_time_ticks
+            SELECT stable_sequence, envelope_version, payload_json, event_time_ticks,
+                   receive_time_ticks, availability_time_ticks, exchange_time_ticks
             FROM event_journal
             WHERE stream_id = $stream_id COLLATE BINARY
               AND stable_sequence = $stable_sequence;
@@ -297,9 +393,9 @@ public sealed class SqliteEventJournal : IDisposable
 
         using SqliteDataReader reader = command.ExecuteReader();
         return reader.Read()
-            ? new JournalRow(reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2),
-                reader.GetInt64(3), reader.GetInt64(4),
-                reader.IsDBNull(5) ? null : reader.GetInt64(5))
+            ? new JournalRow(reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2),
+                reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : reader.GetInt64(6))
             : null;
     }
 
@@ -319,35 +415,46 @@ public sealed class SqliteEventJournal : IDisposable
     }
 
     private static void InsertRow(SqliteConnection connection, SqliteTransaction transaction,
-        string streamId, CausalMarketEvent causalEvent)
+        ReplayEnvelope envelope)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO event_journal
-                (stream_id, stable_sequence, payload_json, event_time_ticks,
+                (stream_id, stable_sequence, envelope_version, payload_json, event_time_ticks,
                  receive_time_ticks, availability_time_ticks, exchange_time_ticks)
             VALUES
-                ($stream_id, $stable_sequence, $payload_json, $event_time_ticks,
+                ($stream_id, $stable_sequence, $envelope_version, $payload_json, $event_time_ticks,
                  $receive_time_ticks, $availability_time_ticks, $exchange_time_ticks);
             """;
-        command.Parameters.AddWithValue("$stream_id", streamId);
-        command.Parameters.AddWithValue("$stable_sequence", causalEvent.StableSequence);
-        command.Parameters.AddWithValue("$payload_json", CoreJsonSerializer.Serialize(causalEvent.Payload));
-        command.Parameters.AddWithValue("$event_time_ticks", ToUtcTicks(causalEvent.Payload.EventTime));
-        command.Parameters.AddWithValue("$receive_time_ticks", ToUtcTicks(causalEvent.ReceiveTime));
-        command.Parameters.AddWithValue("$availability_time_ticks", ToUtcTicks(causalEvent.AvailabilityTime));
+        command.Parameters.AddWithValue("$stream_id", envelope.StreamId);
+        command.Parameters.AddWithValue("$stable_sequence", envelope.CausalEvent.StableSequence);
+        command.Parameters.AddWithValue("$envelope_version", envelope.FormatVersion);
+        command.Parameters.AddWithValue("$payload_json",
+            CoreJsonSerializer.Serialize(envelope.CausalEvent.Payload));
+        command.Parameters.AddWithValue("$event_time_ticks",
+            ToUtcTicks(envelope.CausalEvent.Payload.EventTime));
+        command.Parameters.AddWithValue("$receive_time_ticks",
+            ToUtcTicks(envelope.CausalEvent.ReceiveTime));
+        command.Parameters.AddWithValue("$availability_time_ticks",
+            ToUtcTicks(envelope.CausalEvent.AvailabilityTime));
         command.Parameters.AddWithValue("$exchange_time_ticks",
-            causalEvent.ExchangeTime is null
+            envelope.CausalEvent.ExchangeTime is null
                 ? DBNull.Value
-                : ToUtcTicks(causalEvent.ExchangeTime));
+                : ToUtcTicks(envelope.CausalEvent.ExchangeTime));
         command.ExecuteNonQuery();
     }
 
-    private static CausalMarketEvent DeserializeRow(JournalRow row)
+    private static ReplayEnvelope DeserializeRow(string streamId, JournalRow row)
     {
         try
         {
+            if (row.EnvelopeVersion != ReplayEnvelope.CurrentFormatVersion)
+            {
+                throw new InvalidDataException(
+                    $"Replay envelope format version {row.EnvelopeVersion} is not supported.");
+            }
+
             MarketEvent payload = CoreJsonSerializer.Deserialize<MarketEvent>(row.PayloadJson);
             UtcTimestamp eventTime = FromUtcTicks(row.EventTimeTicks);
             UtcTimestamp receiveTime = FromUtcTicks(row.ReceiveTimeTicks);
@@ -373,7 +480,7 @@ public sealed class SqliteEventJournal : IDisposable
             }
 
             _ = eventTime;
-            return causalEvent;
+            return new ReplayEnvelope(row.EnvelopeVersion, streamId, causalEvent);
         }
         catch (InvalidDataException)
         {
@@ -417,6 +524,7 @@ public sealed class SqliteEventJournal : IDisposable
 
     private readonly record struct JournalColumn(string Name, string Type, int NotNull, int PrimaryKey);
 
-    private sealed record JournalRow(long StableSequence, string PayloadJson, long EventTimeTicks,
-        long ReceiveTimeTicks, long AvailabilityTimeTicks, long? ExchangeTimeTicks);
+    private sealed record JournalRow(long StableSequence, int EnvelopeVersion, string PayloadJson,
+        long EventTimeTicks, long ReceiveTimeTicks, long AvailabilityTimeTicks,
+        long? ExchangeTimeTicks);
 }

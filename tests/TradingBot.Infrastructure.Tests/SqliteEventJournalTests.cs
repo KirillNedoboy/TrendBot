@@ -114,12 +114,13 @@ public sealed class SqliteEventJournalTests
         }
 
         using SqliteConnection connection = OpenRaw(database.Path);
-        Assert.Equal(1L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
+        Assert.Equal(3L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
         Assert.Equal("wal", ExecuteScalar<string>(connection, "PRAGMA journal_mode;"));
         Assert.Equal(2L, ExecuteScalar<long>(connection, "PRAGMA synchronous;"));
         Assert.Equal(
             ["stream_id", "stable_sequence", "payload_json", "event_time_ticks",
-                "receive_time_ticks", "availability_time_ticks", "exchange_time_ticks"],
+                "receive_time_ticks", "availability_time_ticks", "exchange_time_ticks",
+                "envelope_version"],
             ReadColumnNames(connection));
     }
 
