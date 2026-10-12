@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 03 — Persistence and Replay Foundation
-- Milestone: P03-M02 — Durable intent, reservation, and reconciliation records
-- Current task: P03-M02-T003 (DONE)
-- Next task: P04-M01-T001 (READY; first ready task with completed dependencies)
+- Phase: 04 — Binance Public Market Data
+- Milestone: P04-M01 — Public REST/WebSocket adapter
+- Current task: P04-M01-T002 (DONE)
+- Next task: P04-M01-T003 (READY; first ready task with completed dependencies)
 
 ## Confirmed state
 
@@ -24,6 +24,9 @@
 - [`docs/architecture/persistence.md`](docs/architecture/persistence.md) records SQLite schema versions 1 through 5, envelope, intent, portfolio-reservation, and operational migrations, append/read guarantees, and evidence limits.
 - `SqliteEventJournal`, `SqliteOrderIntentJournal`, and `SqlitePortfolioReservationStore` share the Infrastructure initializer. They use Microsoft.Data.Sqlite 10.0.12, one non-pooled connection per operation, canonical Core JSON, WAL, `synchronous=FULL`, and BINARY identities. Existing event rows receive envelope format version 1 transactionally; operational observations and checkpoints are durable across restart.
 - `Fill`, `PortfolioPositionSnapshot`, and `ReconciliationCheckpoint` are immutable BCL-only Core contracts. Operational observations advance a portfolio revision transactionally, default to `Unreconciled`, preserve unknown/manual markers, and invalidate acknowledgement on every new revision. The retry guard requires acknowledgement and no unresolved markers. Partial fills retain the full reservation; release is idempotent and requires a current acknowledged closed-order/closed-position checkpoint.
+- `TradingBot.Exchange.Binance` now owns the public REST contract over injected `HttpClient`. `BinancePublicRestClient` uses current USD-M `/fapi/v1` market-data paths, immutable DTOs, exact decimal parsing, raw Unix-millisecond fields, cancellation, response-size limits, and observable HTTP/API/rate errors. It maps only completed klines to Core `Bar`; recent/aggregate trades, mark/history funding, and current OI map to Core events.
+- `docs/architecture/market-data.md` records the 2026-10-12 official endpoint matrix, weights/auth boundary, DTO/Core mapping decisions, and the approved WebSocket `/market` route. T002 owns WebSocket transport; T003 owns depth/orderbook recovery.
+- `BinanceMarketWebSocketClient` now uses an injected transport and `TimeProvider`, parses raw/combined fragmented messages for aggregate trades, klines, tickers, mark-price/funding, and liquidations, and emits immutable session envelopes. Reconnect/resubscribe is bounded and configurable; duplicate, conflict, late, stale, disconnect, gap, parse, and frame-limit diagnostics remain visible. The selected recovery policy is reconnect/resubscribe with explicit gap diagnostics; REST backfill is deferred to T003.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
 
 ## Verification evidence
@@ -73,8 +76,25 @@
 - `SqliteOperationalStateTests` cover restart persistence, duplicate idempotence, acknowledgement invalidation, fill identity conflict, aggregate overflow, stale revision rejection, unknown/manual retry blocking, full reservation retention through a partial fill, acknowledged closed-state release, repeated release, and 4 -> 5 migration preservation.
 - Locked restore passed. Release warnings-as-errors builds passed with zero warnings/errors for Core.Tests, Infrastructure.Tests, IntegrationTests, and Replay.Tests. Post-format suites passed: Core.Tests 64/64, Infrastructure.Tests 35/35, IntegrationTests 5/5, Replay.Tests 5/5. Scoped C# format, docs validation, `git diff --check`, and canonical source SHA verification passed.
 
+## P04-M01-T001 evidence
+
+- TDD RED: `C:\temp\dotnet10\dotnet.exe test tests\TradingBot.Exchange.Binance.Tests\TradingBot.Exchange.Binance.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~BinanceRestClientTests` initially failed with the expected missing `BinancePublicRestClient` compile error before production implementation.
+- `BinancePublicRestClient` and immutable REST DTOs cover exchangeInfo, server time, price/24-hour tickers, klines, recent/aggregate trades, mark/funding, funding history/info, and current open interest. String decimals remain exact; raw exchange milliseconds remain available; open klines stay outside Core `Bar`.
+- Fixture evidence covers object/array response shapes, current paths/query values, decimal precision, raw times, kline closure, buyer-maker trade side, Core mapping, caller cancellation, HTTP 429, Binance error code/message, and response-size limits.
+- Release Exchange.Tests build with warnings as errors passed with zero warnings/errors; all Exchange.Tests passed 7/7; scoped format verification passed; documentation validation passed with first READY task `P04-M01-T002`; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+
+## P04-M01-T002 evidence
+
+- TDD RED: `C:\temp\dotnet10\dotnet.exe test tests\TradingBot.Exchange.Binance.Tests\TradingBot.Exchange.Binance.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~BinanceWebSocketClientTests` initially failed with the expected missing WebSocket contract/client types before production implementation.
+- `BinanceMarketWebSocketClient` keeps `/market` as the required route, sends live `SUBSCRIBE` commands after every connection, optionally sets combined mode, assembles fragmented text/binary messages under configured frame/message limits, and parses the five public stream kinds. `ClientWebSocketTransport` wraps BCL `ClientWebSocket` with keepalive.
+- Immutable stream envelopes preserve raw JSON, event/exchange times, receive/availability times, a session identifier, and stable per-session sequence. Kline updates use the candle open time as identity, so open updates can evolve without identity conflicts; only closed updates map to Core `Bar`. Liquidations are dedicated events and never become Core `Trade` values.
+- Focused fixtures cover duplicate identity, different-value identity conflict, late event time, stale event time, aggregate-trade gaps, disconnect/reconnect/backoff/resubscribe, heartbeat, 24-hour session policy, raw/combined/fragmented frames, cancellation, causal fields, and liquidation separation. Release Exchange.Tests build with warnings as errors passed with zero warnings/errors; all Exchange.Tests passed 15/15; scoped format verification passed.
+- Documentation validation passed with first READY task `P04-M01-T003`; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+
 ## Scope limits
 
 - P03-M01-T002 adds only the versioned replay envelope, SQLite schema 1 -> 2 migration, deterministic bounded Backtesting snapshot, focused tests, architecture notes, and this handoff.
 - P03-M02-T001 adds only durable order-intent state; P03-M02-T002 adds only passive portfolio limits/reservations, shared schema 3 -> 4 migration, and atomic intent-plus-reservation persistence; P03-M02-T003 adds only passive operational fills, position snapshots, reconciliation checkpoints, and guarded full-reservation release. Binance calls, credentials, venue adapters, execution, StrategyRun, ConfigVersion, Parquet, and recovery policy remain future tasks.
+- P04-M01-T001 adds only public REST market-data transport/normalization and fixtures. It does not add private endpoints, credentials, orderbook/depth recovery, WebSocket transport, strategy behavior, retries, or orders.
+- P04-M01-T002 adds only public WebSocket parsing, bounded reconnect/resubscribe, causal envelopes, diagnostics, and fixtures. It does not implement local orderbook/depth snapshot alignment; that is T003.
 - Remote CI success remains unverified.
