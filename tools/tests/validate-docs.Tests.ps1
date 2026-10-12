@@ -56,7 +56,7 @@ try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     $baseline = New-Fixture 'baseline'
-    Invoke-Case 'baseline' $baseline $true 'docs validation passed: phases=19; milestones=41; tasks=119; ready=P02-M01-T001'
+    Invoke-Case 'baseline' $baseline $true 'docs validation passed: phases=19; milestones=41; tasks=119; ready=P04-M01-T001'
 
     $duplicate = New-Fixture 'duplicate-ids'
     $duplicateTasks = Join-Path $duplicate 'docs/TASKS.md'
@@ -73,34 +73,34 @@ try {
     Invoke-Case 'uncovered requirement' $uncovered $false 'not covered'
 
     $cycle = New-Fixture 'dependency-cycle'
-    Replace-Text (Join-Path $cycle 'docs/TASKS.md') '| P02-M02-T001 | BLOCKED | P02-M01-T003 |' '| P02-M02-T001 | BLOCKED | P02-M02-T003 |'
+    Replace-Text (Join-Path $cycle 'docs/TASKS.md') '| P04-M01-T002 | BLOCKED | P04-M01-T001 |' '| P04-M01-T002 | BLOCKED | P04-M01-T002 |'
     Invoke-Case 'dependency cycle' $cycle $false 'cycle'
 
     $invalidStatus = New-Fixture 'invalid-status'
-    Replace-Text (Join-Path $invalidStatus 'docs/TASKS.md') '| P02-M01-T001 | READY |' '| P02-M01-T001 | PAUSED |'
+    Replace-Text (Join-Path $invalidStatus 'docs/TASKS.md') '| P04-M01-T001 | READY |' '| P04-M01-T001 | PAUSED |'
     Invoke-Case 'invalid status' $invalidStatus $false 'invalid status'
 
     $multipleReady = New-Fixture 'multiple-ready'
     $multipleTasks = Join-Path $multipleReady 'docs/TASKS.md'
-    Replace-Text $multipleTasks '| P02-M01-T001 | READY |' '| P02-M01-T001 | DONE |'
-    Replace-Text $multipleTasks '| P02-M01-T002 | BLOCKED | P02-M01-T001 |' '| P02-M01-T002 | DONE | P02-M01-T001 |'
-    Replace-Text $multipleTasks '| P02-M01-T003 | BLOCKED | P02-M01-T002 |' '| P02-M01-T003 | DONE | P02-M01-T002 |'
-    Replace-Text $multipleTasks '| P02-M02-T001 | BLOCKED | P02-M01-T003 |' '| P02-M02-T001 | READY | P02-M01-T003 |'
-    Replace-Text $multipleTasks '| P02-M02-T002 | BLOCKED | P02-M02-T001 |' '| P02-M02-T002 | READY | P02-M01-T003 |'
+    Replace-Text $multipleTasks '| P04-M01-T001 | READY |' '| P04-M01-T001 | DONE |'
+    Replace-Text $multipleTasks '| P04-M01-T002 | BLOCKED | P04-M01-T001 |' '| P04-M01-T002 | READY | P04-M01-T001 |'
+    Replace-Text $multipleTasks '| P04-M01-T003 | BLOCKED | P04-M01-T002 |' '| P04-M01-T003 | READY | P04-M01-T001 |'
+    Replace-Text $multipleTasks 'Ready after P03-M02-T003' 'Evidence: fixture completion'
     Replace-Text $multipleTasks 'Blocked by listed dependency' 'Evidence: fixture completion'
-    Invoke-Case 'multiple READY tasks' $multipleReady $true 'ready=P02-M02-T001,P02-M02-T002'
+    Invoke-Case 'multiple READY tasks' $multipleReady $true 'ready=P04-M01-T002,P04-M01-T003'
 
     $zeroReady = New-Fixture 'explainable-zero-ready'
-    Replace-Text (Join-Path $zeroReady 'docs/TASKS.md') '| P02-M01-T001 | READY | P01-M02-T004 |' '| P02-M01-T001 | BLOCKED | P01-M02-T004 |'
-    Replace-Text (Join-Path $zeroReady 'docs/TASKS.md') 'Evidence: dependencies complete; first post-bootstrap task' 'Unresolved blocker: awaiting explicit approval'
+    Replace-Text (Join-Path $zeroReady 'docs/TASKS.md') '| P04-M01-T001 | READY | P03-M02-T003 |' '| P04-M01-T001 | BLOCKED | P03-M02-T003 |'
+    Replace-Text (Join-Path $zeroReady 'docs/TASKS.md') 'Ready after P03-M02-T003' 'Unresolved blocker: awaiting explicit approval'
     Invoke-Case 'explainable zero READY' $zeroReady $true 'ready=none \(explicit unresolved blocker\)'
 
     $transition = New-Fixture 'next-task-transition'
     $transitionTasks = Join-Path $transition 'docs/TASKS.md'
-    Replace-Text $transitionTasks '| P02-M01-T001 | READY |' '| P02-M01-T001 | DONE |'
-    Replace-Text $transitionTasks '| P02-M01-T002 | BLOCKED | P02-M01-T001 |' '| P02-M01-T002 | READY | P02-M01-T001 |'
+    Replace-Text $transitionTasks '| P04-M01-T001 | READY |' '| P04-M01-T001 | DONE |'
+    Replace-Text $transitionTasks '| P04-M01-T002 | BLOCKED | P04-M01-T001 |' '| P04-M01-T002 | READY | P04-M01-T001 |'
+    Replace-Text $transitionTasks 'Ready after P03-M02-T003' 'Evidence: transition candidate'
     Replace-Text $transitionTasks 'Blocked by listed dependency' 'Evidence: transition candidate'
-    Invoke-Case 'next-task transition' $transition $true 'ready=P02-M01-T002'
+    Invoke-Case 'next-task transition' $transition $true 'ready=P04-M01-T002'
 
     Write-Output 'All validator fixture cases passed.'
 }

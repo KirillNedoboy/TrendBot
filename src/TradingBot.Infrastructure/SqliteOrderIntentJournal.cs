@@ -27,22 +27,9 @@ public sealed class SqliteOrderIntentJournal : IDisposable
     public static SqliteOrderIntentJournal Open(string databasePath, int commandTimeoutSeconds = 30)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
-        if (StringComparer.Ordinal.Equals(databasePath, ":memory:"))
-        {
-            throw new ArgumentException("The order-intent journal requires a file-backed SQLite database.",
-                nameof(databasePath));
-        }
-
-        if (commandTimeoutSeconds <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(commandTimeoutSeconds),
-                commandTimeoutSeconds, "The SQLite command timeout must be positive.");
-        }
-
-        string fullPath = Path.GetFullPath(databasePath);
-        using (SqliteEventJournal.Open(fullPath, commandTimeoutSeconds))
-        {
-        }
+        SqliteDatabase.ValidateTimeout(commandTimeoutSeconds);
+        string fullPath = SqliteDatabase.NormalizePath(databasePath);
+        SqliteDatabase.Initialize(fullPath, commandTimeoutSeconds);
 
         return new SqliteOrderIntentJournal(fullPath, commandTimeoutSeconds);
     }
@@ -56,7 +43,8 @@ public sealed class SqliteOrderIntentJournal : IDisposable
         ArgumentNullException.ThrowIfNull(intent);
         string intentJson = CoreJsonSerializer.Serialize(intent);
 
-        using SqliteConnection connection = OpenConnection();
+        using SqliteConnection connection = SqliteDatabase.OpenConnection(_databasePath,
+            _commandTimeoutSeconds);
         using SqliteTransaction transaction = connection.BeginTransaction(
             IsolationLevel.Serializable, deferred: false);
 
@@ -103,7 +91,8 @@ public sealed class SqliteOrderIntentJournal : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(intentId);
 
-        using SqliteConnection connection = OpenConnection();
+        using SqliteConnection connection = SqliteDatabase.OpenConnection(_databasePath,
+            _commandTimeoutSeconds);
         IntentRow? row = FindRowByIntentId(connection, transaction: null, intentId);
         return row is null ? null : DeserializeRow(row);
     }
@@ -111,31 +100,6 @@ public sealed class SqliteOrderIntentJournal : IDisposable
     /// <summary>Releases no shared connection; each operation owns its connection.</summary>
     public void Dispose()
     {
-    }
-
-    private SqliteConnection OpenConnection()
-    {
-        SqliteConnectionStringBuilder builder = new()
-        {
-            DataSource = _databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = false,
-            DefaultTimeout = _commandTimeoutSeconds
-        };
-
-        SqliteConnection connection = new(builder.ConnectionString);
-        try
-        {
-            connection.Open();
-            ExecuteNonQuery(connection, "PRAGMA journal_mode = WAL;");
-            ExecuteNonQuery(connection, "PRAGMA synchronous = FULL;");
-            return connection;
-        }
-        catch
-        {
-            connection.Dispose();
-            throw;
-        }
     }
 
     private static IntentRow? FindRowByIntentId(SqliteConnection connection,
@@ -206,13 +170,6 @@ public sealed class SqliteOrderIntentJournal : IDisposable
         {
             throw new InvalidDataException("The persisted order intent JSON is invalid.", exception);
         }
-    }
-
-    private static void ExecuteNonQuery(SqliteConnection connection, string sql)
-    {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.ExecuteNonQuery();
     }
 
     private sealed record IntentRow(string IntentId, string ClientOrderId, string IntentJson);

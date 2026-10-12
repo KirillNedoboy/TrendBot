@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Reflection;
 using TradingBot.Core;
 using Xunit;
@@ -85,7 +85,9 @@ public sealed class DomainContractTests
             typeof(InstrumentId), typeof(Price), typeof(Quantity), typeof(Money), typeof(UtcTimestamp),
             typeof(Trade), typeof(Bar), typeof(BookLevel), typeof(BookDelta), typeof(FundingUpdate),
             typeof(OIUpdate), typeof(Setup), typeof(Decision), typeof(RiskDecision),
-            typeof(OrderIntent), typeof(Position)
+            typeof(OrderIntent), typeof(Position), typeof(PortfolioId), typeof(PortfolioLimits),
+            typeof(PortfolioReservation), typeof(Fill), typeof(PortfolioPositionSnapshot),
+            typeof(ReconciliationCheckpoint)
         ];
 
         foreach (Type contractType in contractTypes)

@@ -2,8 +2,8 @@
 
 - Phase: 03 — Persistence and Replay Foundation
 - Milestone: P03-M02 — Durable intent, reservation, and reconciliation records
-- Current task: P03-M02-T001 (DONE)
-- Next task: P03-M02-T002 (READY; first ready task with completed dependencies)
+- Current task: P03-M02-T003 (DONE)
+- Next task: P04-M01-T001 (READY; first ready task with completed dependencies)
 
 ## Confirmed state
 
@@ -16,10 +16,14 @@
 - `FillSimulationVersion`, `FillSimulationAssumptions`, `FillSimulationInput`, `ResearchFill`, `FillSimulationResult`, and `IFillSimulator` define a separate passive research boundary. Inputs are identified hypothetical requests with positive quantity, optional reference price, request time, non-empty fee/slippage/latency/liquidity-queue/partial-fill/intrabar/data-limitation descriptions, and an immutable causal market snapshot. Snapshot events must match the instrument and be available by the request time. Results defensively retain the full input snapshot and only research fills; fill identifiers are unique and total filled quantity cannot exceed the hypothetical request. No fill contract references `OrderIntent`, `RiskDecision`, risk math, executor, or authorization state. Unknown assumptions remain prose, with no numeric defaults. Fill algorithms, replay integration, persistence, and paper execution remain future work.
 - `ReplayEnvelope` is an immutable version-1 Core contract carrying its stream ID and complete `CausalMarketEvent`. `SqliteEventJournal` persists the envelope version and reads immutable envelope streams; migration 1 -> 2 assigns version 1 to prior rows. `ReplaySnapshotBuilder` filters with the inclusive causal cursor before ordering by event time and stable sequence. This is a bounded snapshot, not a full replay runner.
 - `SqliteOrderIntentJournal` persists the complete Core `OrderIntent` as canonical JSON in the shared SQLite schema. Schema migration 2 -> 3 adds `order_intents` without rewriting `event_journal`; `IntentId` and `ClientOrderId` use BINARY uniqueness. Identical retries return false, identity conflicts roll back, and a successful append returns only after commit. This stage records only an intent awaiting future execution; it adds no adapter, submission, reservation, fill, or reconciliation behavior.
+- `PortfolioId`, `PortfolioLimits`, and `PortfolioReservation` are passive immutable BCL-only Core contracts. Limits and reservations require explicit non-negative monetary risk/notional amounts, non-negative position slots, and one currency within each monetary value pair; no trading defaults are supplied.
+- `SqliteDatabase` is the shared transactional SQLite initializer. Schema migration 3 -> 4 adds BINARY `portfolios` and `reservations` storage while preserving `event_journal` and `order_intents`; decimal capacity values remain canonical JSON text and are never SQLite REAL values.
+- `SqlitePortfolioReservationStore` registers immutable limits, reads persisted limits/reservations, and performs `TryReserve(existing OrderIntent, reservation)` in one immediate serializable transaction. Checked application arithmetic covers risk, notional, and slots; results are `Reserved`, `AlreadyReserved`, or `InsufficientCapacity`; conflicts and failures leave no partial intent/reservation mutation.
 - `tests/Fixtures/CoreFixtureVectors.cs` remains a linked test-only source in `TradingBot.Core.Tests` and `TradingBot.Replay.Tests`, using only BCL APIs and `TradingBot.Core`.
 - [`docs/architecture/core-contract-evidence.md`](docs/architecture/core-contract-evidence.md) records the current fixture identifiers and exact vector matrix. The strings are test examples, not released versions, and no global Core or wire-schema version exists.
-- [`docs/architecture/persistence.md`](docs/architecture/persistence.md) records SQLite schema versions 1, 2, and 3, envelope and intent migrations, append/read guarantees, and evidence limits.
-- `SqliteEventJournal` remains the Infrastructure event recording boundary and `SqliteOrderIntentJournal` is the durable intent boundary. Both use Microsoft.Data.Sqlite 10.0.12, one non-pooled connection per operation, canonical Core JSON, WAL, `synchronous=FULL`, and BINARY identities. Existing event rows receive envelope format version 1 transactionally; old event APIs remain available alongside envelope APIs.
+- [`docs/architecture/persistence.md`](docs/architecture/persistence.md) records SQLite schema versions 1 through 5, envelope, intent, portfolio-reservation, and operational migrations, append/read guarantees, and evidence limits.
+- `SqliteEventJournal`, `SqliteOrderIntentJournal`, and `SqlitePortfolioReservationStore` share the Infrastructure initializer. They use Microsoft.Data.Sqlite 10.0.12, one non-pooled connection per operation, canonical Core JSON, WAL, `synchronous=FULL`, and BINARY identities. Existing event rows receive envelope format version 1 transactionally; operational observations and checkpoints are durable across restart.
+- `Fill`, `PortfolioPositionSnapshot`, and `ReconciliationCheckpoint` are immutable BCL-only Core contracts. Operational observations advance a portfolio revision transactionally, default to `Unreconciled`, preserve unknown/manual markers, and invalidate acknowledgement on every new revision. The retry guard requires acknowledgement and no unresolved markers. Partial fills retain the full reservation; release is idempotent and requires a current acknowledged closed-order/closed-position checkpoint.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
 
 ## Verification evidence
@@ -54,8 +58,23 @@
 - Locked restore passed; Release Infrastructure.Tests build with warnings as errors passed with zero warnings and errors; focused intent tests passed 6/6 and all Infrastructure tests passed 18/18; scoped C# format verification passed.
 - Documentation validation passed with first READY task P03-M02-T002; `git diff --check` passed; canonical `FINAL_TECH_SPEC.md` SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
 
+## P03-M02-T002 evidence
+
+- Core adds immutable `PortfolioId`, `PortfolioLimits`, and `PortfolioReservation` contracts with explicit caller-supplied monetary-risk, notional-exposure, and position-slot values. Matching currencies, non-negative values, strict JSON round trips, and immutability are covered by `PortfolioReservationContractTests`.
+- Infrastructure extracts shared SQLite initialization and migration 3 -> 4. The migration creates BINARY `portfolios` and `reservations` tables while preserving existing `event_journal` and `order_intents` rows. `SqlitePortfolioReservationStore` persists canonical JSON only, keeps identity columns BINARY, and writes an existing `OrderIntent` with its reservation atomically.
+- `SqlitePortfolioReservationStoreTests` cover exact capacity boundaries, independent-connection restart recovery, duplicate idempotence, portfolio/reservation/intent conflicts, missing portfolios, currency mismatch, rollback under a held writer, and separate barrier races for risk, notional, and position slots. Focused reservation tests passed 11/11; full Infrastructure.Tests passed 29/29.
+- Release IntegrationTests and Replay.Tests builds passed with warnings as errors; IntegrationTests passed 5/5 and Replay.Tests passed 5/5. Core.Tests passed 62/62, including the new contract tests; Release Core.Tests and Infrastructure.Tests builds passed with zero warnings/errors; scoped C# format verification passed.
+- Locked restore, documentation validation, `git diff --check`, and canonical source hash verification passed. The canonical `FINAL_TECH_SPEC.md` SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+
+## P03-M02-T003 evidence
+
+- Core adds immutable `Fill`, `PortfolioPositionSnapshot`, and `ReconciliationCheckpoint` contracts. Fill values retain intent/instrument identity, positive quantity and price, optional fee, event/receive/availability/exchange timestamps, and stable sequence. Snapshots retain Core `Position` values with known intent ownership or explicit manual/unknown origin. Checkpoints retain monotonic revision, open intents/positions, unknown/manual markers, and explicit `Unreconciled`/`Acknowledged` status.
+- Infrastructure schema migration 4 -> 5 adds the reservation release marker, fills, immutable position snapshots, and current reconciliation checkpoints while preserving event, intent, portfolio, and reservation rows. `RecordObservation` persists observations and the next checkpoint atomically using checked application decimal arithmetic; duplicate observations are idempotent and conflicts, aggregate overflow, stale revisions, and gaps leave no partial mutation.
+- `SqliteOperationalStateTests` cover restart persistence, duplicate idempotence, acknowledgement invalidation, fill identity conflict, aggregate overflow, stale revision rejection, unknown/manual retry blocking, full reservation retention through a partial fill, acknowledged closed-state release, repeated release, and 4 -> 5 migration preservation.
+- Locked restore passed. Release warnings-as-errors builds passed with zero warnings/errors for Core.Tests, Infrastructure.Tests, IntegrationTests, and Replay.Tests. Post-format suites passed: Core.Tests 64/64, Infrastructure.Tests 35/35, IntegrationTests 5/5, Replay.Tests 5/5. Scoped C# format, docs validation, `git diff --check`, and canonical source SHA verification passed.
+
 ## Scope limits
 
 - P03-M01-T002 adds only the versioned replay envelope, SQLite schema 1 -> 2 migration, deterministic bounded Backtesting snapshot, focused tests, architecture notes, and this handoff.
-- P03-M02-T001 adds only durable order-intent state and the shared SQLite schema 2 -> 3 migration. Reservations, execution, fills, reconciliation, StrategyRun, ConfigVersion, Parquet, and recovery policy remain future tasks.
+- P03-M02-T001 adds only durable order-intent state; P03-M02-T002 adds only passive portfolio limits/reservations, shared schema 3 -> 4 migration, and atomic intent-plus-reservation persistence; P03-M02-T003 adds only passive operational fills, position snapshots, reconciliation checkpoints, and guarded full-reservation release. Binance calls, credentials, venue adapters, execution, StrategyRun, ConfigVersion, Parquet, and recovery policy remain future tasks.
 - Remote CI success remains unverified.

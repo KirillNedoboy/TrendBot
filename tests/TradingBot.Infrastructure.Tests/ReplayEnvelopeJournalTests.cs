@@ -75,7 +75,7 @@ public sealed class ReplayEnvelopeJournalTests
 
         Assert.Equal(new ReplayEnvelope("stream-a", expected), actual);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(3L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(5L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,
             "SELECT envelope_version FROM event_journal WHERE stream_id = 'stream-a';"));
     }
