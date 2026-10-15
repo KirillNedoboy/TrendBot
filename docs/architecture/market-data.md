@@ -50,3 +50,35 @@ session-scoped stable sequence distinct for Core replay.
 
 Recovery is reconnect-and-resubscribe with explicit diagnostics. No REST depth
 backfill or orderbook recovery is introduced by T002; those belong to T003.
+
+## Depth snapshot and diff contract (P04-M01-T003)
+
+The official USD-M depth contract was checked on 2026-10-12. REST snapshots use
+`GET https://fapi.binance.com/fapi/v1/depth` with a required symbol and one of
+the documented limits `5`, `10`, `20`, `50`, `100`, `500`, or `1000`. The
+adapter preserves `lastUpdateId`, exchange event time `E`, transaction time
+`T`, and exact decimal bid/ask pairs. HTTP receive and availability timestamps
+remain separate local causal fields.
+
+Depth WebSockets use the routed `wss://fstream.binance.com/public/stream`
+endpoint. The existing market client remains on `/market`; it rejects depth
+subscriptions so the two route contracts cannot be mixed. Depth stream names
+are `symbol@depth`, `symbol@depth@100ms`, or `symbol@depth@1s`. Raw or combined
+messages preserve `e`, `E`, `T`, `U`, `u`, optional `pu`, symbol, exact decimal
+levels, source JSON, session ID, receive/availability timestamps, and a stable
+session sequence. A fresh BCL `ClientWebSocket` transport is created for each
+reconnect through an injectable factory.
+
+`BinanceLocalOrderBookRecovery` buffers updates under a configured count bound,
+loads a bounded REST snapshot, discards updates whose final ID is at or before
+the snapshot, and aligns the first usable update when `U <= L + 1` and
+`u >= L + 1`. Once aligned, a `pu` value must equal the current book update ID
+and ranges may not skip an update ID. A gap, rejected snapshot, exhausted
+recovery attempt bound, or buffer overflow clears the mutable working book and
+publishes an immutable `Recovering` state with no levels; callers never observe
+a partially applied book. Ready states are read-only snapshots sorted by price
+and retain snapshot/update provenance, raw exchange times, local causal times,
+and the last stable sequence. Duplicate, stale, late, parse, disconnect, gap,
+frame, recovery, and snapshot diagnostics remain observable.
+
+Official references checked for this contract: [depth REST](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book), [diff depth streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Diff-Book-Depth-Streams), [local order-book recovery](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly), and [routed WebSocket connections](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Connect).

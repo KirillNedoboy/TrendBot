@@ -1,9 +1,9 @@
 # Current checkpoint
 
 - Phase: 04 — Binance Public Market Data
-- Milestone: P04-M01 — Public REST/WebSocket adapter
-- Current task: P04-M01-T002 (DONE)
-- Next task: P04-M01-T003 (READY; first ready task with completed dependencies)
+- Milestone: P04-M03 — Bounded research capture
+- Current task: P04-M03-T001 (DONE)
+- Next tasks: P04-M02-T001 and P04-M03-T002 (READY; validator confirmed both)
 
 ## Confirmed state
 
@@ -21,12 +21,13 @@
 - `SqlitePortfolioReservationStore` registers immutable limits, reads persisted limits/reservations, and performs `TryReserve(existing OrderIntent, reservation)` in one immediate serializable transaction. Checked application arithmetic covers risk, notional, and slots; results are `Reserved`, `AlreadyReserved`, or `InsufficientCapacity`; conflicts and failures leave no partial intent/reservation mutation.
 - `tests/Fixtures/CoreFixtureVectors.cs` remains a linked test-only source in `TradingBot.Core.Tests` and `TradingBot.Replay.Tests`, using only BCL APIs and `TradingBot.Core`.
 - [`docs/architecture/core-contract-evidence.md`](docs/architecture/core-contract-evidence.md) records the current fixture identifiers and exact vector matrix. The strings are test examples, not released versions, and no global Core or wire-schema version exists.
-- [`docs/architecture/persistence.md`](docs/architecture/persistence.md) records SQLite schema versions 1 through 5, envelope, intent, portfolio-reservation, and operational migrations, append/read guarantees, and evidence limits.
+- [`docs/architecture/persistence.md`](docs/architecture/persistence.md) records SQLite schema versions 1 through 6, envelope, intent, portfolio-reservation, operational, and capture migrations, append/read guarantees, bounded segment durability, and evidence limits.
 - `SqliteEventJournal`, `SqliteOrderIntentJournal`, and `SqlitePortfolioReservationStore` share the Infrastructure initializer. They use Microsoft.Data.Sqlite 10.0.12, one non-pooled connection per operation, canonical Core JSON, WAL, `synchronous=FULL`, and BINARY identities. Existing event rows receive envelope format version 1 transactionally; operational observations and checkpoints are durable across restart.
+- `ParquetCaptureStore` uses Parquet.Net 6.1.0 plus the same SQLite initializer. One store owns one stream, rejects gaps and bounded-buffer overflow, writes fsynced temporary Parquet files before atomic rename, and commits schema-6 segment metadata/checkpoints transactionally. Reads validate scalar columns against canonical CaptureEnvelope JSON and preserve causal/provenance fields across restart.
 - `Fill`, `PortfolioPositionSnapshot`, and `ReconciliationCheckpoint` are immutable BCL-only Core contracts. Operational observations advance a portfolio revision transactionally, default to `Unreconciled`, preserve unknown/manual markers, and invalidate acknowledgement on every new revision. The retry guard requires acknowledgement and no unresolved markers. Partial fills retain the full reservation; release is idempotent and requires a current acknowledged closed-order/closed-position checkpoint.
 - `TradingBot.Exchange.Binance` now owns the public REST contract over injected `HttpClient`. `BinancePublicRestClient` uses current USD-M `/fapi/v1` market-data paths, immutable DTOs, exact decimal parsing, raw Unix-millisecond fields, cancellation, response-size limits, and observable HTTP/API/rate errors. It maps only completed klines to Core `Bar`; recent/aggregate trades, mark/history funding, and current OI map to Core events.
-- `docs/architecture/market-data.md` records the 2026-10-12 official endpoint matrix, weights/auth boundary, DTO/Core mapping decisions, and the approved WebSocket `/market` route. T002 owns WebSocket transport; T003 owns depth/orderbook recovery.
-- `BinanceMarketWebSocketClient` now uses an injected transport and `TimeProvider`, parses raw/combined fragmented messages for aggregate trades, klines, tickers, mark-price/funding, and liquidations, and emits immutable session envelopes. Reconnect/resubscribe is bounded and configurable; duplicate, conflict, late, stale, disconnect, gap, parse, and frame-limit diagnostics remain visible. The selected recovery policy is reconnect/resubscribe with explicit gap diagnostics; REST backfill is deferred to T003.
+- `docs/architecture/market-data.md` records the 2026-10-12 official endpoint matrix, weights/auth boundary, DTO/Core mapping decisions, the approved WebSocket `/market` route, and the depth `/public/stream` snapshot/diff contract. T002 owns general market transport; T003 owns depth transport and orderbook recovery.
+- `BinanceMarketWebSocketClient` uses an injected transport and `TimeProvider`, parses raw/combined fragmented messages for aggregate trades, klines, tickers, mark-price/funding, and liquidations, and emits immutable session envelopes. Reconnect/resubscribe is bounded and configurable; duplicate, conflict, late, stale, disconnect, gap, parse, and frame-limit diagnostics remain visible. Depth subscriptions are rejected on `/market` and routed through the dedicated depth client.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
 
 ## Verification evidence
@@ -91,10 +92,25 @@
 - Focused fixtures cover duplicate identity, different-value identity conflict, late event time, stale event time, aggregate-trade gaps, disconnect/reconnect/backoff/resubscribe, heartbeat, 24-hour session policy, raw/combined/fragmented frames, cancellation, causal fields, and liquidation separation. Release Exchange.Tests build with warnings as errors passed with zero warnings/errors; all Exchange.Tests passed 15/15; scoped format verification passed.
 - Documentation validation passed with first READY task `P04-M01-T003`; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
 
+## P04-M01-T003 evidence
+
+- TDD RED: `C:\temp\dotnet10\dotnet.exe test tests\TradingBot.Exchange.Binance.Tests\TradingBot.Exchange.Binance.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~BinanceDepthAndOrderBookTests` initially failed with the expected missing depth snapshot, stream, recovery, and transport-factory contracts before production implementation.
+- The depth REST adapter covers `/fapi/v1/depth`, official limits, exact-decimal levels, raw `lastUpdateId`/`E`/`T`, and local HTTP receive/availability provenance. `BinanceDepthWebSocketClient` is pinned to `/public/stream`, parses raw/combined fragmented depth updates, preserves causal envelope fields, bounds frames/messages/deduplication/reconnects, emits diagnostics, and creates a fresh transport per session through the test seam.
+- `BinanceLocalOrderBookRecovery` uses bounded snapshot/diff buffering, overlap alignment, `pu`/range contiguity checks, bounded snapshot levels and retries, fail-closed recovering states, immutable sorted ready states, and snapshot/update provenance. The existing `/market` client rejects depth subscriptions.
+- Release Exchange.Tests build with warnings as errors passed with zero warnings/errors; all Exchange.Tests passed 21/21; scoped format verification passed. Documentation validation passed with `P04-M01-T003` complete and `P04-M02-T001,P04-M03-T001` listed READY; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+
+## P04-M03-T001 evidence
+
+- TDD RED: the Core capture and Infrastructure persistence test projects initially failed with the expected missing `CaptureEnvelope`/`CaptureProvenance` and `ParquetCaptureStore`/schema-6 contracts before implementation.
+- Core adds immutable CaptureEnvelope v1, provenance, diagnostics, causal timestamps, stable/capture sequences, and depth/trade/diagnostic-only validation. Infrastructure adds Parquet.Net 6.1.0 persistence with explicit row, buffer, and byte bounds; fsynced temporary files, atomic rename, serializable segment/checkpoint commit, cleanup on failed publish, configurable flush-on-dispose, and restart validation. SQLite migration 5 -> 6 creates `capture_segments` and `capture_checkpoints` while preserving prior rows.
+- Capture tests cover canonical JSON, immutable causal/provenance fields, bounded multi-segment writes, oversize-file rejection without published metadata/file, sequence and buffer bounds, restart recovery, and 5 -> 6 migration preservation. Integration coverage closes and reopens the store with a public trade capture and verifies its checkpoint/provenance. No strategy, order, or execution state is included.
+- Unlocked and locked restore passed. Release Core.Tests, Infrastructure.Tests, IntegrationTests, and Exchange.Tests builds with warnings as errors passed with zero warnings/errors. Release suites passed Core 67/67, Infrastructure 39/39, Integration 6/6, and Exchange 21/21. Scoped C# format verification passed; documentation validation passed with `P04-M02-T001,P04-M03-T002` listed READY; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+
 ## Scope limits
 
 - P03-M01-T002 adds only the versioned replay envelope, SQLite schema 1 -> 2 migration, deterministic bounded Backtesting snapshot, focused tests, architecture notes, and this handoff.
-- P03-M02-T001 adds only durable order-intent state; P03-M02-T002 adds only passive portfolio limits/reservations, shared schema 3 -> 4 migration, and atomic intent-plus-reservation persistence; P03-M02-T003 adds only passive operational fills, position snapshots, reconciliation checkpoints, and guarded full-reservation release. Binance calls, credentials, venue adapters, execution, StrategyRun, ConfigVersion, Parquet, and recovery policy remain future tasks.
+- P03-M02-T001 adds only durable order-intent state; P03-M02-T002 adds only passive portfolio limits/reservations, shared schema 3 -> 4 migration, and atomic intent-plus-reservation persistence; P03-M02-T003 adds only passive operational fills, position snapshots, reconciliation checkpoints, and guarded full-reservation release. Binance calls, credentials, venue adapters, execution, StrategyRun, ConfigVersion, capture manifests, retention policy, and recovery policy remain future tasks.
 - P04-M01-T001 adds only public REST market-data transport/normalization and fixtures. It does not add private endpoints, credentials, orderbook/depth recovery, WebSocket transport, strategy behavior, retries, or orders.
-- P04-M01-T002 adds only public WebSocket parsing, bounded reconnect/resubscribe, causal envelopes, diagnostics, and fixtures. It does not implement local orderbook/depth snapshot alignment; that is T003.
+- P04-M01-T002 adds only public WebSocket parsing, bounded reconnect/resubscribe, causal envelopes, diagnostics, and fixtures. P04-M01-T003 adds only public depth REST/`/public/stream` transport, bounded local snapshot/diff recovery, provenance, and fixtures; it adds no private API, strategy, orders, or capture persistence.
+- P04-M03-T001 adds only passive Core capture envelopes and bounded depth/trade/diagnostic Parquet persistence with schema-6 metadata/checkpoints. It adds no strategy, orders, execution, private API, or capture manifest/retention policy.
 - Remote CI success remains unverified.

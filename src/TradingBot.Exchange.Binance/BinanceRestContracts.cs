@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Collections.ObjectModel;
+using System.Net;
 using System.Text.Json.Serialization;
 using TradingBot.Core;
 
@@ -667,6 +668,174 @@ public sealed record BinanceOpenInterest
             new InstrumentId(Symbol), new UtcTimestamp(BinanceTimestamp.ToUtc(EventTimeMilliseconds)),
             OpenInterest);
     }
+}
+
+/// <summary>A single exact-decimal Binance order-book price level.</summary>
+public record BinanceOrderBookLevel
+{
+    public BinanceOrderBookLevel(decimal price, decimal quantity)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(price, 0m);
+        ArgumentOutOfRangeException.ThrowIfNegative(quantity);
+        Price = price;
+        Quantity = quantity;
+    }
+
+    public decimal Price { get; }
+
+    public decimal Quantity { get; }
+}
+
+/// <summary>Alias-shaped depth level used by the public depth contract.</summary>
+public sealed record BinanceDepthLevel : BinanceOrderBookLevel
+{
+    public BinanceDepthLevel(decimal price, decimal quantity)
+        : base(price, quantity)
+    {
+    }
+}
+
+/// <summary>
+/// Immutable USD-M REST depth snapshot. Exchange timestamps remain raw Unix
+/// milliseconds and optional local timestamps retain HTTP provenance.
+/// </summary>
+public record BinanceOrderBookSnapshot
+{
+    public BinanceOrderBookSnapshot(long lastUpdateId, long eventTimeMilliseconds,
+        long transactionTimeMilliseconds, IEnumerable<BinanceDepthLevel> bids,
+        IEnumerable<BinanceDepthLevel> asks, string? symbol = null,
+        UtcTimestamp? receiveTime = null, UtcTimestamp? availabilityTime = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(lastUpdateId);
+        ArgumentOutOfRangeException.ThrowIfNegative(eventTimeMilliseconds);
+        ArgumentOutOfRangeException.ThrowIfNegative(transactionTimeMilliseconds);
+        if (availabilityTime is not null && receiveTime is null)
+        {
+            throw new ArgumentException(
+                "Snapshot availability time requires a receive time.", nameof(availabilityTime));
+        }
+
+        if (receiveTime is not null && availabilityTime is not null
+            && availabilityTime.Value < receiveTime.Value)
+        {
+            throw new ArgumentException("Snapshot availability cannot precede receive time.",
+                nameof(availabilityTime));
+        }
+
+        if (symbol is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        }
+
+        LastUpdateId = lastUpdateId;
+        EventTimeMilliseconds = eventTimeMilliseconds;
+        TransactionTimeMilliseconds = transactionTimeMilliseconds;
+        Symbol = symbol;
+        Bids = SnapshotLevels(bids, nameof(bids));
+        Asks = SnapshotLevels(asks, nameof(asks));
+        ReceiveTime = receiveTime;
+        AvailabilityTime = availabilityTime;
+    }
+
+    public BinanceOrderBookSnapshot(long lastUpdateId, long eventTimeMilliseconds,
+        long transactionTimeMilliseconds, IEnumerable<BinanceOrderBookLevel> bids,
+        IEnumerable<BinanceOrderBookLevel> asks, string? symbol = null,
+        UtcTimestamp? receiveTime = null, UtcTimestamp? availabilityTime = null)
+        : this(lastUpdateId, eventTimeMilliseconds, transactionTimeMilliseconds,
+            ConvertLevels(bids, nameof(bids)), ConvertLevels(asks, nameof(asks)), symbol,
+            receiveTime, availabilityTime)
+    {
+    }
+
+    public long LastUpdateId { get; }
+
+    [JsonPropertyName("E")]
+    public long EventTimeMilliseconds { get; }
+
+    [JsonPropertyName("T")]
+    public long TransactionTimeMilliseconds { get; }
+
+    [JsonIgnore]
+    public string? Symbol { get; }
+
+    public IReadOnlyList<BinanceDepthLevel> Bids { get; }
+
+    public IReadOnlyList<BinanceDepthLevel> Asks { get; }
+
+    [JsonIgnore]
+    public UtcTimestamp? ReceiveTime { get; }
+
+    [JsonIgnore]
+    public UtcTimestamp? AvailabilityTime { get; }
+
+    [JsonIgnore]
+    public UtcTimestamp EventTime => new(BinanceTimestamp.ToUtc(EventTimeMilliseconds));
+
+    [JsonIgnore]
+    public UtcTimestamp TransactionTime =>
+        new(BinanceTimestamp.ToUtc(TransactionTimeMilliseconds));
+
+    private static ReadOnlyCollection<BinanceDepthLevel> SnapshotLevels(
+        IEnumerable<BinanceDepthLevel> levels,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(levels, parameterName);
+        BinanceDepthLevel[] snapshot = levels.ToArray();
+        if (snapshot.Any(static level => level is null))
+        {
+            throw new ArgumentException("Order-book levels cannot contain null values.",
+                parameterName);
+        }
+
+        return Array.AsReadOnly(snapshot);
+    }
+
+    private static ReadOnlyCollection<BinanceDepthLevel> ConvertLevels(
+        IEnumerable<BinanceOrderBookLevel> levels,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(levels, parameterName);
+        BinanceOrderBookLevel[] snapshot = levels.ToArray();
+        if (snapshot.Any(static level => level is null))
+        {
+            throw new ArgumentException("Order-book levels cannot contain null values.",
+                parameterName);
+        }
+
+        return Array.AsReadOnly(snapshot.Select(static level => level is BinanceDepthLevel depth
+                    ? depth
+                    : new BinanceDepthLevel(level.Price, level.Quantity))
+                .ToArray());
+    }
+}
+
+/// <summary>Named depth DTO retained for callers that use the endpoint term.</summary>
+public sealed record BinanceDepthSnapshot : BinanceOrderBookSnapshot
+{
+    public BinanceDepthSnapshot(long lastUpdateId, long eventTimeMilliseconds,
+        long transactionTimeMilliseconds, IEnumerable<BinanceDepthLevel> bids,
+        IEnumerable<BinanceDepthLevel> asks, string? symbol = null,
+        UtcTimestamp? receiveTime = null, UtcTimestamp? availabilityTime = null)
+        : base(lastUpdateId, eventTimeMilliseconds, transactionTimeMilliseconds, bids, asks,
+            symbol, receiveTime, availabilityTime)
+    {
+    }
+
+    public BinanceDepthSnapshot(long lastUpdateId, long eventTimeMilliseconds,
+        long transactionTimeMilliseconds, IEnumerable<BinanceOrderBookLevel> bids,
+        IEnumerable<BinanceOrderBookLevel> asks, string? symbol = null,
+        UtcTimestamp? receiveTime = null, UtcTimestamp? availabilityTime = null)
+        : base(lastUpdateId, eventTimeMilliseconds, transactionTimeMilliseconds, bids, asks,
+            symbol, receiveTime, availabilityTime)
+    {
+    }
+}
+
+/// <summary>Source seam used by local order-book recovery and fixture tests.</summary>
+public interface IBinanceDepthSnapshotSource
+{
+    Task<BinanceDepthSnapshot> GetDepthSnapshotAsync(string symbol, int limit,
+        CancellationToken cancellationToken = default);
 }
 
 internal static class BinanceTimestamp

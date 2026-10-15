@@ -1,4 +1,5 @@
-﻿using System.Net.WebSockets;
+﻿using System.Collections.ObjectModel;
+using System.Net.WebSockets;
 using System.Text.Json.Serialization;
 using TradingBot.Core;
 
@@ -10,7 +11,8 @@ public enum BinanceWebSocketEventKind
     Kline,
     Ticker,
     MarkPrice,
-    Liquidation
+    Liquidation,
+    Depth
 }
 
 public enum BinanceStreamDiagnosticKind
@@ -23,7 +25,10 @@ public enum BinanceStreamDiagnosticKind
     Gap,
     ParseError,
     FrameTooLarge,
-    Reconnect
+    Reconnect,
+    BufferOverflow,
+    SnapshotRejected,
+    Recovery
 }
 
 /// <summary>Bounds and timing policy for the public market stream.</summary>
@@ -66,6 +71,14 @@ public sealed record BinanceSubscription
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(interval);
         }
+        else if (kind == BinanceWebSocketEventKind.Depth)
+        {
+            if (interval is not null && interval is not ("100ms" or "1s"))
+            {
+                throw new ArgumentException(
+                    "Depth update speed must be 100ms or 1s.", nameof(interval));
+            }
+        }
         else if (interval is not null)
         {
             throw new ArgumentException("Only kline subscriptions accept an interval.", nameof(interval));
@@ -100,6 +113,12 @@ public sealed record BinanceSubscription
     public static BinanceSubscription Liquidation(string symbol) =>
         new(symbol, BinanceWebSocketEventKind.Liquidation);
 
+    public static BinanceSubscription Depth(string symbol, string? updateSpeed = null) =>
+        new(symbol, BinanceWebSocketEventKind.Depth, updateSpeed);
+
+    public static BinanceSubscription Depth100Milliseconds(string symbol) =>
+        Depth(symbol, "100ms");
+
     private static string BuildStreamName(string symbol, BinanceWebSocketEventKind kind,
         string? interval)
     {
@@ -111,6 +130,9 @@ public sealed record BinanceSubscription
             BinanceWebSocketEventKind.Ticker => $"{lowerSymbol}@ticker",
             BinanceWebSocketEventKind.MarkPrice => $"{lowerSymbol}@markPrice@1s",
             BinanceWebSocketEventKind.Liquidation => $"{lowerSymbol}@forceOrder",
+            BinanceWebSocketEventKind.Depth => interval is null
+                ? $"{lowerSymbol}@depth"
+                : $"{lowerSymbol}@depth@{interval}",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
     }
@@ -142,6 +164,44 @@ public interface IBinanceWebSocketTransport : IDisposable
         CancellationToken cancellationToken);
 
     void Abort();
+}
+
+/// <summary>Creates an independent transport for each WebSocket session.</summary>
+public interface IBinanceWebSocketTransportFactory
+{
+    IBinanceWebSocketTransport Create();
+}
+
+/// <summary>Delegate-backed transport factory used by production and tests.</summary>
+public sealed class DelegateBinanceWebSocketTransportFactory : IBinanceWebSocketTransportFactory
+{
+    private readonly Func<IBinanceWebSocketTransport> _factory;
+
+    public DelegateBinanceWebSocketTransportFactory(Func<IBinanceWebSocketTransport> factory)
+    {
+        _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+    }
+
+    public IBinanceWebSocketTransport Create()
+    {
+        return _factory() ?? throw new InvalidOperationException(
+            "The WebSocket transport factory returned null.");
+    }
+}
+
+/// <summary>Default factory that creates a fresh BCL ClientWebSocket transport.</summary>
+public sealed class ClientWebSocketTransportFactory : IBinanceWebSocketTransportFactory
+{
+    private readonly TimeSpan _keepAliveInterval;
+
+    public ClientWebSocketTransportFactory(TimeSpan? keepAliveInterval = null)
+    {
+        _keepAliveInterval = keepAliveInterval ?? TimeSpan.FromSeconds(30);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_keepAliveInterval, TimeSpan.Zero);
+    }
+
+    public IBinanceWebSocketTransport Create() =>
+        new ClientWebSocketTransport(_keepAliveInterval);
 }
 
 public abstract record BinanceWebSocketEvent
@@ -373,6 +433,67 @@ public sealed record BinanceLiquidationEvent : BinanceWebSocketEvent
     public long OrderTimeMilliseconds { get; }
 
     public override MarketEvent? ToCoreEvent() => null;
+}
+
+/// <summary>Binance USD-M diff-depth update used to recover a local order book.</summary>
+public sealed record BinanceDepthUpdateEvent : BinanceWebSocketEvent
+{
+    public BinanceDepthUpdateEvent(string symbol, long eventTimeMilliseconds,
+        long firstUpdateId, long finalUpdateId, long? previousUpdateId,
+        IEnumerable<BinanceDepthLevel> bids, IEnumerable<BinanceDepthLevel> asks,
+        string streamName, long? transactionTimeMilliseconds = null)
+        : base(BinanceWebSocketEventKind.Depth,
+            $"depth:{symbol}:{firstUpdateId}:{finalUpdateId}", symbol, eventTimeMilliseconds,
+            streamName, transactionTimeMilliseconds ?? eventTimeMilliseconds)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(firstUpdateId);
+        ArgumentOutOfRangeException.ThrowIfLessThan(finalUpdateId, firstUpdateId);
+        if (previousUpdateId is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(previousUpdateId));
+        }
+
+        FirstUpdateId = firstUpdateId;
+        FinalUpdateId = finalUpdateId;
+        PreviousUpdateId = previousUpdateId;
+        Bids = Snapshot(bids, nameof(bids));
+        Asks = Snapshot(asks, nameof(asks));
+        TransactionTimeMilliseconds = transactionTimeMilliseconds ?? eventTimeMilliseconds;
+    }
+
+    public long FirstUpdateId { get; }
+
+    public long FinalUpdateId { get; }
+
+    public long? PreviousUpdateId { get; }
+
+    public long TransactionTimeMilliseconds { get; }
+
+    public IReadOnlyList<BinanceDepthLevel> Bids { get; }
+
+    public IReadOnlyList<BinanceDepthLevel> Asks { get; }
+
+    public override BookDelta ToCoreEvent()
+    {
+        return new BookDelta(EventId, new InstrumentId(Symbol), EventTime,
+            Bids.Select(static level => new BookLevel(new Price(level.Price),
+                new Quantity(level.Quantity))),
+            Asks.Select(static level => new BookLevel(new Price(level.Price),
+                new Quantity(level.Quantity))));
+    }
+
+    private static ReadOnlyCollection<BinanceDepthLevel> Snapshot(
+        IEnumerable<BinanceDepthLevel> levels, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(levels, parameterName);
+        BinanceDepthLevel[] snapshot = levels.ToArray();
+        if (snapshot.Any(static level => level is null))
+        {
+            throw new ArgumentException("Depth levels cannot contain null values.", parameterName);
+        }
+
+        return Array.AsReadOnly(snapshot);
+    }
 }
 
 public sealed record BinanceStreamEnvelope

@@ -9,7 +9,7 @@ namespace TradingBot.Infrastructure;
 /// </summary>
 internal static class SqliteDatabase
 {
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     private static readonly JournalColumn[] RequiredEventColumns =
     [
@@ -96,6 +96,8 @@ internal static class SqliteDatabase
                 MigrateV3ToV4(connection, transaction);
                 SetUserVersion(connection, transaction, 4);
                 MigrateV4ToV5(connection, transaction);
+                SetUserVersion(connection, transaction, 5);
+                MigrateV5ToV6(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
             }
             else if (lockedVersion != CurrentSchemaVersion)
@@ -107,7 +109,7 @@ internal static class SqliteDatabase
             transaction.Commit();
             version = CurrentSchemaVersion;
         }
-        else if (version is 1 or 2 or 3 or 4)
+        else if (version is 1 or 2 or 3 or 4 or 5)
         {
             using SqliteTransaction transaction = connection.BeginTransaction(
                 IsolationLevel.Serializable, deferred: false);
@@ -136,6 +138,13 @@ internal static class SqliteDatabase
             if (lockedVersion == 4)
             {
                 MigrateV4ToV5(connection, transaction);
+                SetUserVersion(connection, transaction, 5);
+                lockedVersion = 5;
+            }
+
+            if (lockedVersion == 5)
+            {
+                MigrateV5ToV6(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
                 lockedVersion = CurrentSchemaVersion;
             }
@@ -159,6 +168,7 @@ internal static class SqliteDatabase
         ValidateOrderIntentSchema(connection);
         ValidatePortfolioSchema(connection);
         ValidateOperationalSchema(connection);
+        ValidateCaptureSchema(connection);
     }
 
     private static void CreateSchemaV1(SqliteConnection connection, SqliteTransaction transaction)
@@ -282,6 +292,35 @@ internal static class SqliteDatabase
             """);
     }
 
+    private static void MigrateV5ToV6(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE capture_segments
+            (
+                segment_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                stream_id TEXT COLLATE BINARY NOT NULL,
+                file_path TEXT COLLATE BINARY NOT NULL,
+                format_version INTEGER NOT NULL,
+                row_count INTEGER NOT NULL,
+                first_capture_sequence INTEGER NOT NULL,
+                last_capture_sequence INTEGER NOT NULL,
+                first_stable_sequence INTEGER NOT NULL,
+                last_stable_sequence INTEGER NOT NULL,
+                byte_length INTEGER NOT NULL,
+                created_time_ticks INTEGER NOT NULL,
+                durable_time_ticks INTEGER NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE TABLE capture_checkpoints
+            (
+                stream_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                next_capture_sequence INTEGER NOT NULL,
+                last_durable_sequence INTEGER NOT NULL,
+                last_segment_id TEXT COLLATE BINARY NULL
+            ) WITHOUT ROWID;
+            """);
+    }
+
     private static void ValidateOrderIntentSchema(SqliteConnection connection)
     {
         using SqliteCommand command = connection.CreateCommand();
@@ -367,6 +406,40 @@ internal static class SqliteDatabase
         {
             throw new InvalidDataException(
                 $"The operational schema does not match version {CurrentSchemaVersion}.");
+        }
+    }
+
+    private static void ValidateCaptureSchema(SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name IN ('capture_segments', 'capture_checkpoints')
+            ORDER BY name;
+            """;
+        using SqliteDataReader reader = command.ExecuteReader();
+        Dictionary<string, string> definitions = new(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            definitions.Add(reader.GetString(0), reader.GetString(1));
+        }
+
+        if (!definitions.TryGetValue("capture_segments", out string? segmentsSql)
+            || segmentsSql.IndexOf("segment_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || segmentsSql.IndexOf("stream_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || segmentsSql.IndexOf("file_path TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || segmentsSql.IndexOf("row_count INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || segmentsSql.IndexOf("first_capture_sequence INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || segmentsSql.IndexOf("last_capture_sequence INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || !definitions.TryGetValue("capture_checkpoints", out string? checkpointsSql)
+            || checkpointsSql.IndexOf("stream_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || checkpointsSql.IndexOf("next_capture_sequence INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || checkpointsSql.IndexOf("last_durable_sequence INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || checkpointsSql.IndexOf("last_segment_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            throw new InvalidDataException(
+                $"The capture schema does not match version {CurrentSchemaVersion}.");
         }
     }
 

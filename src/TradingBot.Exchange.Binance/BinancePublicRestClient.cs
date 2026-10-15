@@ -43,6 +43,9 @@ public interface IBinancePublicRestClient
     Task<BinanceOpenInterest> GetOpenInterestAsync(string symbol,
         CancellationToken cancellationToken = default);
 
+    Task<BinanceDepthSnapshot> GetDepthSnapshotAsync(string symbol, int? limit = null,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<Bar>> GetClosedBarsAsync(string symbol, string interval,
         int? limit = null, DateTimeOffset? startTime = null, DateTimeOffset? endTime = null,
         CancellationToken cancellationToken = default);
@@ -69,7 +72,7 @@ public interface IBinancePublicRestClient
 /// Small public REST adapter for current Binance USD-M market data. It owns wire
 /// paths and schemas while returning passive DTOs or Core market events.
 /// </summary>
-public sealed class BinancePublicRestClient : IBinancePublicRestClient
+public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinanceDepthSnapshotSource
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly HttpClient _httpClient;
@@ -235,6 +238,53 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient
         return GetJsonAsync<BinanceOpenInterest>("/fapi/v1/openInterest",
             new Dictionary<string, string?>(StringComparer.Ordinal) { ["symbol"] = symbol },
             cancellationToken);
+    }
+
+    public async Task<BinanceDepthSnapshot> GetDepthSnapshotAsync(string symbol, int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        RequireSymbol(symbol);
+        ValidateDepthLimit(limit);
+        DateTimeOffset receiveTime = _timeProvider.GetUtcNow();
+        using JsonDocument document = await GetDocumentAsync("/fapi/v1/depth",
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["symbol"] = symbol,
+                ["limit"] = limit?.ToString(CultureInfo.InvariantCulture)
+            }, cancellationToken).ConfigureAwait(false);
+
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("The Binance depth response must be an object.");
+        }
+
+        long lastUpdateId = ReadInt64(root, "lastUpdateId");
+        long eventTimeMilliseconds = root.TryGetProperty("E", out JsonElement eventTime)
+            ? ReadInt64(eventTime)
+            : 0;
+        long transactionTimeMilliseconds = root.TryGetProperty("T", out JsonElement transactionTime)
+            ? ReadInt64(transactionTime)
+            : eventTimeMilliseconds;
+        BinanceDepthLevel[] bids = ParseDepthLevels(root, "bids");
+        BinanceDepthLevel[] asks = ParseDepthLevels(root, "asks");
+        DateTimeOffset availabilityTime = _timeProvider.GetUtcNow();
+        return new BinanceDepthSnapshot(lastUpdateId, eventTimeMilliseconds,
+            transactionTimeMilliseconds, bids, asks, symbol,
+            new UtcTimestamp(receiveTime), new UtcTimestamp(availabilityTime));
+    }
+
+    /// <summary>Alias for callers that use the Binance endpoint name.</summary>
+    public Task<BinanceDepthSnapshot> GetOrderBookAsync(string symbol, int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        return GetDepthSnapshotAsync(symbol, limit, cancellationToken);
+    }
+
+    Task<BinanceDepthSnapshot> IBinanceDepthSnapshotSource.GetDepthSnapshotAsync(
+        string symbol, int limit, CancellationToken cancellationToken)
+    {
+        return GetDepthSnapshotAsync(symbol, limit, cancellationToken);
     }
 
     public async Task<IReadOnlyList<Bar>> GetClosedBarsAsync(string symbol, string interval,
@@ -453,6 +503,39 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient
         };
     }
 
+    private static BinanceDepthLevel[] ParseDepthLevels(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement levels)
+            || levels.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException($"A Binance depth response must contain an array '{propertyName}'.");
+        }
+
+        List<BinanceDepthLevel> result = new(levels.GetArrayLength());
+        foreach (JsonElement level in levels.EnumerateArray())
+        {
+            if (level.ValueKind != JsonValueKind.Array || level.GetArrayLength() < 2)
+            {
+                throw new JsonException("A Binance depth level must contain price and quantity.");
+            }
+
+            JsonElement[] values = level.EnumerateArray().ToArray();
+            result.Add(new BinanceDepthLevel(ReadDecimal(values[0]), ReadDecimal(values[1])));
+        }
+
+        return result.ToArray();
+    }
+
+    private static long ReadInt64(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement value))
+        {
+            throw new JsonException($"A Binance depth response is missing '{propertyName}'.");
+        }
+
+        return ReadInt64(value);
+    }
+
     private static long ReadInt64(JsonElement value)
     {
         return value.ValueKind switch
@@ -508,6 +591,21 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient
         {
             throw new ArgumentOutOfRangeException(nameof(limit), limit,
                 $"Limit must be between one and {maximum}.");
+        }
+    }
+
+    private static void ValidateDepthLimit(int? limit)
+    {
+        if (limit is null)
+        {
+            return;
+        }
+
+        int value = limit.Value;
+        if (value is not (5 or 10 or 20 or 50 or 100 or 500 or 1000))
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit), value,
+                "Depth limit must be one of 5, 10, 20, 50, 100, 500, or 1000.");
         }
     }
 

@@ -19,7 +19,8 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
-    private readonly IBinanceWebSocketTransport _transport;
+    private readonly IBinanceWebSocketTransportFactory _transportFactory;
+    private IBinanceWebSocketTransport? _activeTransport;
     private readonly BinanceWebSocketOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly List<BinanceStreamDiagnostic> _diagnostics = [];
@@ -27,14 +28,29 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
     private int _commandId;
 
     public BinanceMarketWebSocketClient()
-        : this(new ClientWebSocketTransport(), new BinanceWebSocketOptions(), TimeProvider.System)
+        : this(new ClientWebSocketTransportFactory(), new BinanceWebSocketOptions(),
+            TimeProvider.System)
     {
     }
 
     public BinanceMarketWebSocketClient(IBinanceWebSocketTransport transport,
         BinanceWebSocketOptions options, TimeProvider timeProvider)
+        : this(new DelegateBinanceWebSocketTransportFactory(() => transport), options,
+            timeProvider)
     {
-        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+    }
+
+    public BinanceMarketWebSocketClient(Func<IBinanceWebSocketTransport> transportFactory,
+        BinanceWebSocketOptions options, TimeProvider timeProvider)
+        : this(new DelegateBinanceWebSocketTransportFactory(transportFactory), options,
+            timeProvider)
+    {
+    }
+
+    public BinanceMarketWebSocketClient(IBinanceWebSocketTransportFactory transportFactory,
+        BinanceWebSocketOptions options, TimeProvider timeProvider)
+    {
+        _transportFactory = transportFactory ?? throw new ArgumentNullException(nameof(transportFactory));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         ValidateOptions(_options);
@@ -57,6 +73,13 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
         }
 
         BinanceSubscription[] snapshot = subscriptions.ToArray();
+        if (snapshot.Any(static subscription => subscription.Kind
+            == BinanceWebSocketEventKind.Depth))
+        {
+            throw new ArgumentException(
+                "Depth subscriptions must use BinanceDepthWebSocketClient on /public/stream.",
+                nameof(subscriptions));
+        }
         Dictionary<string, BinanceWebSocketEvent> deduplication = new(StringComparer.Ordinal);
         Queue<string> deduplicationOrder = new();
         Dictionary<string, long> latestEventTimeByStream = new(StringComparer.Ordinal);
@@ -75,7 +98,9 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
 
             try
             {
-                await _transport.ConnectAsync(_options.BaseAddress, cancellationToken)
+                DisposeActiveTransport();
+                _activeTransport = _transportFactory.Create();
+                await Transport.ConnectAsync(_options.BaseAddress, cancellationToken)
                     .ConfigureAwait(false);
                 await SendSubscriptionsAsync(snapshot, cancellationToken).ConfigureAwait(false);
             }
@@ -241,7 +266,7 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
         }
 
         _disposed = true;
-        _transport.Dispose();
+        DisposeActiveTransport();
     }
 
     private async Task<BinanceWebSocketReceiveResult> ReceiveWithTimeoutAsync(
@@ -249,13 +274,13 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
     {
         if (_options.ReceiveTimeout == Timeout.InfiniteTimeSpan)
         {
-            return await _transport.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+            return await Transport.ReceiveAsync(cancellationToken).ConfigureAwait(false);
         }
 
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
         timeout.CancelAfter(_options.ReceiveTimeout);
-        return await _transport.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+        return await Transport.ReceiveAsync(timeout.Token).ConfigureAwait(false);
     }
 
     private async Task SendSubscriptionsAsync(IReadOnlyList<BinanceSubscription> subscriptions,
@@ -293,8 +318,17 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
     private async Task SendCommandAsync<T>(T command, CancellationToken cancellationToken)
     {
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(command, CommandJsonOptions);
-        await _transport.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken)
+        await Transport.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private IBinanceWebSocketTransport Transport =>
+        _activeTransport ?? throw new InvalidOperationException("The WebSocket transport is not active.");
+
+    private void DisposeActiveTransport()
+    {
+        _activeTransport?.Dispose();
+        _activeTransport = null;
     }
 
     private static BinanceWebSocketEvent ParseEvent(string rawJson)

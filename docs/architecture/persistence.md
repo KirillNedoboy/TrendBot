@@ -11,7 +11,10 @@ checkpoints. SqliteEventJournal
 records artificial causal events in a file-backed SQLite database so a process
 restart does not remove the event payload, its causal metadata, or the envelope
 format version. TradingBot.Core remains BCL-only; the runtime persistence
-package is Microsoft.Data.Sqlite 10.0.12 in Infrastructure.
+package is Microsoft.Data.Sqlite 10.0.12 in Infrastructure. P04-M03-T001 adds
+the passive version-one CaptureEnvelope for depth, trades, and diagnostics and
+stores bounded capture segments with Parquet.Net 6.1.0. Capture persistence
+does not contain strategy, order, or execution state.
 
 ## API and migration
 
@@ -56,12 +59,18 @@ The synchronous API is intentionally small:
   reservation released only after the acknowledged current checkpoint shows
   no open intent and a closed associated position. Repeating the release is
   idempotent.
+- ParquetCaptureStore.Open(databasePath, segmentDirectory, options) opens the
+  shared schema for one explicitly named capture stream. Append accepts only
+  version-one depth, trade, or diagnostic CaptureEnvelope values and assigns no
+  sequence implicitly. Flush publishes bounded Parquet segments and updates
+  their SQLite metadata/checkpoint atomically; ReadAllAsync reconstructs and
+  validates immutable envelopes after restart.
 
 Each operation opens and closes its own connection. Connection strings disable
 pooling and use a positive finite command timeout. SQL values are parameters;
 schema-version PRAGMAs contain only the internal constant version. The event,
-intent, and reservation stores use the shared initializer, WAL mode, and
-synchronous=FULL.
+intent, reservation, and capture stores use the shared initializer, WAL mode,
+and synchronous=FULL.
 
 Schema version 0 means an empty SQLite file. The transactional 0 -> 1
 migration creates the original event_journal; the transactional 1 -> 2
@@ -69,15 +78,17 @@ migration adds envelope_version with value 1 for every existing row; and the
 transactional 2 -> 3 migration adds order_intents. The transactional 3 -> 4
 migration adds portfolios and reservations, and the transactional 4 -> 5
 migration adds the reservation release marker, fills, position snapshots, and
-reconciliation checkpoints without rewriting event_journal or order_intents.
+reconciliation checkpoints. The transactional 5 -> 6 migration adds capture
+segment metadata and per-stream checkpoints without rewriting any existing
+journal, intent, portfolio, reservation, or operational rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. Version 5 is validated before use,
-including BINARY collation on event, intent, portfolio, reservation, fill, and
-snapshot identities. The 2 -> 3, 3 -> 4, and 4 -> 5 migrations preserve
-existing event and intent rows.
+rejected without replacing existing tables. Version 6 is validated before use,
+including BINARY collation on event, intent, portfolio, reservation, fill,
+snapshot, and capture identities. The 2 -> 3, 3 -> 4, 4 -> 5, and 5 -> 6
+migrations preserve existing rows.
 
-The version-2 event table, retained in schema version 5, is:
+The version-2 event table, retained in schema version 6, is:
 
 | Column | Meaning |
 |---|---|
@@ -107,7 +118,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 5, are:
+The version-4 portfolio tables, retained in schema version 6, are:
 
 | Table | Stored state |
 |---|---|
@@ -125,7 +136,7 @@ without inserting an intent or reservation. Identity conflicts, missing
 portfolios, currency mismatches, write-lock failures, and invalid persisted
 state fail without partial mutation.
 
-The version-5 operational tables are:
+The version-5 operational tables, retained in schema version 6, are:
 
 | Table | Stored state |
 |---|---|
@@ -147,6 +158,31 @@ stays counted through partial fills. Release marks that complete reservation
 only after an acknowledged current checkpoint confirms the order is closed and
 every latest associated position snapshot is closed; repeated release leaves
 the durable state unchanged.
+
+The version-6 capture tables are:
+
+| Table | Stored state |
+|---|---|
+| capture_segments | One atomically published Parquet segment per stream, with format version, row and capture/stable sequence bounds, byte length, and created/durable UTC ticks |
+| capture_checkpoints | One per-stream next capture sequence, last durable sequence, and last durable segment identity |
+
+`ParquetCaptureStore` owns one stream per store instance. `MaxBufferedRows`,
+`MaxRowsPerSegment`, and `MaxSegmentBytes` are explicit positive limits;
+appends reject stream mismatches, sequence gaps, and a full in-memory buffer.
+Flush writes a temporary Parquet file, flushes it to disk, atomically renames
+it, and commits the segment metadata and checkpoint in one serializable SQLite
+transaction. If size validation or the metadata transaction fails, the
+published file is removed and the buffered rows remain pending. `FlushOnDispose`
+is configurable and defaults to durable flushing. Restart requires contiguous
+segment metadata and a checkpoint that matches the final segment.
+
+Each Parquet row includes bounded scalar columns and canonical CaptureEnvelope
+JSON. Reads validate both representations, preserving event, receive,
+availability, and optional exchange times, stable and capture sequences,
+source/session/stream provenance, raw payload, and quality flags. Capture
+envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
+this boundary records public depth/trades/diagnostics without strategy, order,
+or execution state.
 
 ## Append and read guarantees
 
@@ -191,12 +227,18 @@ operational state tests cover causal fill and position persistence across
 restart, duplicate and conflicting observations, aggregate fill overflow,
 stale revisions, acknowledgement invalidation, unknown/manual retry guards,
 partial-fill reservation retention, idempotent release, and 4 -> 5 migration
-preservation of events, intents, portfolios, and reservations.
+preservation of events, intents, portfolios, and reservations. The
+ParquetCaptureStore tests cover bounded multi-segment writes, exact causal and
+provenance restoration after restart, sequence/checkpoint validation, buffer
+and segment-byte limits, and 5 -> 6 migration preservation of prior journal
+rows. Capture integration tests close and reopen the store and verify the
+version-one envelope, source provenance, raw payload, stable sequence, and
+durable checkpoint.
 ArchitectureTests confirms Infrastructure still references Core without
 referencing Exchange, Backtesting, or App.
 
-The journal, snapshot builder, reservation store, and operational state store
-remain bounded recording and view boundaries. They do not provide a full replay
-runner, StrategyRun or ConfigVersion persistence, Parquet storage, venue
-adapters, execution, or recovery policy. Those guarantees belong to later
-Phase 3 and Phase 12 tasks.
+The journal, snapshot builder, reservation store, operational state store, and
+capture store remain bounded recording and view boundaries. They do not provide
+a full replay runner, StrategyRun or ConfigVersion persistence, venue adapters,
+execution, or orderbook recovery policy. Those guarantees belong to later
+Phase 3, Phase 4, and Phase 12 tasks.

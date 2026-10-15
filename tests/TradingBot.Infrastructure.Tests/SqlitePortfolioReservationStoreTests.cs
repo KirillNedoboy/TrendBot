@@ -362,7 +362,7 @@ public sealed class SqlitePortfolioReservationStoreTests
 
         using SqlitePortfolioReservationStore migrated = SqlitePortfolioReservationStore.Open(database.Path);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(5L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(6L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(0L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM portfolios;"));
         Assert.Equal(0L, ExecuteScalar<long>(verify,
