@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 04 — Binance Public Market Data
-- Milestone: P04-M03 — Bounded research capture
-- Current task: P04-M03-T001 (DONE)
-- Next tasks: P04-M02-T001 and P04-M03-T002 (READY; validator confirmed both)
+- Phase: 04 — Binance Private Protocol and bounded research capture
+- Milestone: P04-M02 — Private protocol evidence
+- Current task: P04-M02-T003 (DONE)
+- Next task: P04-M03-T002 (READY; validator confirmed)
 
 ## Confirmed state
 
@@ -106,6 +106,24 @@
 - Capture tests cover canonical JSON, immutable causal/provenance fields, bounded multi-segment writes, oversize-file rejection without published metadata/file, sequence and buffer bounds, restart recovery, and 5 -> 6 migration preservation. Integration coverage closes and reopens the store with a public trade capture and verifies its checkpoint/provenance. No strategy, order, or execution state is included.
 - Unlocked and locked restore passed. Release Core.Tests, Infrastructure.Tests, IntegrationTests, and Exchange.Tests builds with warnings as errors passed with zero warnings/errors. Release suites passed Core 67/67, Infrastructure 39/39, Integration 6/6, and Exchange 21/21. Scoped C# format verification passed; documentation validation passed with `P04-M02-T001,P04-M03-T002` listed READY; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
 
+## P04-M02-T001 evidence
+
+- `docs/architecture/private-protocol.md` catalogs all current USDⓈ-M private REST methods in the official Account and Trade sections, including Algo methods, plus the three listenKey methods and the current user-data event inventory.
+- Each endpoint row records method, full production URL, confirmed parameters and response fields or `UNKNOWN`, security/signature, published IP/order limits or `UNKNOWN`, documented errors/time constraints, official source URL, and checked date 2026-10-15. The New Algo Order narrative versus `type` enum conflict is explicitly `NEEDS_VALIDATION`; no client behavior is inferred from it.
+- Official source review, `pwsh -NoProfile -File tools/validate-docs.ps1`, `git diff --check`, and canonical source SHA-256 verification passed. No Binance API endpoint, private credential, or order was used.
+
+## P04-M02-T002 evidence
+
+- Test-only synthetic fixtures and helpers in `tests/TradingBot.Exchange.Binance.Tests` preserve the confirmed `ALGO_UPDATE` envelope fields `e`, `E`, `T`, and opaque object `o` from the official schema checked 2026-10-15. Nested `o` content remains opaque where the official schema does not confirm it.
+- Fixtures keep the algo identifier separate from the session/stable-sequence event identity, retain exchange `E`/`T` and local receive/availability timestamps, and cover repeated payloads, same-algo state transitions, equal and late exchange timestamps, unknown fields/status values, and malformed confirmed fields. No global identifier uniqueness or transport/auth behavior is assumed.
+- Focused `BinanceAlgoProtocolFixtureTests` passed 5/5. Exchange.Tests Release build with `--warnaserror` passed with 0 warnings and 0 errors; scoped C# format verification, documentation validation, `git diff --check`, and canonical source SHA-256 verification passed. No Binance API endpoint, credential, or order was used.
+
+## P04-M02-T003 evidence
+
+- `docs/architecture/private-protocol.md` now records the official General Info and user-data freshness/error rules checked 2026-10-15, including explicit synthetic test intervals, project TTL `UNKNOWN`, listenKey expiry/disconnect handling, clock skew, rate/auth diagnostics, HTTP 503 variants, and reconciliation for unknown outcomes. It records that an absent order response does not prove non-execution and that ordinary-order guarantees are not transferred to Algo without an official source.
+- `BinancePrivateProtocolEvidenceEvaluator` is test-only and returns diagnostic reasons only. `BinancePrivateProtocolEvidenceTests` covers incomplete/stale evidence, unknown statuses, disconnect/listenKey expiry, clock skew, rate limits, authentication failures, ambiguous outcomes, missing order responses, and 503 unknown/service-unavailable/internal/throttled variants. Combined Algo/evidence fixture tests passed 15/15.
+- Exchange.Tests Release build with `--warnaserror` passed with 0 warnings and 0 errors; scoped C# format verification, documentation validation, `git diff --check`, and canonical source SHA-256 verification passed. No Binance API endpoint, credential, or order was used.
+
 ## Scope limits
 
 - P03-M01-T002 adds only the versioned replay envelope, SQLite schema 1 -> 2 migration, deterministic bounded Backtesting snapshot, focused tests, architecture notes, and this handoff.
@@ -113,4 +131,8 @@
 - P04-M01-T001 adds only public REST market-data transport/normalization and fixtures. It does not add private endpoints, credentials, orderbook/depth recovery, WebSocket transport, strategy behavior, retries, or orders.
 - P04-M01-T002 adds only public WebSocket parsing, bounded reconnect/resubscribe, causal envelopes, diagnostics, and fixtures. P04-M01-T003 adds only public depth REST/`/public/stream` transport, bounded local snapshot/diff recovery, provenance, and fixtures; it adds no private API, strategy, orders, or capture persistence.
 - P04-M03-T001 adds only passive Core capture envelopes and bounded depth/trade/diagnostic Parquet persistence with schema-6 metadata/checkpoints. It adds no strategy, orders, execution, private API, or capture manifest/retention policy.
+- P04-M02-T001 adds only the official-source private protocol catalogue and user-data event inventory; it adds no private transport, credentials, signing implementation, order, or execution behavior.
+- P04-M02-T002 adds only synthetic Algo Service/`ALGO_UPDATE` fixtures and test-only parsing/identity helpers; it adds no production transport, authorization, private API call, order, or Core contract.
+- P04-M02-T003 adds only a test-only freshness/error diagnostic evaluator and evidence matrix documentation; it adds no execution permission, retry logic, private transport, credential, order, or Core contract.
+- `P05-M01-T001` remains explicitly blocked by this run's P04-M02 scope gate even though its dependency is now complete; startup must select the earlier READY `P04-M03-T002` before Phase 05 work.
 - Remote CI success remains unverified.
