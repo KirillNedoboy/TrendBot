@@ -184,6 +184,65 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
+## Capture manifest and retention evidence
+
+`CaptureDatasetManifest` is an immutable format-one metadata record for one
+capture stream at one durable `CaptureCheckpoint`. It records the manifest and
+stream identities, fixed checkpoint, allowlisted segment IDs and format/row,
+capture/stable sequence, byte, created, and durable-time bounds, aggregate byte
+and record counts, source/instrument/session provenance, observed event/receive/
+availability bounds, an explicit ordering rule, configured capture bounds, and
+separate gap and exclusion evidence with reason, scope, and evidence provenance.
+Coverage is `Unknown`; an empty gap list does not claim complete exchange
+history, and an unknown time or sequence boundary remains null. The exported
+manifest contains no raw payload, local segment path, or secret-bearing source
+metadata. Source URLs with userinfo, sensitive query keys, absolute local paths,
+or listenKey-like values are rejected.
+
+`CaptureDatasetManifestBuilder` first captures the durable checkpoint and reads
+Parquet segments through a bounded incremental iterator with explicit segment and
+record limits. It validates the durable rows and checks that the checkpoint is
+unchanged when aggregation completes; no whole-history read API is used by this
+manifest path. `CaptureDatasetManifestStore` writes UTF-8 JSON to a fsynced
+temporary file and atomically replaces the manifest. Reopen requires the same
+stream and checkpoint.
+
+`CaptureManifestRetentionPolicy` keeps maximum age and total-byte limits nullable;
+null means `UNKNOWN` and supplies no project default. `CaptureRetentionPlanner`
+accepts a caller-supplied UTC `asOf` for a dry-run. Age compares that time with
+each segment's durable time. When a byte limit is known, oldest segments are
+selected by durable time and then first capture sequence until the limit is
+met; each candidate carries all applicable reasons. With both limits unknown,
+the result is `UNKNOWN` with no candidates. The planner has no deletion or
+checkpoint mutation operation.
+
+## Capture quality evidence
+
+`CaptureQualitySnapshot` is an immutable format-one record linked to a manifest
+ID and exact durable checkpoint. Its builder reads the same bounded segment and
+record range incrementally and records durable row count, one-per-record counts
+for the documented `gap`, `duplicate`, `missing-field`, `clock-skew`, and
+`stale` signals, unknown diagnostic-code count, event-to-receive latency
+minimum/maximum/average, and last receive time. A signal represented by both a
+quality flag and a diagnostic code is counted once for that record. Unknown
+quality flags do not become documented signals. Stable-sequence gaps and
+latency values do not infer exchange gaps or clock skew.
+
+Freshness, provider silence, and clock-skew assessments use only caller-supplied
+positive thresholds and an explicit UTC `asOf`. Missing thresholds produce
+`Unknown`; an empty stream or no-new-record case is `Silent` when provider
+silence has a known threshold. All threshold values remain caller evidence;
+there are no project TTL or numeric defaults. `CaptureQualitySnapshotStore`
+atomically persists JSON and rejects a snapshot linked to another manifest or
+checkpoint.
+
+`CaptureQualityMetricsPublisher` uses BCL `System.Diagnostics.Metrics` with
+fixed instrument names and no dynamic IDs or high-cardinality tags. Counter
+updates are keyed by a stable snapshot fingerprint, so rereading one snapshot
+does not double-count. Observable gauges expose last receive and the three
+low-cardinality status values. This publisher has no transport or execution
+permission behavior.
+
 ## Append and read guarantees
 
 The caller assigns stable sequences. A new row must be greater than the current
@@ -233,7 +292,14 @@ provenance restoration after restart, sequence/checkpoint validation, buffer
 and segment-byte limits, and 5 -> 6 migration preservation of prior journal
 rows. Capture integration tests close and reopen the store and verify the
 version-one envelope, source provenance, raw payload, stable sequence, and
-durable checkpoint.
+durable checkpoint. `CaptureDatasetManifestTests` cover allowlisted manifest
+export without payloads or absolute paths, source metadata rejection,
+fixed-checkpoint reopen, fully unknown retention, and durable-time/sequence
+retention ordering. The tests use synthetic capture rows and do not call Binance
+or delete capture data.
+`CaptureQualitySnapshotTests` cover known and duplicate evidence, unknown codes
+and thresholds, equal/late times, empty/no-new silence, restart determinism, and
+actual `MeterListener` measurements.
 ArchitectureTests confirms Infrastructure still references Core without
 referencing Exchange, Backtesting, or App.
 

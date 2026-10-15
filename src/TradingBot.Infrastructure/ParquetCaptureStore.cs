@@ -221,6 +221,8 @@ public sealed class ParquetCaptureStore : IDisposable, IAsyncDisposable
 
     public string SegmentDirectory => _segmentDirectory;
 
+    public CapturePersistenceOptions Options => _options;
+
     public int BufferedRowCount => _buffer.Count;
 
     public CaptureCheckpoint Checkpoint => _checkpoint;
@@ -362,6 +364,53 @@ public sealed class ParquetCaptureStore : IDisposable, IAsyncDisposable
         }
     }
 
+    public async IAsyncEnumerable<CaptureEnvelope> ReadSegmentsAsync(
+        long maxSegments,
+        long maxRecords,
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxSegments);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRecords);
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            long segmentCount = 0;
+            long recordCount = 0;
+            foreach (CaptureSegmentMetadata segment in _segments.OrderBy(
+                static item => item.FirstCaptureSequence))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                segmentCount = checked(segmentCount + 1);
+                if (segmentCount > maxSegments)
+                {
+                    throw new InvalidOperationException(
+                        "The incremental capture read exceeded its segment bound.");
+                }
+
+                CaptureEnvelope[] rows = await ReadSegmentAsync(segment, cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (CaptureEnvelope envelope in rows)
+                {
+                    recordCount = checked(recordCount + 1);
+                    if (recordCount > maxRecords)
+                    {
+                        throw new InvalidOperationException(
+                            "The incremental capture read exceeded its record bound.");
+                    }
+
+                    yield return envelope;
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -404,6 +453,43 @@ public sealed class ParquetCaptureStore : IDisposable, IAsyncDisposable
             _gate.Dispose();
             GC.SuppressFinalize(this);
         }
+    }
+
+    private static async Task<CaptureEnvelope[]> ReadSegmentAsync(
+        CaptureSegmentMetadata segment,
+        CancellationToken cancellationToken)
+    {
+        await using FileStream source = new(segment.Path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
+        Parquet.Serialization.DeserializationResult<CaptureParquetRow> deserialized =
+            await ParquetSerializer.DeserializeAsync<CaptureParquetRow>(source,
+                new ParquetOptions(), cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        CaptureParquetRow[] rows = deserialized.Data.ToArray();
+        if (rows.Length != segment.RowCount)
+        {
+            throw new InvalidDataException(
+                $"Capture segment {segment.SegmentId} row count does not match metadata.");
+        }
+
+        List<CaptureEnvelope> envelopes = [];
+        long expectedSequence = segment.FirstCaptureSequence;
+        foreach (CaptureParquetRow row in rows)
+        {
+            CaptureEnvelope envelope = CoreJsonSerializer.Deserialize<CaptureEnvelope>(
+                row.EnvelopeJson);
+            ValidateRow(envelope, row);
+            if (envelope.CaptureSequence != expectedSequence)
+            {
+                throw new InvalidDataException(
+                    "Capture Parquet rows are not contiguous within the segment.");
+            }
+
+            expectedSequence = checked(expectedSequence + 1);
+            envelopes.Add(envelope);
+        }
+
+        return envelopes.ToArray();
     }
 
     private async Task<CaptureSegmentMetadata> PublishSegmentAsync(
