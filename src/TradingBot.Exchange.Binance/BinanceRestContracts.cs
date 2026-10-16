@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using TradingBot.Core;
 
@@ -98,7 +99,8 @@ public sealed record BinanceSymbolFilter
     public BinanceSymbolFilter(string filterType, decimal? minPrice = null,
         decimal? maxPrice = null, decimal? tickSize = null, decimal? minQuantity = null,
         decimal? maxQuantity = null, decimal? stepSize = null, decimal? multiplierUp = null,
-        decimal? multiplierDown = null, int? limit = null)
+        decimal? multiplierDown = null, int? limit = null, decimal? notional = null,
+        int? multiplierDecimal = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filterType);
         FilterType = filterType;
@@ -111,6 +113,8 @@ public sealed record BinanceSymbolFilter
         MultiplierUp = multiplierUp;
         MultiplierDown = multiplierDown;
         Limit = limit;
+        Notional = notional;
+        MultiplierDecimal = multiplierDecimal;
     }
 
     public string FilterType { get; }
@@ -138,6 +142,24 @@ public sealed record BinanceSymbolFilter
     public decimal? MultiplierDown { get; }
 
     public int? Limit { get; }
+
+    [JsonPropertyName("notional")]
+    public decimal? Notional { get; }
+
+    [JsonPropertyName("multiplierDecimal")]
+    public int? MultiplierDecimal { get; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> UnknownFields { get; init; } = new(StringComparer.Ordinal);
+
+    public ExchangeMetadataFilter ToCoreMetadataFilter()
+    {
+        return new ExchangeMetadataFilter(FilterType, MinPrice, MaxPrice, TickSize,
+            MinQuantity, MaxQuantity, StepSize, Notional, MultiplierUp, MultiplierDown,
+            MultiplierDecimal, Limit, UnknownFields.OrderBy(static field => field.Key,
+                StringComparer.Ordinal).Select(static field => new MetadataFilterField(
+                    field.Key, field.Value.GetRawText())));
+    }
 }
 
 public sealed record BinanceSymbolInfo
@@ -149,7 +171,10 @@ public sealed record BinanceSymbolInfo
         string marginAsset, int pricePrecision, int quantityPrecision,
         int baseAssetPrecision, int quotePrecision,
         IReadOnlyList<BinanceSymbolFilter>? filters = null,
-        IReadOnlyList<string>? orderTypes = null, IReadOnlyList<string>? timeInForce = null)
+        IReadOnlyList<string>? orderTypes = null, IReadOnlyList<string>? timeInForce = null,
+        string? underlyingType = null, IReadOnlyList<string>? underlyingSubType = null,
+        int? settlePlan = null, decimal? triggerProtect = null,
+        decimal? liquidationFee = null, decimal? marketTakeBound = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentException.ThrowIfNullOrWhiteSpace(pair);
@@ -182,6 +207,12 @@ public sealed record BinanceSymbolInfo
         Filters = Snapshot(filters);
         OrderTypes = Snapshot(orderTypes);
         TimeInForce = Snapshot(timeInForce);
+        UnderlyingType = underlyingType;
+        UnderlyingSubType = Snapshot(underlyingSubType);
+        SettlePlan = settlePlan;
+        TriggerProtect = triggerProtect;
+        LiquidationFee = liquidationFee;
+        MarketTakeBound = marketTakeBound;
     }
 
     public string Symbol { get; }
@@ -222,6 +253,42 @@ public sealed record BinanceSymbolInfo
 
     public IReadOnlyList<string> TimeInForce { get; }
 
+    public string? UnderlyingType { get; }
+
+    public IReadOnlyList<string> UnderlyingSubType { get; }
+
+    public int? SettlePlan { get; }
+
+    public decimal? TriggerProtect { get; }
+
+    public decimal? LiquidationFee { get; }
+
+    public decimal? MarketTakeBound { get; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> UnknownFields { get; init; } = new(StringComparer.Ordinal);
+
+    public ExchangeEligibilityMetadata ToCoreEligibilityMetadata(UtcTimestamp receiveTime,
+        UtcTimestamp availabilityTime)
+    {
+        ArgumentNullException.ThrowIfNull(receiveTime);
+        ArgumentNullException.ThrowIfNull(availabilityTime);
+        return new ExchangeEligibilityMetadata(new InstrumentId(Symbol), Pair, ContractType, Status,
+            BaseAsset, QuoteAsset, MarginAsset,
+            new UtcTimestamp(BinanceTimestamp.ToUtc(OnboardDateMilliseconds)),
+            new UtcTimestamp(BinanceTimestamp.ToUtc(DeliveryDateMilliseconds)),
+            PricePrecision, QuantityPrecision, BaseAssetPrecision, QuotePrecision,
+            MaintMarginPercent, RequiredMarginPercent,
+            Filters.Select(static filter => filter.ToCoreMetadataFilter()),
+            UnknownFields.OrderBy(static field => field.Key, StringComparer.Ordinal)
+                .Select(static field => new MetadataField(field.Key, field.Value.GetRawText())),
+            receiveTime, availabilityTime, UnderlyingType, UnderlyingSubType, SettlePlan,
+            TriggerProtect, LiquidationFee, MarketTakeBound);
+    }
+
+    public ExchangeEligibilityMetadata ToCoreMetadata(UtcTimestamp receiveTime,
+        UtcTimestamp availabilityTime) => ToCoreEligibilityMetadata(receiveTime, availabilityTime);
+
     private static T[] Snapshot<T>(IEnumerable<T>? values)
     {
         return values is null ? Array.Empty<T>() : values.ToArray();
@@ -234,7 +301,8 @@ public sealed record BinanceExchangeInfo
     public BinanceExchangeInfo(string timezone, long serverTimeMilliseconds,
         IReadOnlyList<BinanceRateLimit>? rateLimits = null,
         IReadOnlyList<BinanceAssetInfo>? assets = null,
-        IReadOnlyList<BinanceSymbolInfo>? symbols = null)
+        IReadOnlyList<BinanceSymbolInfo>? symbols = null,
+        IReadOnlyList<string>? exchangeFilters = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(timezone);
         Timezone = timezone;
@@ -242,6 +310,7 @@ public sealed record BinanceExchangeInfo
         RateLimits = Snapshot(rateLimits);
         Assets = Snapshot(assets);
         Symbols = Snapshot(symbols);
+        ExchangeFilters = Snapshot(exchangeFilters);
     }
 
     public string Timezone { get; }
@@ -254,6 +323,44 @@ public sealed record BinanceExchangeInfo
     public IReadOnlyList<BinanceAssetInfo> Assets { get; }
 
     public IReadOnlyList<BinanceSymbolInfo> Symbols { get; }
+
+    public IReadOnlyList<string> ExchangeFilters { get; }
+
+    [JsonIgnore]
+    public UtcTimestamp? ReceiveTime { get; init; }
+
+    [JsonIgnore]
+    public UtcTimestamp? AvailabilityTime { get; init; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> UnknownFields { get; init; } = new(StringComparer.Ordinal);
+
+    public BinanceExchangeInfo WithProvenance(UtcTimestamp receiveTime,
+        UtcTimestamp availabilityTime)
+    {
+        ArgumentNullException.ThrowIfNull(receiveTime);
+        ArgumentNullException.ThrowIfNull(availabilityTime);
+        if (availabilityTime.Value < receiveTime.Value)
+        {
+            throw new ArgumentException("Exchange-info availability cannot precede receive time.",
+                nameof(availabilityTime));
+        }
+
+        return this with { ReceiveTime = receiveTime, AvailabilityTime = availabilityTime };
+    }
+
+    public IReadOnlyList<ExchangeEligibilityMetadata> ToCoreEligibilityMetadata()
+    {
+        UtcTimestamp receiveTime = ReceiveTime
+            ?? throw new InvalidOperationException("Exchange-info receive time is unavailable.");
+        UtcTimestamp availabilityTime = AvailabilityTime
+            ?? throw new InvalidOperationException("Exchange-info availability time is unavailable.");
+        return Symbols.Select(symbol => symbol.ToCoreEligibilityMetadata(receiveTime,
+            availabilityTime)).ToArray();
+    }
+
+    public IReadOnlyList<ExchangeEligibilityMetadata> ToCoreMetadata() =>
+        ToCoreEligibilityMetadata();
 
     private static T[] Snapshot<T>(IEnumerable<T>? values)
     {

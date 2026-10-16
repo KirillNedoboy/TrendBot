@@ -40,6 +40,95 @@ public sealed class BinanceRestClientTests
     }
 
     [Fact]
+    public async Task ExchangeInfoRetainsOfficialFilterExtensionsAndMapsLocalProvenance()
+    {
+        DateTimeOffset receive = new(2026, 10, 16, 8, 0, 0, TimeSpan.Zero);
+        DateTimeOffset availability = receive.AddMilliseconds(37);
+        FixtureHandler handler = new(_ => Json("""
+            {
+              "timezone":"UTC","serverTime":1700000000123,
+              "exchangeFilters":["futureExchangeFilter"],
+              "rateLimits":[{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":2400}],
+              "assets":[{"asset":"USDT","marginAvailable":true,"autoAssetExchange":"-1"}],
+              "symbols":[{
+                "symbol":"BTCUSDT","pair":"BTCUSDT","contractType":"PERPETUAL",
+                "deliveryDate":4133404800000,"onboardDate":1502942420000,"status":"TRADING",
+                "maintMarginPercent":"2.5000","requiredMarginPercent":"5.0000",
+                "baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT",
+                "pricePrecision":2,"quantityPrecision":3,"baseAssetPrecision":8,"quotePrecision":8,
+                "underlyingType":"COIN","underlyingSubType":["STORAGE"],"settlePlan":0,
+                "triggerProtect":"0.1500","liquidationFee":"0.010000","marketTakeBound":"0.30",
+                "newSymbolField":["A","B"],
+                "filters":[
+                  {"filterType":"PRICE_FILTER","minPrice":"0.01000000","maxPrice":"1000000.00000000","tickSize":"0.01000000","multiplierDecimal":"4","newFilterField":"0.00000000000000000001"},
+                  {"filterType":"LOT_SIZE","minQty":"0.00100000","maxQty":"100000.00000000","stepSize":"0.00100000"},
+                  {"filterType":"MIN_NOTIONAL","notional":"5.00000000000000000001"}
+                ]
+              }]
+            }
+            """));
+        BinancePublicRestClient client = CreateClient(handler,
+            new SteppingTimeProvider(receive, availability));
+
+        BinanceExchangeInfo info = await client.GetExchangeInfoAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(["futureExchangeFilter"], info.ExchangeFilters);
+        Assert.Equal(new UtcTimestamp(receive), info.ReceiveTime);
+        Assert.Equal(new UtcTimestamp(availability), info.AvailabilityTime);
+        Assert.Equal("[\"A\",\"B\"]", info.Symbols[0].UnknownFields["newSymbolField"].GetRawText());
+        Assert.Equal("0.00000000000000000001", info.Symbols[0].Filters[0].UnknownFields["newFilterField"].GetString());
+        Assert.Equal(0.1500m, info.Symbols[0].TriggerProtect);
+        Assert.Equal(0.010000m, info.Symbols[0].LiquidationFee);
+        Assert.Equal(0.30m, info.Symbols[0].MarketTakeBound);
+        Assert.Equal(4, info.Symbols[0].Filters[0].MultiplierDecimal);
+        Assert.Equal(5.00000000000000000001m, info.Symbols[0].Filters[2].Notional);
+        Assert.Equal(1502942420000L, info.Symbols[0].OnboardDateMilliseconds);
+
+        ExchangeEligibilityMetadata metadata = Assert.Single(info.ToCoreEligibilityMetadata());
+        Assert.Equal(new InstrumentId("BTCUSDT"), metadata.InstrumentId);
+        Assert.Equal(new UtcTimestamp(receive), metadata.ReceiveTime);
+        Assert.Equal(new UtcTimestamp(availability), metadata.AvailabilityTime);
+        Assert.Equal(5.00000000000000000001m, metadata.Filters.Single(static filter => filter.FilterType == "MIN_NOTIONAL").Notional);
+        Assert.Equal("0.00000000000000000001", metadata.Filters.Single(static filter => filter.FilterType == "PRICE_FILTER").UnknownFields.Single().RawValue.Trim('"'));
+    }
+
+    [Fact]
+    public async Task ExchangeInfoReceiveTimeIsCapturedAfterTheResponseArrives()
+    {
+        DateTimeOffset requestStart = new(2026, 10, 16, 8, 0, 0, TimeSpan.Zero);
+        DateTimeOffset responseReceived = requestStart.AddSeconds(2);
+        AdjustableTimeProvider timeProvider = new(requestStart);
+        FixtureHandler handler = new(_ =>
+        {
+            timeProvider.SetUtcNow(responseReceived);
+            return Json("""{"timezone":"UTC","serverTime":1,"symbols":[]}""");
+        });
+        BinancePublicRestClient client = CreateClient(handler, timeProvider);
+
+        BinanceExchangeInfo info = await client.GetExchangeInfoAsync(
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(new UtcTimestamp(responseReceived), info.ReceiveTime);
+    }
+
+    private sealed class SteppingTimeProvider : TimeProvider
+    {
+        private readonly DateTimeOffset _receive;
+        private readonly DateTimeOffset _availability;
+        private int _calls;
+
+        public SteppingTimeProvider(DateTimeOffset receive, DateTimeOffset availability)
+        {
+            _receive = receive;
+            _availability = availability;
+        }
+
+        public override DateTimeOffset GetUtcNow() => Interlocked.Increment(ref _calls) == 1
+            ? _receive
+            : _availability;
+    }
+
+    [Fact]
     public async Task TickersAcceptObjectAndArrayResponsesWithExactDecimals()
     {
         FixtureHandler handler = new(request => request.RequestUri!.AbsolutePath switch
@@ -214,6 +303,20 @@ public sealed class BinanceRestClientTests
         {
             _utcNow = utcNow;
         }
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+    }
+
+    private sealed class AdjustableTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow;
+
+        public AdjustableTimeProvider(DateTimeOffset utcNow)
+        {
+            _utcNow = utcNow;
+        }
+
+        public void SetUtcNow(DateTimeOffset utcNow) => _utcNow = utcNow;
 
         public override DateTimeOffset GetUtcNow() => _utcNow;
     }

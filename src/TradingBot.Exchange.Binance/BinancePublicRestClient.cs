@@ -11,6 +11,9 @@ public interface IBinancePublicRestClient
 {
     Task<BinanceExchangeInfo> GetExchangeInfoAsync(CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<ExchangeEligibilityMetadata>> GetExchangeEligibilityMetadataAsync(
+        CancellationToken cancellationToken = default);
+
     Task<BinanceServerTime> GetServerTimeAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<BinancePriceTicker>> GetPriceTickersAsync(string? symbol = null,
@@ -102,11 +105,23 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinance
     public long LastOpenInterestRawTimeMilliseconds => Interlocked.Read(
         ref _lastOpenInterestRawTimeMilliseconds);
 
-    public Task<BinanceExchangeInfo> GetExchangeInfoAsync(
+    public async Task<BinanceExchangeInfo> GetExchangeInfoAsync(
         CancellationToken cancellationToken = default)
     {
-        return GetJsonAsync<BinanceExchangeInfo>("/fapi/v1/exchangeInfo",
-            new Dictionary<string, string?>(StringComparer.Ordinal), cancellationToken);
+        using JsonDocument document = await GetDocumentAsync("/fapi/v1/exchangeInfo",
+            new Dictionary<string, string?>(StringComparer.Ordinal), cancellationToken)
+            .ConfigureAwait(false);
+        UtcTimestamp receiveTime = new(_timeProvider.GetUtcNow());
+        BinanceExchangeInfo info = document.RootElement.Deserialize<BinanceExchangeInfo>(JsonOptions)
+            ?? throw new JsonException("The Binance response for /fapi/v1/exchangeInfo was null.");
+        return info.WithProvenance(receiveTime, new UtcTimestamp(_timeProvider.GetUtcNow()));
+    }
+
+    public async Task<IReadOnlyList<ExchangeEligibilityMetadata>>
+        GetExchangeEligibilityMetadataAsync(CancellationToken cancellationToken = default)
+    {
+        BinanceExchangeInfo info = await GetExchangeInfoAsync(cancellationToken).ConfigureAwait(false);
+        return info.ToCoreEligibilityMetadata();
     }
 
     public Task<BinanceServerTime> GetServerTimeAsync(
