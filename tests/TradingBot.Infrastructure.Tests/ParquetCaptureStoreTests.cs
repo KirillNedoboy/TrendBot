@@ -74,6 +74,7 @@ public sealed class ParquetCaptureStoreTests
             downgrade.Open();
             ExecuteNonQuery(downgrade, "DROP TABLE capture_segments;");
             ExecuteNonQuery(downgrade, "DROP TABLE capture_checkpoints;");
+            ExecuteNonQuery(downgrade, "DROP TABLE screener_snapshots;");
             ExecuteNonQuery(downgrade, "PRAGMA user_version = 5;");
         }
 
@@ -93,7 +94,7 @@ public sealed class ParquetCaptureStoreTests
         }.ConnectionString))
         {
             connection.Open();
-            Assert.Equal(6L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
+            Assert.Equal(7L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
             Assert.Equal(1L, ExecuteScalar<long>(connection,
                 "SELECT COUNT(*) FROM event_journal WHERE stream_id = 'trade-stream';"));
             Assert.Equal(1L, ExecuteScalar<long>(connection,

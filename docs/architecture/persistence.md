@@ -14,7 +14,10 @@ format version. TradingBot.Core remains BCL-only; the runtime persistence
 package is Microsoft.Data.Sqlite 10.0.12 in Infrastructure. P04-M03-T001 adds
 the passive version-one CaptureEnvelope for depth, trades, and diagnostics and
 stores bounded capture segments with Parquet.Net 6.1.0. Capture persistence
-does not contain strategy, order, or execution state.
+does not contain strategy, order, or execution state. P05-M02-T003 adds the
+immutable Core `ScreenerSnapshot` and its SHA-256 keyed SQLite store; screener
+persistence records only deterministic feature output, configuration, causal
+input, and provenance.
 
 ## API and migration
 
@@ -65,12 +68,17 @@ The synchronous API is intentionally small:
   sequence implicitly. Flush publishes bounded Parquet segments and updates
   their SQLite metadata/checkpoint atomically; ReadAllAsync reconstructs and
   validates immutable envelopes after restart.
+- SqliteScreenerSnapshotStore.Open(databasePath, commandTimeoutSeconds = 30)
+  opens the shared schema and applies the supported migration.
+- SqliteScreenerSnapshotStore.Append(snapshot) stores the canonical Core JSON
+  under its 32-byte SHA-256 identity and returns false for an identical retry;
+  `Find(snapshotId)` reconstructs and validates the immutable snapshot.
 
 Each operation opens and closes its own connection. Connection strings disable
 pooling and use a positive finite command timeout. SQL values are parameters;
 schema-version PRAGMAs contain only the internal constant version. The event,
-intent, reservation, and capture stores use the shared initializer, WAL mode,
-and synchronous=FULL.
+intent, reservation, capture, and screener snapshot stores use the shared
+initializer, WAL mode, and synchronous=FULL.
 
 Schema version 0 means an empty SQLite file. The transactional 0 -> 1
 migration creates the original event_journal; the transactional 1 -> 2
@@ -80,15 +88,18 @@ migration adds portfolios and reservations, and the transactional 4 -> 5
 migration adds the reservation release marker, fills, position snapshots, and
 reconciliation checkpoints. The transactional 5 -> 6 migration adds capture
 segment metadata and per-stream checkpoints without rewriting any existing
-journal, intent, portfolio, reservation, or operational rows.
+journal, intent, portfolio, reservation, or operational rows. The
+transactional 6 -> 7 migration adds `screener_snapshots` without rewriting any
+prior rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. Version 6 is validated before use,
-including BINARY collation on event, intent, portfolio, reservation, fill,
-snapshot, and capture identities. The 2 -> 3, 3 -> 4, 4 -> 5, and 5 -> 6
-migrations preserve existing rows.
+rejected without replacing existing tables. Version 7 is validated before use,
+including BINARY collation on event, intent, portfolio, reservation, fill, and
+capture text identities plus BLOB storage for screener snapshot identities.
+The 2 -> 3, 3 -> 4, 4 -> 5, 5 -> 6, and 6 -> 7 migrations preserve existing
+rows.
 
-The version-2 event table, retained in schema version 6, is:
+The version-2 event table, retained in schema version 7, is:
 
 | Column | Meaning |
 |---|---|
@@ -118,7 +129,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 6, are:
+The version-4 portfolio tables, retained in schema version 7, are:
 
 | Table | Stored state |
 |---|---|
@@ -136,7 +147,7 @@ without inserting an intent or reservation. Identity conflicts, missing
 portfolios, currency mismatches, write-lock failures, and invalid persisted
 state fail without partial mutation.
 
-The version-5 operational tables, retained in schema version 6, are:
+The version-5 operational tables, retained in schema version 7, are:
 
 | Table | Stored state |
 |---|---|
@@ -159,7 +170,7 @@ only after an acknowledged current checkpoint confirms the order is closed and
 every latest associated position snapshot is closed; repeated release leaves
 the durable state unchanged.
 
-The version-6 capture tables are:
+The version-6 capture tables, retained in schema version 7, are:
 
 | Table | Stored state |
 |---|---|
@@ -183,6 +194,23 @@ source/session/stream provenance, raw payload, and quality flags. Capture
 envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
+
+The version-7 screener snapshot table is:
+
+| Column | Meaning |
+|---|---|
+| snapshot_id | 32-byte SHA-256 identity of canonical snapshot JSON, BLOB primary key |
+| format_version | Supported `ScreenerSnapshot` record format |
+| formula_version | Supported screener formula version, compared with BINARY collation |
+| snapshot_json | Canonical Core JSON excluding `snapshot_id` |
+
+The table is WITHOUT ROWID. `ScreenerSnapshot` normalizes its configuration,
+causal input observations, feature order, and reasons before computing the
+identity. It carries no wall-clock or current-time field. Reads reject malformed
+JSON, unsupported format/formula versions, non-canonical payloads, row metadata
+mismatches, and identity mismatches. Appends use an immediate serializable
+transaction; identical retries commit and return false, while a failed or
+conflicting append leaves no partial row.
 
 ## Capture manifest and retention evidence
 
@@ -261,6 +289,11 @@ InvalidDataException; SQLite provider errors remain provider errors. The
 journal does not apply cursor filtering or replay ordering beyond returning the
 stream's stable-sequence order.
 
+Screener snapshot reads reconstruct the immutable Core record from canonical
+JSON and verify its SHA-256 identity before returning. The persisted input,
+configuration, cursor, and feature quality metadata can be passed back to the
+pure calculator to reproduce the stored feature values without a clock.
+
 ReplaySnapshotBuilder in TradingBot.Backtesting builds one immutable
 ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
 first, then orders eligible events by payload EventTime and StableSequence.
@@ -290,7 +323,11 @@ preservation of events, intents, portfolios, and reservations. The
 ParquetCaptureStore tests cover bounded multi-segment writes, exact causal and
 provenance restoration after restart, sequence/checkpoint validation, buffer
 and segment-byte limits, and 5 -> 6 migration preservation of prior journal
-rows. Capture integration tests close and reopen the store and verify the
+rows. `SqliteScreenerSnapshotStoreTests` cover canonical identity, reordered
+equivalent inputs, format/formula rejection, corruption, idempotent retry,
+rollback under a held writer, close/reopen, populated schema-6 to schema-7
+migration preservation, and re-evaluation from persisted input. Capture
+integration tests close and reopen the store and verify the
 version-one envelope, source provenance, raw payload, stable sequence, and
 durable checkpoint. `CaptureDatasetManifestTests` cover allowlisted manifest
 export without payloads or absolute paths, source metadata rejection,
