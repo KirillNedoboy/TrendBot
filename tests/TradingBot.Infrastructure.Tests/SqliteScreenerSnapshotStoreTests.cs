@@ -55,6 +55,7 @@ public sealed class SqliteScreenerSnapshotStoreTests
         using (SqliteConnection downgrade = OpenRaw(database.Path))
         {
             ExecuteNonQuery(downgrade, "DROP TABLE screener_snapshots;");
+            ExecuteNonQuery(downgrade, "DROP TABLE universe_selection_snapshots;");
             ExecuteNonQuery(downgrade, "PRAGMA user_version = 6;");
         }
 
@@ -62,7 +63,7 @@ public sealed class SqliteScreenerSnapshotStoreTests
             database.Path);
         Assert.True(store.Append(expected));
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(7L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(8L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM event_journal WHERE stream_id = 'stream-a';"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,

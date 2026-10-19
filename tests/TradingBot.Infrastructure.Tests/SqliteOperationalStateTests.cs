@@ -244,7 +244,7 @@ public sealed class SqliteOperationalStateTests
 
         using SqlitePortfolioReservationStore store = OpenStore(database.Path);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(7L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(8L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(marketEvent, Assert.Single(SqliteEventJournal.Open(database.Path).ReadStream("stream-a")));
         Assert.Equal(intent, SqliteOrderIntentJournal.Open(database.Path).Find(intent.IntentId));
         Assert.Equal(limits, store.FindLimits(portfolioId));

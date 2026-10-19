@@ -9,7 +9,7 @@ namespace TradingBot.Infrastructure;
 /// </summary>
 internal static class SqliteDatabase
 {
-    public const int CurrentSchemaVersion = 7;
+    public const int CurrentSchemaVersion = 8;
 
     private static readonly JournalColumn[] RequiredEventColumns =
     [
@@ -100,6 +100,8 @@ internal static class SqliteDatabase
                 MigrateV5ToV6(connection, transaction);
                 SetUserVersion(connection, transaction, 6);
                 MigrateV6ToV7(connection, transaction);
+                SetUserVersion(connection, transaction, 7);
+                MigrateV7ToV8(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
             }
             else if (lockedVersion != CurrentSchemaVersion)
@@ -111,7 +113,7 @@ internal static class SqliteDatabase
             transaction.Commit();
             version = CurrentSchemaVersion;
         }
-        else if (version is 1 or 2 or 3 or 4 or 5 or 6)
+        else if (version is 1 or 2 or 3 or 4 or 5 or 6 or 7)
         {
             using SqliteTransaction transaction = connection.BeginTransaction(
                 IsolationLevel.Serializable, deferred: false);
@@ -154,6 +156,13 @@ internal static class SqliteDatabase
             if (lockedVersion == 6)
             {
                 MigrateV6ToV7(connection, transaction);
+                SetUserVersion(connection, transaction, 7);
+                lockedVersion = 7;
+            }
+
+            if (lockedVersion == 7)
+            {
+                MigrateV7ToV8(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
                 lockedVersion = CurrentSchemaVersion;
             }
@@ -179,6 +188,7 @@ internal static class SqliteDatabase
         ValidateOperationalSchema(connection);
         ValidateCaptureSchema(connection);
         ValidateScreenerSnapshotSchema(connection);
+        ValidateUniverseSelectionSnapshotSchema(connection);
     }
 
     private static void CreateSchemaV1(SqliteConnection connection, SqliteTransaction transaction)
@@ -339,6 +349,19 @@ internal static class SqliteDatabase
                 snapshot_id BLOB NOT NULL PRIMARY KEY,
                 format_version INTEGER NOT NULL,
                 formula_version TEXT COLLATE BINARY NOT NULL,
+                snapshot_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            """);
+    }
+
+    private static void MigrateV7ToV8(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE universe_selection_snapshots
+            (
+                snapshot_id BLOB NOT NULL PRIMARY KEY,
+                format_version INTEGER NOT NULL,
+                algorithm_version TEXT COLLATE BINARY NOT NULL,
                 snapshot_json TEXT NOT NULL
             ) WITHOUT ROWID;
             """);
@@ -507,6 +530,50 @@ internal static class SqliteDatabase
         {
             throw new InvalidDataException(
                 $"The screener_snapshots schema does not match version {CurrentSchemaVersion}.");
+        }
+    }
+
+    private static void ValidateUniverseSelectionSnapshotSchema(SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(universe_selection_snapshots);";
+        using SqliteDataReader reader = command.ExecuteReader();
+
+        List<JournalColumn> actualColumns = [];
+        while (reader.Read())
+        {
+            actualColumns.Add(new JournalColumn(reader.GetString(1), reader.GetString(2),
+                reader.GetInt32(3), reader.GetInt32(5)));
+        }
+
+        JournalColumn[] requiredColumns =
+        [
+            new("snapshot_id", "BLOB", 1, 1),
+            new("format_version", "INTEGER", 1, 0),
+            new("algorithm_version", "TEXT", 1, 0),
+            new("snapshot_json", "TEXT", 1, 0)
+        ];
+        if (!requiredColumns.SequenceEqual(actualColumns))
+        {
+            throw new InvalidDataException(
+                $"The universe_selection_snapshots schema does not match version {CurrentSchemaVersion}.");
+        }
+
+        using SqliteCommand sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'universe_selection_snapshots';
+            """;
+        string? createSql = sqlCommand.ExecuteScalar() as string;
+        if (createSql is null
+            || createSql.IndexOf("snapshot_id BLOB", StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("algorithm_version TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("WITHOUT ROWID", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            throw new InvalidDataException(
+                $"The universe_selection_snapshots schema does not match version {CurrentSchemaVersion}.");
         }
     }
 
