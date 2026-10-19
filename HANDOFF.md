@@ -2,8 +2,8 @@
 
 - Phase: 06 — Price and context features
 - Milestone: P06-M01 — Price and context features
-- Current task: P06-M01-T001 (DONE)
-- Next task: P06-M01-T002 (READY; validator confirmed after T001 completion)
+- Current task: P06-M01-T003 (DONE after independent replay regression vectors)
+- Next task: P06-M02-T001 (READY; docs validator confirms after T003 completion)
 
 ## Confirmed state
 
@@ -234,3 +234,24 @@
 - `RollingIndicatorCalculator` is a pure BCL-only Core calculator for ATR, SMA/EMA/WMA/RMA, and RVOL. The explicit `rolling-v1` configuration has no defaults, weights, thresholds, or TTLs. It filters event time, availability time, stable sequence, and closed-bar time at one `CausalEventCursor`, respects `HistoryStart`, calculates recursive seeds from the full available history, and retains canonical input, seed, quality, warmup, and exclusion provenance.
 - Checked decimal arithmetic reports overflow and zero RVOL denominators explicitly. Exact duplicates collapse deterministically; conflicts and timeframe gaps block readiness without filling. Future or unavailable observations cannot alter an earlier cursor result. Strict Core JSON round trip, culture/permutation determinism, empty-input warmup, invalid configuration/input states, and Core immutability/boundary fixtures are covered.
 - Focused rolling fixtures passed 9/9. Affected screener/serialization/boundary fixtures passed: `ScreenerFeatureCalculatorTests` 13/13, `ScreenerSnapshotContractTests` 3/3, `CoreJsonSerializationTests` 7/7, `ArchitectureTests` 1/1, and `CoreBoundaryTests` 2/2. Locked Core.Tests restore and Release Core.Tests build with warnings as errors passed with zero warnings/errors; scoped format verification, documentation validation, `git diff --check`, and canonical source SHA-256 verification passed. P06-M01-T002 is the next validator-confirmed READY task and was not implemented.
+
+## P06-M01-T002 evidence
+
+- TDD RED: `C:\Users\Администратор\.dotnet\dotnet.exe test tests\TradingBot.Core.Tests\TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PriceContextFeatureTests"` initially failed at compile time with the expected missing `PriceVolumeObservation` Core contract before production implementation.
+- `PriceContextFeatureCalculator` adds immutable `price-context-v1` Core contracts and pure calculations for one-bar floor pivots, rolling dynamic support/resistance, a configured Donchian-style channel, exact caller-supplied price-volume VWAP, explicitly binned POC, and configured SMA/EMA/WMA/RMA trend state. All lookbacks, POC bin size, moving-average kind, and version are caller supplied; missing or unsupported values remain feature-local unknown states.
+- Causal selection applies inclusive event-time, availability-time, stable-sequence, and closed-bar bounds at one cursor. Canonical duplicate handling, conflicting/gapped input quality, late/future reasons, checked decimal overflow, zero-volume denominators, culture/permutation stability, and strict `CoreJsonSerializer` round trip are covered. OHLCV is never substituted for exact VWAP/POC source data.
+- Focused PriceContextFeatureTests passed 7/7. Release Core.Tests build with warnings as errors passed with zero warnings/errors. Scoped format verification over `PriceContextFeatureContracts.cs` and `PriceContextFeatureTests.cs` passed. After the T002 row transition, `pwsh -NoProfile -File tools/validate-docs.ps1` passed with `ready=P06-M01-T003`.
+
+## P06-M01-T003 evidence
+
+- `PriceContextReplayRegressionTests` adds eleven independent, hand-specified vectors for cursor-by-cursor batch/prefix replay parity, future-data no-lookahead, strict pivot confirmation timing, EMA/RMA close and HLC3 EMA/RMA centers, ATR and population-standard-deviation widths, frozen ATR break equality/wick/reversal, HTF distinct-bar confirmation and candidate/unknown reset including a pending Bear duplicate, late availability, duplicate/conflict handling, invalid/oversized/warmup/decimal-overflow configuration, exact population-SD sqrt rounding, permutation/culture determinism, and strict JSON round trip.
+- Focused replay vectors passed 11/11; all PriceContext tests passed 27/27; RollingIndicator tests passed 9/9; Core JSON/boundary tests passed 9/9. Release Core.Tests build with `--warnaserror` passed with zero warnings/errors, scoped C# format verification passed, and the canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- `pwsh -NoProfile -File tools/validate-docs.ps1` passed with `phases=19, milestones=41, tasks=119, ready=P06-M02-T001` after the T003 row transition. `git diff --check` passed. No calculator or contract changes were needed for T003; no persistence, strategy, ranking, API, order, execution, or later Phase 6/7 behavior was added.
+
+## P06 correction review and restart
+
+- The earlier P06-M01-T002 evidence above records the original `price-context-v1` implementation and is superseded: review against canonical source §§7–10 and 13 found floor pivots, rolling extrema, a Donchian channel, and MA-cross trend instead of the specified confirmed structural pivots, ATR channel, dynamic trend rules, and separate HTF context. Invalid numeric periods and enum values also escaped as exceptions rather than feature-local unknown results.
+- P06-M01-T002 was reopened as `IN_PROGRESS`, and the original v1 completion proof is superseded. Final review also found that an invalid unused ATR smoothing enum blocked a StandardDeviation channel; a red/green regression fixed the feature-local configuration dependency. Corrected T002 and the independent T003 replay regression are now `DONE`; P06-M02-T001 is now `READY`.
+- Corrective work uses explicit configuration, strict full-window pivots with causal confirmation, nullable ATR evidence when a confirmation-time buffer cannot be calculated, frozen-buffer role reversal, caller-selected EMA/RMA smoothing for HLC3, ATR or population-standard-deviation channel width, local trend, and HTF confirmed context. Shared rolling math kernels preserve `rolling-v1` operation order. The source specification remains immutable.
+- Final T002 verification: focused PriceContext, RollingIndicator, JSON serialization, Core boundary, and architecture tests passed 35/35; Core.Tests Release build with `--warnaserror` had 0 warnings/errors; scoped format, `git diff --check`, canonical source SHA-256, and `tools/validate-docs.ps1` passed. The validator reports `ready=P06-M01-T003`.
+- T003 evidence above records the independent cursor-by-cursor replay, no-lookahead, strict pivot, late-data, duplicate/conflict, culture, serialization, pending-duplicate, reset, and deterministic population-SD vectors and their focused verification results. The validator confirms `P06-M02-T001` as the next READY task.
