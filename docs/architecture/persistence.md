@@ -21,6 +21,10 @@ input, and provenance. P05-M01-T003 adds the immutable Core
 `StagedSelectionChainSnapshot` store; universe persistence records the shared
 cursor, stage inputs/evidence, configurations, selected membership, exclusions,
 stage references, and replay provenance under a canonical SHA-256 identity.
+P06-M02-T002 adds the immutable `FeatureQualitySnapshot` Core record and its
+transactional SQLite store; feature-quality persistence retains complete
+feature inputs, explicit TTL policy, causal cursor, formula versions, and
+derived readiness evidence under a canonical SHA-256 identity.
 
 ## API and migration
 
@@ -83,12 +87,23 @@ The synchronous API is intentionally small:
   three-stage chain JSON under its 32-byte SHA-256 identity and returns false
   for an identical retry; `Find(snapshotId)` accepts either canonical hex or a
   32-byte BLOB identity and reconstructs, replays, and validates the chain.
+- SqliteFeatureQualitySnapshotStore.Open(databasePath, commandTimeoutSeconds = 30)
+  opens the shared schema and applies the supported migration.
+- SqliteFeatureQualitySnapshotStore.Append(snapshot) stores canonical feature
+  quality JSON under its 32-byte SHA-256 identity and returns false for an
+  identical retry; `Find(snapshotId)` accepts canonical hex or a 32-byte BLOB
+  identity and validates format, algorithm, canonical JSON, identity, and
+  recomputed quality.
+- FeatureQualityMetricsPublisher publishes fixed low-cardinality readiness,
+  reason, market-data-age, availability-age, and known-coverage instruments;
+  unknown ages and coverage remain explicit measurements.
 
 Each operation opens and closes its own connection. Connection strings disable
 pooling and use a positive finite command timeout. SQL values are parameters;
 schema-version PRAGMAs contain only the internal constant version. The event,
-intent, reservation, capture, screener snapshot, and universe selection stores use the shared
-initializer, WAL mode, and synchronous=FULL.
+intent, reservation, capture, screener snapshot, universe selection, and
+feature quality stores use the shared initializer, WAL mode, and
+synchronous=FULL.
 
 Schema version 0 means an empty SQLite file. The transactional 0 -> 1
 migration creates the original event_journal; the transactional 1 -> 2
@@ -102,15 +117,18 @@ journal, intent, portfolio, reservation, or operational rows. The
 transactional 6 -> 7 migration adds `screener_snapshots` without rewriting any
 prior rows. The transactional 7 -> 8 migration adds
 `universe_selection_snapshots` without rewriting any prior rows.
+The transactional 8 -> 9 migration adds `feature_quality_snapshots` without
+rewriting any prior rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. Version 8 is validated before use,
+rejected without replacing existing tables. Version 9 is validated before use,
 including BINARY collation on event, intent, portfolio, reservation, fill,
-capture, screener formula, and selection algorithm text identities plus BLOB
-storage for screener and staged-selection snapshot identities. The 2 -> 3,
-3 -> 4, 4 -> 5, 5 -> 6, 6 -> 7, and 7 -> 8 migrations preserve existing rows.
+capture, screener formula, selection algorithm, and feature-quality algorithm
+text identities plus BLOB storage for screener, staged-selection, and
+feature-quality snapshot identities. The 2 -> 3, 3 -> 4, 4 -> 5, 5 -> 6,
+6 -> 7, 7 -> 8, and 8 -> 9 migrations preserve existing rows.
 
-The version-2 event table, retained in schema version 8, is:
+The version-2 event table, retained in schema version 9, is:
 
 | Column | Meaning |
 |---|---|
@@ -140,7 +158,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 8, are:
+The version-4 portfolio tables, retained in schema version 9, are:
 
 | Table | Stored state |
 |---|---|
@@ -158,7 +176,7 @@ without inserting an intent or reservation. Identity conflicts, missing
 portfolios, currency mismatches, write-lock failures, and invalid persisted
 state fail without partial mutation.
 
-The version-5 operational tables, retained in schema version 8, are:
+The version-5 operational tables, retained in schema version 9, are:
 
 | Table | Stored state |
 |---|---|
@@ -181,7 +199,7 @@ only after an acknowledged current checkpoint confirms the order is closed and
 every latest associated position snapshot is closed; repeated release leaves
 the durable state unchanged.
 
-The version-6 capture tables, retained in schema version 8, are:
+The version-6 capture tables, retained in schema version 9, are:
 
 | Table | Stored state |
 |---|---|
@@ -206,7 +224,7 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
-The version-7 screener snapshot table, retained in schema version 8, is:
+The version-7 screener snapshot table, retained in schema version 9, is:
 
 | Column | Meaning |
 |---|---|
@@ -223,7 +241,7 @@ mismatches, and identity mismatches. Appends use an immediate serializable
 transaction; identical retries commit and return false, while a failed or
 conflicting append leaves no partial row.
 
-The version-8 staged-selection chain table is:
+The version-8 staged-selection chain table, retained in schema version 9, is:
 
 | Column | Meaning |
 |---|---|
@@ -331,6 +349,19 @@ ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
 first, then orders eligible events by payload EventTime and StableSequence.
 Receive time is retained metadata and is never substituted for event time.
 
+The version-9 feature-quality snapshot table is:
+
+| Column | Meaning |
+|---|---|
+| snapshot_id | 32-byte SHA-256 identity of canonical feature-quality JSON, BLOB primary key |
+| format_version | Supported `FeatureQualitySnapshot` record format |
+| algorithm_version | Supported `feature-quality-v1` algorithm version, compared with BINARY collation |
+| snapshot_json | Canonical Core JSON containing complete inputs, policy, cursor, formula versions, and quality |
+
+The table is WITHOUT ROWID. Reads reject malformed, unsupported, non-canonical,
+identity-mismatched, or quality-inconsistent content. Appends use an immediate
+serializable transaction and are idempotent for an identical canonical row.
+
 ## Evidence and limits
 
 tests/TradingBot.Infrastructure.Tests/SqliteEventJournalTests.cs,
@@ -354,7 +385,7 @@ partial-fill reservation retention, idempotent release, and 4 -> 5 migration
 preservation of events, intents, portfolios, and reservations. The
 ParquetCaptureStore tests cover bounded multi-segment writes, exact causal and
 provenance restoration after restart, sequence/checkpoint validation, buffer
-and segment-byte limits, and migration from schema 5 through schema 8 while
+and segment-byte limits, and migration from schema 5 through schema 9 while
 preserving prior journal rows. `SqliteScreenerSnapshotStoreTests` cover canonical identity, reordered
 equivalent inputs, format/formula rejection, corruption, idempotent retry,
 rollback under a held writer, close/reopen, populated schema-6 through schema-8
@@ -363,7 +394,10 @@ migration preservation, and re-evaluation from persisted input. The
 string/BLOB lookup, idempotent retry, close/reopen, stage provenance and replay,
 format/algorithm/content/identity/row-metadata/canonical rejection, rollback
 under a held writer, exact schema validation, and populated schema-7 to schema-8
-migration preservation. Capture
+migration preservation. `SqliteFeatureQualitySnapshotStoreTests` cover canonical
+identity, idempotent retry, close/reopen, schema 8 -> 9 migration
+preservation, strict row validation, and quality metrics through a
+`MeterListener`. Capture
 integration tests close and reopen the store and verify the
 version-one envelope, source provenance, raw payload, stable sequence, and
 durable checkpoint. `CaptureDatasetManifestTests` cover allowlisted manifest

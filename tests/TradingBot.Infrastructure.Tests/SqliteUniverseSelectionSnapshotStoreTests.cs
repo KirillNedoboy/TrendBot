@@ -173,7 +173,7 @@ public sealed class SqliteUniverseSelectionSnapshotStoreTests
         using SqliteUniverseSelectionSnapshotStore migrated =
             SqliteUniverseSelectionSnapshotStore.Open(database.Path);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(8L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(9L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.True(migrated.Append(expected));
         Assert.Equal(prior, Assert.Single(
             SqliteEventJournal.Open(database.Path).ReadStream("stream-a")));
@@ -214,7 +214,7 @@ public sealed class SqliteUniverseSelectionSnapshotStoreTests
         using SqliteUniverseSelectionSnapshotStore migrated =
             SqliteUniverseSelectionSnapshotStore.Open(database.Path);
         using SqliteConnection afterRetry = OpenRaw(database.Path);
-        Assert.Equal(8L, ExecuteScalar<long>(afterRetry, "PRAGMA user_version;"));
+        Assert.Equal(9L, ExecuteScalar<long>(afterRetry, "PRAGMA user_version;"));
     }
 
     [Fact]

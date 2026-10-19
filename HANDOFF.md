@@ -2,8 +2,8 @@
 
 - Phase: 06 — Price and context features
 - Milestone: P06-M01 — Price and context features
-- Current task: P06-M01-T003 (DONE after independent replay regression vectors)
-- Next task: P06-M02-T001 (READY; docs validator confirms after T003 completion)
+- Current task: P06-M02-T003 (DONE after independent quality and persistence regression fixtures)
+- Next task: P07-M01-T001 (READY; P13-M01-T001 is also READY at the milestone boundary)
 
 ## Confirmed state
 
@@ -39,6 +39,14 @@
 - `docs/architecture/market-data.md` records the 2026-10-12 public endpoint matrix, the 2026-10-16 exchangeInfo/filter facts, weights/auth boundary, DTO/Core mapping decisions, the approved WebSocket `/market` route, and the depth `/public/stream` snapshot/diff contract. T002 owns general market transport; T003 owns depth transport and orderbook recovery.
 - `BinanceMarketWebSocketClient` uses an injected transport and `TimeProvider`, parses raw/combined fragmented messages for aggregate trades, klines, tickers, mark-price/funding, and liquidations, and emits immutable session envelopes. Reconnect/resubscribe is bounded and configurable; duplicate, conflict, late, stale, disconnect, gap, parse, and frame-limit diagnostics remain visible. Depth subscriptions are rejected on `/market` and routed through the dedicated depth client.
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
+
+## P06-M02-T001 evidence
+
+- TDD RED: `C:\Users\Администратор\.dotnet\dotnet.exe test tests\TradingBot.Core.Tests\TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FeatureQualityEvaluatorTests"` failed with the expected missing `FeatureQualityEvaluation`, `FeatureQualityEvaluator`, policy, evidence, and enum contracts before implementation.
+- `FeatureQualityEvaluator` is an independent BCL-only quality boundary for `rolling-v1` and `price-context-v2`. It preserves calculator formulas and serialized contracts, reads no clock, accepts nullable rolling/setup/HTF/price-volume TTLs without defaults, computes market-data age from bar close/event time and availability age from local availability against the result cursor, and treats equality with TTL as fresh and values above TTL as stale. Missing and non-positive TTLs remain unknown.
+- Immutable per-feature evidence retains original state/completeness, source formula version, derived freshness, both ages, TTL, known/required counts, bounded coverage, duplicate/gap/conflict/incomplete reasons, and fail-closed readiness. Exact duplicates are canonicalized once while their diagnostics remain visible; stale, unknown, incomplete, gapped, or conflicting inputs cannot produce ready quality evidence.
+- TDD GREEN: focused FeatureQualityEvaluatorTests passed 3/3; affected RollingIndicatorTests and PriceContextFeatureTests passed 25/25; Core.Tests Release build with `--warnaserror` passed with zero warnings/errors; scoped `dotnet format --verify-no-changes` passed after normalizing new files to repository CRLF/encoding. Architecture details are recorded in [`docs/architecture/feature-quality.md`](docs/architecture/feature-quality.md).
+- `pwsh -NoProfile -File tools/validate-docs.ps1` is required immediately after this transition; the expected next validator-selected task is `P06-M02-T002`. No persistence, metrics, setup, execution, Phase 7, or Lane C behavior was added.
 
 ## Verification evidence
 
@@ -255,3 +263,18 @@
 - Corrective work uses explicit configuration, strict full-window pivots with causal confirmation, nullable ATR evidence when a confirmation-time buffer cannot be calculated, frozen-buffer role reversal, caller-selected EMA/RMA smoothing for HLC3, ATR or population-standard-deviation channel width, local trend, and HTF confirmed context. Shared rolling math kernels preserve `rolling-v1` operation order. The source specification remains immutable.
 - Final T002 verification: focused PriceContext, RollingIndicator, JSON serialization, Core boundary, and architecture tests passed 35/35; Core.Tests Release build with `--warnaserror` had 0 warnings/errors; scoped format, `git diff --check`, canonical source SHA-256, and `tools/validate-docs.ps1` passed. The validator reports `ready=P06-M01-T003`.
 - T003 evidence above records the independent cursor-by-cursor replay, no-lookahead, strict pivot, late-data, duplicate/conflict, culture, serialization, pending-duplicate, reset, and deterministic population-SD vectors and their focused verification results. The validator confirms `P06-M02-T001` as the next READY task.
+
+## P06-M02-T002 evidence
+
+- TDD RED: focused Core snapshot compilation initially failed with the missing `FeatureQualitySnapshot` contract; focused Infrastructure store compilation initially failed with the missing `SqliteFeatureQualitySnapshotStore`, and the MeterListener fixture initially failed with the missing `FeatureQualityMetricsPublisher`.
+- `FeatureQualitySnapshot` is format 1 with `feature-quality-v1`, retains complete rolling/price-context results, explicit policy, cursor, source formula versions, and quality, and computes a lower-case SHA-256 identity from canonical JSON excluding identity. `SqliteFeatureQualitySnapshotStore` provides Open, idempotent Append, and hex/32-byte Find; it validates schema metadata, versions, canonical JSON, identity, and evaluator recomputation.
+- `SqliteDatabase` now migrates schema 8 -> 9 transactionally and validates the exact BLOB-keyed WITHOUT ROWID `feature_quality_snapshots` table. Existing older fixtures that retain the table are handled idempotently, while malformed definitions still fail exact validation. `FeatureQualityMetricsPublisher` emits readiness, stable reasons, market-data age, availability age, and known coverage with explicit unknown measurements.
+- Focused Core quality/snapshot tests passed 29/29; focused feature-quality store/metrics tests passed 2/2; the relevant Infrastructure suite passed 65/65; locked restore and Release Infrastructure build with `--warnaserror` passed with zero warnings/errors. Persistence and feature-quality architecture notes were updated without changing the canonical source or future-phase behavior.
+- `pwsh -NoProfile -File tools/validate-docs.ps1` is required immediately after this transition; the expected next validator-selected task is `P06-M02-T003`. No setup, execution, Phase 7, or Lane C behavior was added.
+
+## P06-M02-T003 evidence
+
+- TDD RED: `FeatureQualityRegressionTests.InvalidTtlIsPersistableAndRemainsUnknown` first failed because the evidence contract rejected a non-positive TTL instead of preserving the explicit invalid policy as Unknown. The minimal Core fix removed that rejection; the focused regression suite then passed 6/6.
+- The independent synthetic Core fixture set covers TTL epsilon/equality/+epsilon, delayed old availability, absent and invalid policies, warmup, gaps, duplicates, conflicts, isolated rolling/setup/HTF/price-volume dependencies, causal future boundaries/no-lookahead, permutation/culture determinism, and strict JSON. Related FeatureQuality/Rolling/PriceContext checks passed 46/46.
+- Infrastructure fixtures cover reopen/replay migration preservation, idempotent append, hex and 32-byte lookup, non-canonical and corrupt rows, unsupported format/algorithm metadata, recomputation mismatch, exact schema validation, held-writer rollback, and MeterListener readiness/reasons/both ages/explicit unknown coverage. Focused feature-quality store fixtures passed 4/4 and full Infrastructure tests passed 67/67.
+- Release Core.Tests and Infrastructure.Tests builds with `--warnaserror` passed with zero warnings/errors; locked restore passed; scoped format verification passed. After the DONE transition, `pwsh -NoProfile -File tools/validate-docs.ps1` must pass with `P07-M01-T001` as first READY and `P13-M01-T001` also READY. The milestone boundary is complete; no Phase 7 or Lane C implementation was started.
