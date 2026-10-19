@@ -126,5 +126,6 @@ availability-based freshness, exact TTL boundaries, stale and unknown
 freshness, missing bar/quote/open-interest inputs, duplicate and conflicting
 observations, bar gaps, culture invariance, decimal overflow, quote-volume
 exactness, defensive collection snapshots, and read-only public contract
-properties. Ranking, pool limits, staged selection, and execution remain later
-tasks.
+properties. All three staged-selection gates and their replay chain are
+documented in [`staged-selection.md`](staged-selection.md); persistence and
+execution remain later tasks.
