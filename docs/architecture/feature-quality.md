@@ -39,3 +39,24 @@ canonical JSON, identity, and quality recomputation. The
 `FeatureQualityMetricsPublisher` exposes readiness, stable reason counts, both
 ages, and known coverage through fixed low-cardinality Meter instruments;
 unknown values remain explicit rather than being replaced with defaults.
+
+## Boundary Rejection consumption
+
+`BoundaryRejectionSetupEvaluator` consumes exactly the Channel, LocalTrend, and
+HtfContext evidence from this evaluation. A ready SETUP-01 observation requires
+those three records to be ready and consistent with the price-context formula,
+original state, and input series. Evidence for pivots, structural levels, VWAP,
+POC, or rolling indicators remains visible in the evaluation but does not gate
+Boundary Rejection, because the canonical SETUP-01 rules name those features as
+optional filters rather than required conditions. The setup layer remains
+passive and cannot authorize an order.
+
+## Center Retest consumption
+
+`CenterRetestSetupEvaluator` uses the same Channel, LocalTrend, and HtfContext
+gate for SETUP-02. A ready Center Retest observation requires those three
+records to be ready and consistent with the price-context formula, original
+state, and input series. SETUP-02 has no minimum-width condition, so channel
+width, half-width, and bands are not consulted by this setup. Other feature
+evidence remains visible but does not gate Center Retest; the setup layer cannot
+authorize an order.
