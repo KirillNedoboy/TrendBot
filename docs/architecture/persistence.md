@@ -25,6 +25,10 @@ P06-M02-T002 adds the immutable `FeatureQualitySnapshot` Core record and its
 transactional SQLite store; feature-quality persistence retains complete
 feature inputs, explicit TTL policy, causal cursor, formula versions, and
 derived readiness evidence under a canonical SHA-256 identity.
+P08-M02 adds the immutable `DecisionProjectionSnapshot` Core record and its
+transactional SQLite store; decision persistence retains the full Decision
+Engine result, both configurations, the reason-catalog version, and the
+lifecycle checkpoint used for restart recovery.
 
 ## API and migration
 
@@ -97,12 +101,20 @@ The synchronous API is intentionally small:
 - FeatureQualityMetricsPublisher publishes fixed low-cardinality readiness,
   reason, market-data-age, availability-age, and known-coverage instruments;
   unknown ages and coverage remain explicit measurements.
+- SqliteDecisionProjectionStore.Open(databasePath, commandTimeoutSeconds = 30)
+  opens the shared schema and applies the supported migration.
+- SqliteDecisionProjectionStore.Append(snapshot) stores canonical decision
+  projection JSON under its 32-byte SHA-256 identity and returns false for an
+  identical retry; conflicting identity or DecisionId values fail closed.
+  `Find(snapshotId)` reconstructs the immutable projection and validates its
+  format, reason-catalog version, row metadata, canonical JSON, identity, and
+  replayed Decision Engine result.
 
 Each operation opens and closes its own connection. Connection strings disable
 pooling and use a positive finite command timeout. SQL values are parameters;
 schema-version PRAGMAs contain only the internal constant version. The event,
-intent, reservation, capture, screener snapshot, universe selection, and
-feature quality stores use the shared initializer, WAL mode, and
+intent, reservation, capture, screener snapshot, universe selection, feature
+quality, and decision projection stores use the shared initializer, WAL mode, and
 synchronous=FULL.
 
 Schema version 0 means an empty SQLite file. The transactional 0 -> 1
@@ -118,17 +130,19 @@ transactional 6 -> 7 migration adds `screener_snapshots` without rewriting any
 prior rows. The transactional 7 -> 8 migration adds
 `universe_selection_snapshots` without rewriting any prior rows.
 The transactional 8 -> 9 migration adds `feature_quality_snapshots` without
-rewriting any prior rows.
+rewriting any prior rows. The transactional 9 -> 10 migration adds
+`decision_projections` without rewriting any prior rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. Version 9 is validated before use,
+rejected without replacing existing tables. Version 10 is validated before use,
 including BINARY collation on event, intent, portfolio, reservation, fill,
 capture, screener formula, selection algorithm, and feature-quality algorithm
-text identities plus BLOB storage for screener, staged-selection, and
-feature-quality snapshot identities. The 2 -> 3, 3 -> 4, 4 -> 5, 5 -> 6,
-6 -> 7, 7 -> 8, and 8 -> 9 migrations preserve existing rows.
+text identities plus BLOB storage for screener, staged-selection,
+feature-quality, and decision projection identities. The 2 -> 3, 3 -> 4,
+4 -> 5, 5 -> 6, 6 -> 7, 7 -> 8, 8 -> 9, and 9 -> 10 migrations preserve
+existing rows.
 
-The version-2 event table, retained in schema version 9, is:
+The version-2 event table, retained in schema version 10, is:
 
 | Column | Meaning |
 |---|---|
@@ -158,7 +172,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 9, are:
+The version-4 portfolio tables, retained in schema version 10, are:
 
 | Table | Stored state |
 |---|---|
@@ -176,7 +190,7 @@ without inserting an intent or reservation. Identity conflicts, missing
 portfolios, currency mismatches, write-lock failures, and invalid persisted
 state fail without partial mutation.
 
-The version-5 operational tables, retained in schema version 9, are:
+The version-5 operational tables, retained in schema version 10, are:
 
 | Table | Stored state |
 |---|---|
@@ -199,7 +213,7 @@ only after an acknowledged current checkpoint confirms the order is closed and
 every latest associated position snapshot is closed; repeated release leaves
 the durable state unchanged.
 
-The version-6 capture tables, retained in schema version 9, are:
+The version-6 capture tables, retained in schema version 10, are:
 
 | Table | Stored state |
 |---|---|
@@ -224,7 +238,7 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
-The version-7 screener snapshot table, retained in schema version 9, is:
+The version-7 screener snapshot table, retained in schema version 10, is:
 
 | Column | Meaning |
 |---|---|
@@ -241,7 +255,7 @@ mismatches, and identity mismatches. Appends use an immediate serializable
 transaction; identical retries commit and return false, while a failed or
 conflicting append leaves no partial row.
 
-The version-8 staged-selection chain table, retained in schema version 9, is:
+The version-8 staged-selection chain table, retained in schema version 10, is:
 
 | Column | Meaning |
 |---|---|
@@ -349,7 +363,7 @@ ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
 first, then orders eligible events by payload EventTime and StableSequence.
 Receive time is retained metadata and is never substituted for event time.
 
-The version-9 feature-quality snapshot table is:
+The version-9 feature-quality snapshot table, retained in schema version 10, is:
 
 | Column | Meaning |
 |---|---|
@@ -361,6 +375,25 @@ The version-9 feature-quality snapshot table is:
 The table is WITHOUT ROWID. Reads reject malformed, unsupported, non-canonical,
 identity-mismatched, or quality-inconsistent content. Appends use an immediate
 serializable transaction and are idempotent for an identical canonical row.
+
+Decision projection reads reconstruct the immutable Core record from canonical
+JSON and verify the format, reason-catalog version, row metadata, SHA-256 key,
+and replayed Decision Engine result. The lifecycle checkpoint retains the
+identity, causal cursor, availability time, receipts, diagnostics, and recovery
+marker needed to resume the existing lifecycle without reordering delivery.
+
+The version-10 decision-projection table is:
+
+| Column | Meaning |
+|---|---|
+| projection_id | 32-byte SHA-256 identity of canonical decision projection JSON, BLOB primary key |
+| format_version | Supported `DecisionProjectionSnapshot` record format |
+| reason_codes_version | Supported versioned Decision Engine reason catalog, compared with BINARY collation |
+| snapshot_json | Canonical Core JSON containing the full result, both configurations, and lifecycle checkpoint |
+
+The table is WITHOUT ROWID. Exact retries are idempotent; a conflicting
+projection identity or DecisionId fails before insert and leaves the database
+unchanged. Appends use an immediate serializable transaction.
 
 ## Evidence and limits
 
@@ -385,7 +418,7 @@ partial-fill reservation retention, idempotent release, and 4 -> 5 migration
 preservation of events, intents, portfolios, and reservations. The
 ParquetCaptureStore tests cover bounded multi-segment writes, exact causal and
 provenance restoration after restart, sequence/checkpoint validation, buffer
-and segment-byte limits, and migration from schema 5 through schema 9 while
+and segment-byte limits, and migration from schema 5 through schema 10 while
 preserving prior journal rows. `SqliteScreenerSnapshotStoreTests` cover canonical identity, reordered
 equivalent inputs, format/formula rejection, corruption, idempotent retry,
 rollback under a held writer, close/reopen, populated schema-6 through schema-8
@@ -395,9 +428,12 @@ string/BLOB lookup, idempotent retry, close/reopen, stage provenance and replay,
 format/algorithm/content/identity/row-metadata/canonical rejection, rollback
 under a held writer, exact schema validation, and populated schema-7 to schema-8
 migration preservation. `SqliteFeatureQualitySnapshotStoreTests` cover canonical
-identity, idempotent retry, close/reopen, schema 8 -> 9 migration
+identity, idempotent retry, close/reopen, schema 8 -> 10 migration
 preservation, strict row validation, and quality metrics through a
-`MeterListener`. Capture
+`MeterListener`. `SqliteDecisionProjectionStoreTests` cover ALLOW, BLOCK, and
+SHADOW restart/reopen, reason preservation, idempotent retry, DecisionId and
+identity conflicts, schema 9 -> 10 migration, canonical row validation, and
+held-writer rollback. Capture
 integration tests close and reopen the store and verify the
 version-one envelope, source provenance, raw payload, stable sequence, and
 durable checkpoint. `CaptureDatasetManifestTests` cover allowlisted manifest

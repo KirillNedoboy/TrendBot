@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Fixtures\CoreFixtureVectors.cs" Link="Fixtures\CoreFixtureVectors.cs" />
+    <Compile Include="..\Fixtures\DecisionProjectionFixtures.cs" Link="Fixtures\DecisionProjectionFixtures.cs" />
     <ProjectReference Include="..\..\src\TradingBot.Core\TradingBot.Core.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />

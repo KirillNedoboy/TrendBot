@@ -30,46 +30,46 @@ public sealed class DecisionEngine
 
         if (!laneA.IsReady)
         {
-            reasons.Add("lane-a-not-ready");
+            reasons.Add(DecisionReasonCodes.LaneANotReady);
         }
 
         if (lifecycle.State != SetupState.EntryArmed)
         {
-            reasons.Add("lifecycle-not-entry-armed");
+            reasons.Add(DecisionReasonCodes.LifecycleNotEntryArmed);
         }
 
         if (lifecycle.RecoveryRequired)
         {
-            reasons.Add("lifecycle-recovery-required");
+            reasons.Add(DecisionReasonCodes.LifecycleRecoveryRequired);
         }
 
         if (!CursorIsVisible(laneA.Cursor, lifecycle.ProcessedCursor))
         {
-            reasons.Add("lane-a-future-input");
+            reasons.Add(DecisionReasonCodes.LaneAFutureInput);
         }
         else if (CursorIsStale(laneA.Cursor, lifecycle.ProcessedCursor))
         {
-            reasons.Add("lane-a-stale-input");
+            reasons.Add(DecisionReasonCodes.LaneAStaleInput);
         }
 
         foreach (DecisionEvidence evidence in input.LaneEvidence)
         {
             if (!CursorIsVisible(evidence.Cursor, lifecycle.ProcessedCursor))
             {
-                reasons.Add($"{LaneName(evidence.Lane)}-future-input");
+                reasons.Add(DecisionReasonCodes.FutureInput(evidence.Lane));
             }
             else if (CursorIsStale(evidence.Cursor, lifecycle.ProcessedCursor))
             {
-                reasons.Add($"{LaneName(evidence.Lane)}-stale-input");
+                reasons.Add(DecisionReasonCodes.StaleInput(evidence.Lane));
             }
 
             if (evidence.Status == DecisionEvidenceStatus.Veto)
             {
-                reasons.Add($"{LaneName(evidence.Lane)}-veto");
+                reasons.Add(DecisionReasonCodes.Veto(evidence.Lane));
             }
             else if (evidence.Status == DecisionEvidenceStatus.Unknown)
             {
-                reasons.Add($"{LaneName(evidence.Lane)}-unknown");
+                reasons.Add(DecisionReasonCodes.Unknown(evidence.Lane));
             }
         }
 
@@ -86,8 +86,8 @@ public sealed class DecisionEngine
         if (reasons.Count == 0)
         {
             reasons.Add(outcome == DecisionOutcome.Shadow
-                ? "shadow-profile"
-                : "decision-allow");
+                ? DecisionReasonCodes.ShadowProfile
+                : DecisionReasonCodes.DecisionAllow);
         }
 
         Decision decision = new(input.DecisionId, lifecycle.Identity.Fingerprint,
@@ -105,7 +105,7 @@ public sealed class DecisionEngine
         {
             if (required)
             {
-                reasons.Add($"{LaneName(lane)}-missing");
+                reasons.Add(DecisionReasonCodes.Missing(lane));
             }
 
             return;
@@ -113,12 +113,12 @@ public sealed class DecisionEngine
 
         if (selected.Status == DecisionEvidenceStatus.Neutral && required && !allowNeutral)
         {
-            reasons.Add($"{LaneName(lane)}-neutral-required-confirm");
+            reasons.Add(DecisionReasonCodes.NeutralRequiredConfirm(lane));
         }
 
         if (selected.Status == DecisionEvidenceStatus.Unknown)
         {
-            reasons.Add($"{LaneName(lane)}-unknown");
+            reasons.Add(DecisionReasonCodes.Unknown(lane));
         }
     }
 

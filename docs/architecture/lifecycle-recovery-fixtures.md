@@ -1,0 +1,5 @@
+# Lifecycle recovery fixtures
+
+The P08-M02 recovery fixtures use the existing `SetupLifecycleEngine.Replay` contract. A prefix advances an identity through context, structure, setup evidence, confirmation, and an external plan at equal event timestamps and a shared causal cursor. That lifecycle snapshot is saved inside a `DecisionProjectionSnapshot`, SQLite is closed and reopened, and the remaining duplicate, late/out-of-order, identity-conflict, and explicit Recovery inputs are delivered to both the continuous and recovered branches in the same order.
+
+The fixture compares transition status and canonical JSON, then re-evaluates the Decision Engine from each branch's lifecycle state and compares the full decision JSON and ordered reasons. It also compares the final identity, state, causal cursor, availability time, receipts, diagnostics, and recovery marker. A held SQLite writer proves a failed checkpoint write leaves no partial row; retrying after rollback persists the same projection. The fixture does not introduce a second replay runner or reorder late events.
