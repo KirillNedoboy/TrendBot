@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 08 — Setup Lifecycle and Decision Engine
-- Milestone: P08-M01 — Idempotent lifecycle with explicit decision outcomes
-- Current task: P08-M01-T003 (DONE after lifecycle, Decision Engine, idempotency, and recovery fixtures)
-- Next task: P08-M02-T001 (READY; P13-M01-T001 remains READY)
+- Phase: 09 — Replay, backtest, and research validation
+- Milestone: P09-M03 — Frozen research input preparation
+- Current task: P09-M03-T002 (DONE; predeclared criteria and evaluation gate)
+- Next task: P10-M01-T001 (READY; P13-M01-T001 remains independently READY)
 
 ## Confirmed state
 
@@ -423,3 +423,19 @@
 - Limitations: the report states that OHLCV cannot recover intrabar event sequence, actual fills, spread, queue position, Level 2, or true point of control. TP portions remain management assumptions; liquidity and exchange partial fills are unproven. Reproducibility and parity are engineering evidence only and do not establish profitability or live execution quality.
 - Architecture: [`docs/architecture/risk-model.md`](docs/architecture/risk-model.md) and [`docs/architecture/backtest-report.md`](docs/architecture/backtest-report.md) record the version/assumption links, deterministic fingerprint, and evidence limits. `docs/TASKS.md` marks `P09-M02-T003` DONE.
 - Scope: changes are limited to the Core calculator, Backtesting simulator/report, focused Core/Replay tests, risk/backtest architecture notes, TASKS, and this handoff. No P09-M03/P13-M01 implementation, execution authorization, persistence, package, project-graph, or canonical source change was made; no commit or push was performed.
+
+## P09-M03-T001 evidence
+
+- Startup: the PowerShell validator selected `P09-M03-T001` as the first READY task; `P09-M02-T003` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD: the focused Replay.Tests build first failed with the expected missing `FrozenResearchManifest` type. GREEN adds the BCL-only immutable manifest, canonical causal event/configuration hashes, strict integrity restore, pre-run replay validation, write-once manifest journal, and immutable evaluation snapshot linked to the canonical report.
+- Evidence: `ResearchFreezeTests` passed 4/4; the complete affected Replay.Tests assembly passed 29/29. Backtesting Release build with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed. Exact duplicate causal rows remain in the frozen manifest while the existing replay runner delivers them once by its established idempotent semantics.
+- Architecture: [`docs/architecture/research-freeze.md`](docs/architecture/research-freeze.md) records the frozen fields, canonical ordering, integrity checks, pre-run binding, write-once journal, snapshot capture, and evidence limits. The fixtures are synthetic and do not establish real OOS provenance or profitability.
+- Scope: changes are limited to Backtesting, Replay.Tests, the research-freeze architecture note, TASKS, and this handoff. No Core contracts, Infrastructure dependency, package, project graph, execution behavior, P13 behavior, or canonical source change was made; no commit or push was performed. `P09-M03-T002` is now the first READY task and must be rechecked before implementation.
+
+## P09-M03-T002 evidence
+
+- Startup: after T001, the PowerShell validator selected `P09-M03-T002` as the first READY task; `P09-M03-T001` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD: the focused criteria build first failed with the expected missing `PromotionCriterion`, `PredeclaredPromotionCriteria`, journal, and evaluation-context types. GREEN adds immutable manifest-bound criteria with stable IDs/questions/evidence, explicit unresolved blockers, strict canonical restore, a write-once journal, and a context that blocks replay/capture until matching criteria are registered and ready.
+- Evidence: `PromotionCriteriaTests` passed 3/3; the complete affected Replay.Tests assembly passed 32/32. Release Backtesting and Replay builds with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed. No automatic promotion decision or numeric threshold was added.
+- Architecture: [`docs/architecture/research-freeze.md`](docs/architecture/research-freeze.md) records the criteria identity, manifest binding, unresolved-blocker readiness gate, write-once registration, and evidence boundary.
+- Scope: changes are limited to Backtesting, Replay.Tests, the research-freeze architecture note, TASKS, and this handoff. No Core contracts, Infrastructure dependency, package, project graph, execution behavior, P13 behavior, or canonical source change was made; no commit or push was performed. `P10-M01-T001` is now the first READY task; `P13-M01-T001` remains independently READY and implementation stopped at P09-M03.
