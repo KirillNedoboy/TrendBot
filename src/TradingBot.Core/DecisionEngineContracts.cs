@@ -41,10 +41,23 @@ public sealed record DecisionEvidence
 
     public string Provenance { get; }
 
+    /// <summary>Optional validated Lane B join trace; omitted for legacy evidence.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LaneBDecisionEvidenceMetadata? LaneBMetadata { get; }
+
+    [JsonIgnore]
+    public LaneBDecisionEvidenceMetadata? Metadata => LaneBMetadata;
+
+    [JsonIgnore]
+    public LaneBDecisionEvidenceMetadata? LaneBShadowMetadata => LaneBMetadata;
+
+    [JsonIgnore]
+    public LaneBDecisionEvidenceMetadata? LaneBShadowEvidence => LaneBMetadata;
+
     [JsonConstructor]
     public DecisionEvidence(DecisionLane lane, DecisionEvidenceStatus status,
         string evidenceId, string algorithmVersion, CausalEventCursor cursor,
-        string provenance)
+        string provenance, LaneBDecisionEvidenceMetadata? laneBMetadata = null)
     {
         ContractGuard.RequireDefined(lane, nameof(lane));
         ContractGuard.RequireDefined(status, nameof(status));
@@ -52,13 +65,67 @@ public sealed record DecisionEvidence
         ContractGuard.RequireText(algorithmVersion, nameof(algorithmVersion));
         ArgumentNullException.ThrowIfNull(cursor);
         ContractGuard.RequireText(provenance, nameof(provenance));
+        if (laneBMetadata is not null)
+        {
+            if (lane != DecisionLane.LaneB)
+            {
+                throw new ArgumentException(
+                    "Lane B metadata can only be attached to Lane B evidence.",
+                    nameof(laneBMetadata));
+            }
+
+            if (laneBMetadata.Cursor != cursor)
+            {
+                throw new ArgumentException(
+                    "Lane B metadata must use the evidence cursor.", nameof(laneBMetadata));
+            }
+
+            if (!StringComparer.Ordinal.Equals(evidenceId,
+                    laneBMetadata.ShadowEvidenceId))
+            {
+                throw new ArgumentException(
+                    "Lane B metadata must use the shadow evidence identity.",
+                    nameof(laneBMetadata));
+            }
+
+            if (!StringComparer.Ordinal.Equals(algorithmVersion,
+                    laneBMetadata.ShadowAlgorithmVersion))
+            {
+                throw new ArgumentException(
+                    "Lane B metadata must use the shadow algorithm version.",
+                    nameof(laneBMetadata));
+            }
+
+            if (status != laneBMetadata.EvidenceStatus)
+            {
+                throw new ArgumentException(
+                    "Lane B metadata must use the effective evidence status.",
+                    nameof(laneBMetadata));
+            }
+        }
+
         Lane = lane;
         Status = status;
         EvidenceId = evidenceId;
         AlgorithmVersion = algorithmVersion;
         Cursor = cursor;
         Provenance = provenance;
+        LaneBMetadata = laneBMetadata;
     }
+
+    /// <summary>Creates Decision Evidence from a validated Lane B join.</summary>
+    public static DecisionEvidence FromLaneBJoin(LaneBJoinSnapshot join, string provenance)
+    {
+        ArgumentNullException.ThrowIfNull(join);
+        LaneBDecisionEvidenceMetadata metadata =
+            LaneBDecisionEvidenceMetadata.Create(join);
+        return new DecisionEvidence(DecisionLane.LaneB, metadata.EvidenceStatus,
+            metadata.ShadowEvidenceId, metadata.ShadowAlgorithmVersion, metadata.Cursor,
+            provenance, metadata);
+    }
+
+    public static DecisionEvidence CreateFromLaneBJoin(LaneBJoinSnapshot join,
+        string provenance) => FromLaneBJoin(join, provenance);
 }
 
 /// <summary>Versioned Decision Engine rule profile with no trading defaults.</summary>

@@ -68,3 +68,42 @@ out of earlier prefixes. Exact repeats are counted once with a diagnostic and
 same-identity conflicts block affected evidence. The fixtures demonstrate
 deterministic synthetic behavior and do not establish provider coverage,
 external chronology, real-data freshness values, or profitability.
+
+## Derivatives quality state
+
+`LaneBQualityState` is the independent `lane-b-quality-v1` format-one quality
+record for a single `CausalEventCursor`. It retains the selected observation
+identities, the existing caller-owned `LaneBFreshnessEvaluation` when one was
+provided, and stable ordinal reasons. Quality is separate from the shadow
+`Confirm`, `Neutral`, and `Veto` outcomes: a shadow result cannot become ready
+without fresh evidence under an explicit policy.
+
+The pure `LaneBQualityEvaluator` maps input failures to distinct missing,
+unavailable, conflict, incompatible, and arithmetic-overflow states. Stale
+freshness remains stale; a missing or non-positive policy remains unknown. A
+cursor mismatch between shadow selection and freshness evidence is
+incompatible. No TTL, threshold, or trading default is introduced. The five
+focused fixtures cover the absent-policy fail-closed rule, distinct failure
+states, cursor compatibility, and strict JSON round trips. These are synthetic
+contract fixtures and do not establish live provider coverage or freshness
+values.
+
+## Causal evidence join
+
+`LaneBJoinSnapshot` is the format-one `lane-b-join-v1` Core snapshot of the
+eligible Lane B observations, the independent quality state, and the shadow
+result at one cursor. The join filters event time, availability time, and
+stable sequence before it sorts by the causal fields and deterministic source,
+kind, identity, provenance, and payload tie-breakers. Each retained reference
+keeps event, optional exchange, receive, availability, stable-sequence, source,
+provenance, and a canonical payload fingerprint.
+
+Exact duplicate references collapse with a stable diagnostic. A same-kind,
+same-source/instrument/event identity with different payload remains as both
+rows and changes the joined quality to `Conflict`; no conflicting row is
+silently discarded. The snapshot identity is a lower-case SHA-256 over its
+canonical JSON, while the existing `HistoricalReplayRunner` remains the only
+replay mechanism. Future or delayed observations are removed before ordering,
+so they cannot change an earlier prefix or its reasons. These fixtures prove
+deterministic synthetic joins and do not establish provider chronology or live
+data quality.

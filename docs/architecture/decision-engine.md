@@ -20,3 +20,21 @@ The result retains the existing `Decision` and the complete immutable input
 snapshot. It does not contain `RiskDecision`, `OrderIntent`, `Position`, sizing,
 execution plans, or authorization state. Risk and execution remain separate
 gates in later phases.
+
+## Lane B handoff metadata
+
+`DecisionEvidence` may carry one optional `LaneBDecisionEvidenceMetadata`
+record. The metadata is created only from a validated `LaneBJoinSnapshot` and
+retains the join identity, deterministic shadow evidence identity and version,
+causal cursor, quality state, observation references, and stable quality
+reasons. Its effective `DecisionEvidenceStatus` is the shadow status only when
+quality is `Ready`; missing, stale, unavailable, conflicting, incompatible,
+overflow, and unknown quality map to the existing `Unknown` status while their
+details remain in the decision input snapshot JSON.
+
+The metadata constructor and `DecisionEvidence` validate cursor, identity,
+algorithm-version, lane, and effective-status agreement. A null metadata value
+is omitted from canonical JSON, preserving the prior projection shape and
+identity for legacy evidence. The handoff has no risk, order, execution, or
+authorization surface; lifecycle `EntryArmed` and recovery gates continue to
+be enforced by the existing Decision Engine.
