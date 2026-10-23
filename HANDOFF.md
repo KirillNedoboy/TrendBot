@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 10 — Lane B derivatives and behavior
-- Milestone: P10-M01 — Derivatives behavior confirmation
-- Current task: P10-M01-T003 (DONE; Lane B freshness and causal replay)
-- Next task: P10-M02-T001 (READY; P13-M01-T001 remains independently READY)
+- Phase: 11 — Independent Risk Engine
+- Milestone: P11-M01 — Independent risk authorization
+- Current task: P11-M01-T003 (DONE; fail-closed risk behavior)
+- Next task: P11-M02-T001 (READY; P13-M01-T001 remains independently READY)
 
 ## Confirmed state
 
@@ -43,6 +43,30 @@
 - `LaneASetupFixtureTests` is the test-only cross-family Lane A suite. It exercises a 14-case hand-specified matrix across Boundary Rejection and Center Retest, verifies evidence invariants, round-trips price-context/quality snapshots and setup results, replays cursor prefixes through serialized evidence, checks future/no-lookahead behavior, and covers permutation/culture determinism plus V1/execution boundary guards. No production contracts or behavior were added; details are recorded in [`docs/architecture/lane-a-setup-fixtures.md`](docs/architecture/lane-a-setup-fixtures.md).
 - `SetupEvidenceSnapshot` is the immutable per-direction `setup-evidence-v1` schema bridging Lane A to Phase 8. It retains the complete `price-context-v2`/`feature-quality-v1` input, one family configuration/observation, a validated causal `SetupEvidenceInputSequence`, and explicit `SetupEvidenceInvalidation` state/ClosedThrough/reasons. It has a lower-case SHA-256 content identity, rejects mismatched or tampered JSON, re-evaluates the selected family in its constructor, and `Replay()` reproduces the identity. It contains no lifecycle, decision, risk, order, or execution state; details are recorded in [`docs/architecture/setup-evidence.md`](docs/architecture/setup-evidence.md).
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
+
+## P11-M01-T001 evidence
+
+- Startup: the PowerShell 7 documentation validator selected `P11-M01-T001` as the first READY task; `P10-M02-T003` was DONE and `P13-M01-T001` remained independently READY. The canonical source remains immutable.
+- TDD RED: the focused Core.Tests Release build first failed on the missing `RiskEvaluationInput` and `RiskEvaluationConfiguration` contracts. After a compile-only skeleton, direct xUnit execution of `TradingBot.Core.Tests.RiskEngineTests` failed 3/3 for the expected unimplemented behavior.
+- GREEN: Core adds immutable `RiskEvaluationInput`, `RiskEvaluationConfiguration`, `RiskEvaluationResult`, explicit health/kill-switch/cooldown/protection evidence records, caller-owned risk limit and portfolio-usage records, stable `RiskReasonCodes`, and pure `RiskEvaluationEngine`. It accepts only a matching `DecisionProjectionSnapshot` whose outcome is `Allow`; validates the calculator version and full `RiskMathInput` snapshot; reuses the raw `RiskMathResult`; checks caller-supplied daily loss for its explicit period plus candidate risk; checks per-trade, portfolio risk, notional, margin, and slot capacities with checked decimal arithmetic; rejects currency and identity mismatches; and never reduces a proposed size. Missing protection/cooldown remains blocked, so T001 cannot produce full approval.
+- Verification: direct xUnit `RiskEngineTests` passed 11/11; Core Release build with `--warnaserror` passed with zero warnings/errors; scoped `dotnet format --no-restore --verify-no-changes` and `git diff --check` passed. T002 is now READY and must be reselected before implementation.
+- Scope: changes are limited to Core risk evaluation contracts/engine, focused Core tests, `docs/TASKS.md`, this handoff, and the risk-model architecture note. No portfolio reservation integration, execution, package, project-graph, P13, or canonical source change was made; no commit or push was performed.
+
+## P11-M01-T002 evidence
+
+- Startup: after T001, the validator selected `P11-M01-T002` as the first READY task; `P11-M01-T001` was DONE and `P13-M01-T001` remained independently READY. The canonical source remains immutable.
+- TDD RED: the focused Core.Tests Release build passed after the T001 implementation, then direct xUnit `RiskEngineProtectionTests` failed 3/10 for the missing aggregate level-link rejection and approval behavior.
+- GREEN: `RiskProtectionEvidence` now validates every explicit stop/TP level against aggregate instrument, direction, setup/method link, source/version, freshness, and causal cursor. `RiskEvaluationEngine` validates stop equality with the shared `RiskMathInput`, loss/profit side for LONG/SHORT, fresh causal evidence, and explicit cooldown state. Unknown/stale/future/conflicting/mismatched evidence blocks; active cooldown blocks before its supplied expiry and clear state permits at the boundary. Approval remains a passive `RiskDecision` evidence record.
+- Verification: direct xUnit `RiskEngineProtectionTests` passed 10/10; adjacent `RiskEngineTests` passed 11/11; Core Release build with `--warnaserror` passed with zero warnings/errors; scoped `dotnet format --no-restore --verify-no-changes` and `git diff --check` passed. T003 is now READY and must be reselected before implementation.
+- Scope: changes are limited to Core risk contracts/engine, focused Core tests, `docs/TASKS.md`, and this handoff. No reservation, execution, package, project-graph, P13, or canonical source change was made; no commit or push was performed.
+
+## P11-M01-T003 evidence
+
+- Startup: after T002, the validator selected `P11-M01-T003` as the first READY task; `P11-M01-T002` was DONE and `P13-M01-T001` remained independently READY. The canonical source remains immutable.
+- TDD RED: the focused Core.Tests Release build passed after T002, then direct xUnit `RiskEngineFailClosedTests` first failed 1/7 because a tampered `RiskDecision` identity/version link was accepted by `RiskEvaluationResult` construction; the added calculator-version failure fixture then escaped before its guard.
+- GREEN: result construction now validates evaluator/configuration version and deterministic `risk-{EvaluationId}` plus source Decision identity, and rejects retained risk-math output whose version or complete input snapshot differs. The pure engine fail-closes unknown/missing policies and health, stale/future/conflicting/mismatched evidence, enabled/unknown kill switch, currency mismatch, checked-capacity overflow, calculator version/input/exception, and causal lookahead. Kill-switch rejection occurs before calculator invocation; LONG/SHORT side checks, exact limits, strict JSON, and absence of execution/reservation surfaces are covered.
+- Verification: direct xUnit `RiskEngineFailClosedTests` passed 8/8; adjacent `RiskEngineTests` passed 11/11 and `RiskEngineProtectionTests` passed 10/10; Core Release build with `--warnaserror` passed with zero warnings/errors; scoped `dotnet format --no-restore --verify-no-changes`, `tools/validate-docs.ps1`, and `git diff --check` passed. Expected next READY tasks are `P11-M02-T001` and `P13-M01-T001`; implementation stopped at P11-M01.
+- Scope: changes are limited to Core risk contracts/engine, focused Core tests, `docs/architecture/risk-model.md`, `docs/TASKS.md`, and this handoff. No reservation integration, execution, package, project-graph, P13, or canonical source change was made; no commit or push was performed.
 
 ## P06-M02-T001 evidence
 

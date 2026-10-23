@@ -78,3 +78,60 @@ introduced.
 Decision Engine (Phase 8) determines `ALLOW`, `BLOCK`, or `SHADOW` from strategy evidence. Risk Engine (Phase 11) independently evaluates exposure, sizing, stops, portfolio limits, kill switches, and operational state. Strategy code must not bypass risk.
 
 Phase 9 is intentionally earlier than the full Risk Engine: replay/backtest requires a deterministic simulation of risk, stop-loss, take-profit, partial-fill assumptions, and time exits. That simulation is a research harness, not live authorization.
+
+## Phase 11 independent evaluation
+
+P11-M01 introduces a separate, passive `RiskEvaluationEngine` in Core. Its
+version-one input retains the complete `DecisionProjectionSnapshot`, the
+caller-supplied `RiskMathInput`, portfolio identity and causal cursor, explicit
+portfolio usage, accumulated loss period, candidate margin/slot values,
+account/portfolio/market health, kill-switch evidence, protective levels,
+cooldown state, and provenance. Its configuration retains the evaluator
+version, expected shared risk-math version, caller-owned per-trade/daily/margin
+limits, portfolio limits, and provenance. Null policies and evidence are
+unknown; the evaluator does not create TTLs, calendar periods, leverage, lot
+rounding, or a size-reduction policy.
+
+The evaluator accepts only a matching decision projection whose outcome is
+`Allow`, and it independently checks the decision identity, instrument,
+direction, recovery marker, and causal visibility. It invokes the injected
+`IRiskMathCalculator` once the kill switch and configuration gates permit,
+requires the calculator and returned `RiskMathResult` versions to match the
+configuration, and compares the complete returned input snapshot with the
+caller snapshot. Calculator exceptions, wrong versions, wrong inputs, and
+checked decimal overflow remain blocked. The raw quantity and notional from
+shared math are retained exactly; the Risk Engine never rounds or silently
+reduces an over-limit proposal.
+
+Per-trade, daily, portfolio-risk, notional, margin, and position-slot checks
+use caller values. The daily check adds the supplied accumulated loss for its
+explicit period to the candidate `RiskBudget`; no local PnL calculation is
+performed. Comparisons reject only values strictly above a limit, so equality
+at a supplied boundary is allowed. Monetary currencies and portfolio identity
+must match, and every required policy/value must be present before a full
+approval can be emitted.
+
+P11-M01-T002 adds explicit causal `RiskProtectionEvidence` for one protective
+stop and two take-profit levels. Each level retains source, evidence version,
+freshness, setup/method links, instrument, direction, provenance, and the
+causal cursor. Aggregate and level metadata must agree; the stop must equal
+the shared sizing stop and be on the loss side, while both targets must be on
+the profit side for the supplied direction. No protective algorithm is
+invented. Cooldown is an explicit per-instrument state: unknown or stale state
+blocks, an `ActiveUntil` state blocks before its supplied expiry, and an
+explicit clear state permits at or after the boundary.
+
+P11-M01-T003 keeps account, portfolio, market, kill-switch, protection, and
+cooldown evidence fail-closed for unknown, stale, future, conflicting, or
+mismatched state. An enabled kill switch is checked before calculator
+invocation and blocks regardless of strategy decision or sizing. The result
+retains versioned input/configuration snapshots, deterministic reason codes,
+per-check evidence, calculator output when valid, and the passive `RiskDecision`.
+The result constructor verifies RiskDecision identity/version links and
+RiskMathResult parity on restore. It exposes no order intent, reservation,
+executor, private API, or real-money activation path. Focused fixtures cover
+LONG/SHORT direction, exact boundaries, currencies, missing policies,
+calculator failure injection, capacity overflow, causal lookahead, strict JSON,
+and execution-surface absence. These fixtures prove deterministic guardrails
+only; they do not authorize or execute an order and do not establish live
+profitability or venue feasibility.
