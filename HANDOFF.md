@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 07 — Lane A V1
-- Milestone: P07-M02 — Setup evidence and lifecycle input
-- Current task: P07-M02-T001 (DONE after versioned per-direction setup evidence schema)
-- Next task: P07-M02-T002 (READY; P13-M01-T001 is also READY)
+- Phase: 08 — Setup Lifecycle and Decision Engine
+- Milestone: P08-M01 — Idempotent lifecycle with explicit decision outcomes
+- Current task: P08-M01-T003 (DONE after lifecycle, Decision Engine, idempotency, and recovery fixtures)
+- Next task: P08-M02-T001 (READY; P13-M01-T001 remains READY)
 
 ## Confirmed state
 
@@ -327,3 +327,21 @@
 - Documentation: [`docs/architecture/setup-evidence.md`](docs/architecture/setup-evidence.md) records the schema, causal sequence, invalidation, identity/replay, and boundaries. `docs/TASKS.md` marks T001 DONE and P07-M02-T002 READY; this checkpoint is recorded in `HANDOFF.md`.
 - After the transition, the same bundled PowerShell validator reported `phases=19, milestones=41, tasks=119, ready=P07-M02-T002,P13-M01-T001`; `git diff --check` exited 0; canonical `docs/sources/FINAL_TECH_SPEC.md` SHA-256 remained `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
 - Scope: changes add `TradingBot.Core` evidence contracts/snapshot, focused Core tests, and the listed documentation. Existing T001/T002/T003 contracts, evaluators, tests, and architecture notes were not modified. No persistence, SQLite schema, lifecycle, decision, risk, order, execution, package, project-graph, or canonical-source change was made. No commit or push was performed. `P07-M02-T002` is only READY and was not started; `P13-M01-T001` remains READY and was not started; blocked tasks were not touched. Remote CI remains unverified.
+
+## P07-M02-T002 evidence
+
+- Startup: clean worktree at `94c1331`; P07-M02-T001 was DONE, and P07-M02-T002 was the first READY task; P13-M01-T001 was also READY.
+- Added `LifecycleInputFixtures.cs` and `LifecycleInputFixtureTests.cs` under Core.Tests. The hand-specified 17-case matrix covers Boundary Rejection and Center Retest, both directions, Ready/NoSetup/Invalidated/UnknownQuality and warmup without a signal bar. Expected states are independent of the observed evidence state.
+- Tests replay and round-trip each evidence snapshot, checking equality, stable identity, causal cursor/source/instrument, sorted invalidation reasons and signal-bar presence. Cursor-prefix replay verifies that earlier evidence stays non-ready despite future history, while fixture evidence demonstrates later Ready; repeated evidence replay is stable without modeling lifecycle deduplication.
+- Reflection recursively inspects evidence properties, collection element types and method return types for lifecycle/Decision/RiskDecision/OrderIntent/Position surfaces; strict JSON rejects injected `orderIntent` and `authorized` fields. This proves the evidence contract boundary and does not instantiate an executor or lifecycle state machine.
+- Focused Release Core.Tests (`LifecycleInputFixtureTests|SetupEvidenceSnapshotTests|LaneASetupFixtureTests`, `TreatWarningsAsErrors=true`) passed 18/18; scoped format passed; `tools/validate-docs.ps1` passed with `ready=P08-M01-T001,P13-M01-T001`; `git diff --check` passed; canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- Scope is limited to Core.Tests fixtures/tests and TASKS/HANDOFF docs. No Core production code, lifecycle, persistence, decision, risk, order, or execution behavior changed. Remote CI remains unverified.
+
+## P08-M01-T001/T002/T003 evidence
+
+- Startup: the bundled validator selected `P08-M01-T001` as the first READY task after `P07-M02-T002`; `P13-M01-T001` remained independently READY. Existing P07 changes were preserved. The canonical source hash remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD RED: the focused lifecycle test compile initially failed with missing `SetupLifecycleConfiguration`, `SetupLifecycleIdentity`, `SetupLifecycleInput`, `SetupLifecycleSnapshot`, and related engine contracts. Core then adds BCL-only immutable lifecycle contracts and a pure `SetupLifecycleEngine` over explicit external facts. Inputs retain event/receive/availability times, stable sequence, stream/event identity, evidence, confirmation, external plan/order/position/exit identifiers, provenance, and rules/config versions. Identity fingerprints include instrument, setup family, direction, structural anchor, anchor time, and context version.
+- T001 lifecycle evidence: legal transitions cover context, structure, setup evidence, confirmation, external plan, order/position/exit observations, cooldown, terminal, explicit reset, and recovery. Ready evidence advances one stage only; unknown evidence and invalid transitions fail closed. `SetupLifecycleTransition` records previous/current state and identity, canonical full input JSON, provenance, rules/config versions, reasons, and opaque shadow/outcome observability. `InstrumentLifecycleProcessor` serializes complete read-modify-write per instrument key, permits different instruments to proceed independently, and leaves the previous snapshot visible after a rejected commit.
+- T002 Decision Engine evidence: `DecisionEngineConfiguration`, `DecisionEngineInput`, `DecisionEvidence`, and `DecisionEngineResult` define an explicit Allow/Shadow profile. Lane A must be Ready and visible at the lifecycle cursor; veto, unknown, stale, future, or conflicting evidence blocks; required Lane B/C evidence must confirm unless an explicit neutral flag permits it; only `EntryArmed` without recovery is eligible for Allow or Shadow. The result contains the existing `Decision` plus the immutable input snapshot and has no RiskDecision, OrderIntent, Position, sizing, or execution surface.
+- T003 idempotency/recovery evidence: exact stream/event identity repeats return `Duplicate` without a new receipt; conflicting content returns `IdentityConflict`, suspends the snapshot, and requires explicit recovery; late inputs return `Late` without state/cursor rollback; `Replay` reproduces the ordered transition list; recovery accepts a serialized snapshot; and commit rejection leaves the prior state. Focused `SetupLifecycleTests` passed 12/12, the combined lifecycle/evidence fixture filter passed 30/30, full Core.Tests passed 207/207, Core Release build with `--warnaserror` passed with zero warnings/errors, scoped format passed, and strict JSON round-trip/unknown-field, duplicate/conflict/late, same-instrument barrier, separate-instrument, Decision rule-table, and recovery fixtures passed.
+- Architecture notes are [`docs/architecture/setup-lifecycle.md`](docs/architecture/setup-lifecycle.md) and [`docs/architecture/decision-engine.md`](docs/architecture/decision-engine.md). Scope is limited to Core lifecycle/decision contracts, Core tests, architecture notes, TASKS, and HANDOFF. No SQLite persistence, P08-M02 projections/reason codes, replay runner, Risk Engine, order execution, P09, P13, package graph, or canonical source changes were made. No commit or push was performed; remote CI remains unverified.
