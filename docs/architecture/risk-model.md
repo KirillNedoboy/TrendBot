@@ -8,11 +8,24 @@ P02-M02-T003 adds a separate `IFillSimulator` research boundary. `FillSimulation
 
 `FillSimulationResult` carries a `FillSimulationVersion`, a defensive full copy of the input, and only immutable `ResearchFill` observations. Research fills contain an identifier, positive quantity, price, fill time, and stable causal sequence; they do not contain `OrderIntent`, `RiskDecision`, risk-math, executor, or authorization state. The interface has only `Version` and `Simulate(FillSimulationInput)`. A fill simulator therefore reports research observations and cannot authorize or submit an order.
 
-P02-M02-T002 and P02-M02-T003 add contracts only. A calculator implementation
-and cross-mode calculation parity are deferred to P09-M02-T001. Fill-generation
-algorithms, replay integration, result persistence, and paper execution remain
-future work. These contracts do not introduce trading defaults, sizing formulas,
-portfolio policy, or order authorization.
+P02-M02-T002 and P02-M02-T003 add contracts only. Cross-mode calculation parity
+remains deferred to P09-M02-T001. P09-M01-T002 adds
+`SimulatedRiskSimulator` in Backtesting. It injects `IRiskMathCalculator` and
+uses the returned versioned quantity and protective stop without reimplementing
+risk math. Entry is the open of the first bar opened after the decision; the
+entry bar is not used for exits. Configured TP1/TP2 fractions, breakeven
+activation, stop-first OHLCV ambiguity, stop-gap execution, time exits, fees,
+and per-fill slippage are explicit in `SimulatedRiskPlan` and
+`SimulatedFillAssumptions`. Unfilled remainder stays open at end of data.
+When breakeven movement is enabled, its stop price is required explicitly;
+there is no entry-price fallback.
+The plan carries an explicit Core `Decision` link, and the fill assumptions
+carry an explicit `FillSimulationVersion`; either missing required link blocks
+simulation. Results contain only risk output, immutable simulated fills, costs,
+and diagnostics; they expose no order, authorization, or execution adapter
+state.
+Fill-generation algorithms remain replaceable research components and do not
+authorize orders or introduce trading defaults.
 
 P03-M02-T002 adds passive `PortfolioId`, `PortfolioLimits`, and
 `PortfolioReservation` contracts for explicit caller-supplied monetary-risk,

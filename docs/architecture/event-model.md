@@ -1,4 +1,4 @@
-# Event model
+﻿# Event model
 
 P02-M01 defines immutable Core market-event records with caller-supplied
 identity, instrument, and UTC event time. P02-M01-T002 adds local Bar, Setup,
@@ -59,3 +59,15 @@ introduce a full replay runner or recovery policy.
 Core event records contain no Binance wire DTOs. Late, missing, and gap
 recovery, quality flags, and venue-specific ordering guarantees remain
 deferred to their later tasks.
+
+P09-M01-T001 adds `ReplayRunner` in `TradingBot.Backtesting` as the historical
+delivery boundary. It validates one stream, removes exact duplicate envelopes
+with a diagnostic, and stops before delivery when an event identity or stable
+sequence conflicts. Delivery order uses a monotonic virtual availability clock
+of `max(EventTime, AvailabilityTime, Bar.CloseTime)`, then event time and the
+persisted stable sequence. Each handler receives an immutable
+`ReplayStreamSnapshot` built with the existing inclusive `CausalEventCursor`,
+so unavailable or future events cannot enter a causal prefix. Receive time and
+optional exchange time remain metadata on every delivered envelope. A handler
+exception leaves that step uncommitted and prevents later deliveries; the
+runner returns diagnostics and no execution or authorization state.
