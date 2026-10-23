@@ -76,6 +76,41 @@ public sealed class BacktestRegressionTests
     }
 
     [Fact]
+    public void ReportRetainsInjectedFillModelVersionAlongsideNumericAssumptions()
+    {
+        ReplayEnvelope[] source =
+        [
+            Envelope("signal", 0, 100m, 101m, 99m, 100m, 1),
+            Envelope("entry", 1, 101m, 102m, 100m, 101m, 2)
+        ];
+        LinearPerpetualRiskMathCalculator calculator = new();
+        RiskMathInput input = new(Instrument, Direction.Long,
+            new Money(1000m, "USDT"), 0.02m, new Price(100m), new Price(95m),
+            new MoneyPerQuantityUnit(0.1m, "USDT"),
+            new MoneyPerQuantityUnit(0.2m, "USDT"));
+        SimulatedRiskPlan plan = new(
+            "report-plan", Instrument, Direction.Long, Utc(0), input, [], null, false,
+            null, new SimulatedFillAssumptions(0.1m, 0.2m,
+                new FillSimulationAssumptions("fees", "slippage", "next bar",
+                    "unknown queue", "none", "stop before target", "OHLCV limits"),
+                new FillSimulationVersion("assumptions-v1")),
+            new Decision("report-decision", "setup-1", DecisionOutcome.Allow,
+                ["fixture"]));
+        SimulatedRiskSimulationResult simulation = new SimulatedRiskSimulator(calculator)
+            .Simulate(plan, source);
+        ReplayRunResult run = HistoricalReplayRunner.Run("stream-a", source,
+            static context => context.Event.EventId);
+
+        BacktestReport report = BacktestReport.Create("run-report", run, simulation);
+
+        Assert.Equal(new FillSimulationVersion("ohlcv-fill-v1"),
+            report.FillSimulationVersion);
+        Assert.Contains("ohlcv-fill-v1", report.CanonicalJson, StringComparison.Ordinal);
+        Assert.Contains("assumptions-v1", report.CanonicalJson, StringComparison.Ordinal);
+        Assert.Contains("fees", report.CanonicalJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AtomicJournalWriteReplacesCompletedReportWithoutPartialContent()
     {
         ReplayEnvelope[] source = [Envelope("bar-1", 0, 100m, 101m, 99m, 100m, 1)];

@@ -8,6 +8,15 @@ references, lifecycle transition references, Decision/reason references,
 versioned injected risk output, simulated fills, fees, slippage, diagnostics,
 and any open remainder.
 
+P09-M02 adds the injected `FillSimulationVersion` to the report payload beside
+the complete `RiskPlan.FillAssumptions` snapshot. A completed simulation report
+therefore names both the shared risk-math version (inside `RiskResult`) and the
+fill-model version (`ohlcv-fill-v1` for the default model, or the caller's
+replacement), while retaining numeric fee/slippage values and the prose
+assumption descriptions. `BacktestRegression` includes these values in its
+deterministic fingerprint, so changing a model or assumption is visible in the
+regression result even when the event stream is unchanged.
+
 `BacktestRegression.Compare` computes a lower-case SHA-256 fingerprint over
 the canonical result while excluding the caller's `RunId`. Equal historical
 events therefore compare equally across input permutations and Core JSON
@@ -26,4 +35,7 @@ Every report carries explicit OHLCV limits: bar data cannot reconstruct
 intrabar sequence or prove actual fills, spread, queue position, Level 2 state,
 or true point of control. Take-profit portions are management assumptions;
 liquidity and exchange partial fills are not proven. These limitations describe
-the evidence boundary and do not become hidden trading defaults.
+the evidence boundary and do not become hidden trading defaults. Deterministic
+replay, risk/fill version links, and a stable report fingerprint establish
+reproducibility of the research computation only; they do not establish
+profitability, venue liquidity, or actual exchange execution quality.

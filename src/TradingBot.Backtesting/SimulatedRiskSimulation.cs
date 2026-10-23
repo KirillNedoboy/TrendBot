@@ -101,6 +101,40 @@ public sealed record SimulatedFillAssumptions
 }
 
 /// <summary>
+/// Default research fill model. The risk harness selects the event, role, and
+/// reference execution price; this model turns that one causal observation into
+/// a fill observation and applies no risk or execution policy of its own.
+/// </summary>
+public sealed class OhlcvFillSimulator : IFillSimulator
+{
+    /// <summary>Stable identifier for the default research fill model.</summary>
+    public static FillSimulationVersion CurrentVersion { get; } =
+        new("ohlcv-fill-v1");
+
+    /// <inheritdoc />
+    public FillSimulationVersion Version => CurrentVersion;
+
+    /// <inheritdoc />
+    public FillSimulationResult Simulate(FillSimulationInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        Price referencePrice = input.ReferencePrice
+            ?? throw new InvalidOperationException(
+                "The default fill model requires a caller-supplied reference price.");
+        CausalMarketEvent latest = input.MarketSnapshot
+            .OrderBy(static item => item.StableSequence)
+            .Last();
+        ResearchFill fill = new(
+            input.HypotheticalRequestId + ":fill",
+            input.RequestedQuantity,
+            referencePrice,
+            input.RequestedAt,
+            latest.StableSequence);
+        return new FillSimulationResult(Version, input, [fill]);
+    }
+}
+
+/// <summary>
 /// Immutable, research-only risk plan. The injected calculator supplies the
 /// quantity and risk result; this plan supplies only caller-declared exit and fill
 /// assumptions.
@@ -285,12 +319,14 @@ public sealed class SimulatedRiskSimulationResult
     internal SimulatedRiskSimulationResult(SimulatedRiskPlan plan,
         RiskMathResult riskResult, IEnumerable<SimulatedFill> fills,
         decimal remainingQuantity, SimulatedRiskExitReason exitReason,
-        IEnumerable<string> diagnostics, decimal totalFees, decimal totalSlippage)
+        IEnumerable<string> diagnostics, decimal totalFees, decimal totalSlippage,
+        FillSimulationVersion fillSimulationVersion)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(riskResult);
         ArgumentNullException.ThrowIfNull(fills);
         ArgumentNullException.ThrowIfNull(diagnostics);
+        ArgumentNullException.ThrowIfNull(fillSimulationVersion);
         BacktestingContractGuard.RequireDefined(exitReason, nameof(exitReason));
         Plan = plan;
         RiskResult = riskResult;
@@ -306,6 +342,7 @@ public sealed class SimulatedRiskSimulationResult
         Diagnostics = new ReadOnlyCollection<string>(diagnostics.ToList());
         TotalFees = totalFees;
         TotalSlippage = totalSlippage;
+        FillSimulationVersion = fillSimulationVersion;
     }
 
     public SimulatedRiskPlan Plan { get; }
@@ -326,6 +363,9 @@ public sealed class SimulatedRiskSimulationResult
 
     public decimal TotalSlippage { get; }
 
+    /// <summary>Gets the version of the injected research fill model.</summary>
+    public FillSimulationVersion FillSimulationVersion { get; }
+
     public bool IsOpen => RemainingQuantity > 0m;
 
     public bool IsResearchOnly => RiskResult is not null;
@@ -339,11 +379,21 @@ public sealed class SimulatedRiskSimulationResult
 public sealed class SimulatedRiskSimulator
 {
     private readonly IRiskMathCalculator _riskCalculator;
+    private readonly IFillSimulator _fillSimulator;
 
     public SimulatedRiskSimulator(IRiskMathCalculator riskCalculator)
+        : this(riskCalculator, new OhlcvFillSimulator())
+    {
+    }
+
+    /// <summary>Creates a simulator with a replaceable research fill model.</summary>
+    public SimulatedRiskSimulator(IRiskMathCalculator riskCalculator,
+        IFillSimulator fillSimulator)
     {
         ArgumentNullException.ThrowIfNull(riskCalculator);
+        ArgumentNullException.ThrowIfNull(fillSimulator);
         _riskCalculator = riskCalculator;
+        _fillSimulator = fillSimulator;
     }
 
     /// <summary>Simulates one plan over one persisted causal event stream.</summary>
@@ -384,12 +434,13 @@ public sealed class SimulatedRiskSimulator
         }
 
         RiskMathResult riskResult = _riskCalculator.Calculate(plan.RiskInput);
-        if (riskResult.Input.InstrumentId != plan.InstrumentId
+        if (riskResult.Input != plan.RiskInput
+            || riskResult.Input.InstrumentId != plan.InstrumentId
             || riskResult.Input.Direction != plan.Direction
             || riskResult.Version != _riskCalculator.Version)
         {
             throw new InvalidOperationException(
-                "The injected risk result does not match the research plan.");
+                "The injected risk result does not match the research plan input or calculator version.");
         }
 
         List<ReplayStepResult> barSteps = replay.Steps
@@ -419,9 +470,14 @@ public sealed class SimulatedRiskSimulator
         decimal entryBase = entryBar.Open.Value;
         decimal entryPrice = ApplySlippage(entryBase, plan.Direction,
             plan.FillAssumptions.SlippagePerQuantityUnit, SimulatedFillRole.Entry);
-        AddFill(fills, diagnostics, plan, SimulatedFillRole.Entry, quantity, entryPrice,
-            entryBase, entryBar.OpenTime, entryBarStepsSequence: barSteps[entryIndex],
+        decimal entryFilled = AddFill(fills, diagnostics, plan, SimulatedFillRole.Entry,
+            quantity, entryPrice, entryBase, entryBar.CloseTime, barSteps, entryIndex,
             ref totalFees, ref totalSlippage);
+        if (entryFilled != quantity)
+        {
+            throw new InvalidOperationException(
+                "The research fill model must fill the requested entry quantity.");
+        }
 
         decimal remaining = quantity;
         decimal stop = riskResult.Input.ProtectiveStopPrice.Value;
@@ -450,9 +506,14 @@ public sealed class SimulatedRiskSimulator
                     : SimulatedFillRole.StopLoss;
                 decimal executionPrice = ApplySlippage(basePrice, plan.Direction,
                     plan.FillAssumptions.SlippagePerQuantityUnit, role);
-                AddFill(fills, diagnostics, plan, role, remaining, executionPrice, basePrice,
-                    bar.CloseTime, step, ref totalFees, ref totalSlippage);
-                remaining = 0m;
+                decimal stopFilled = AddFill(fills, diagnostics, plan, role, remaining,
+                    executionPrice, basePrice, bar.CloseTime, barSteps, index,
+                    ref totalFees, ref totalSlippage);
+                remaining = checked(remaining - stopFilled);
+                if (stopFilled != 0m && remaining > 0m)
+                {
+                    diagnostics.Add($"partial protective fill left {remaining} units open");
+                }
                 exitReason = breakevenActivated
                     ? SimulatedRiskExitReason.BreakevenStop
                     : SimulatedRiskExitReason.StopLoss;
@@ -470,9 +531,10 @@ public sealed class SimulatedRiskSimulator
                     : SimulatedFillRole.TakeProfit2;
                 decimal executionPrice = ApplySlippage(basePrice, plan.Direction,
                     plan.FillAssumptions.SlippagePerQuantityUnit, role);
-                AddFill(fills, diagnostics, plan, role, targetQuantity, executionPrice,
-                    basePrice, bar.CloseTime, step, ref totalFees, ref totalSlippage);
-                remaining = checked(remaining - targetQuantity);
+                decimal targetFilled = AddFill(fills, diagnostics, plan, role, targetQuantity,
+                    executionPrice, basePrice, bar.CloseTime, barSteps, index,
+                    ref totalFees, ref totalSlippage);
+                remaining = checked(remaining - targetFilled);
                 targetIndex++;
 
                 if (targetIndex == 1 && plan.MoveStopToBreakeven && remaining > 0m)
@@ -498,10 +560,11 @@ public sealed class SimulatedRiskSimulator
                 decimal executionPrice = ApplySlippage(basePrice, plan.Direction,
                     plan.FillAssumptions.SlippagePerQuantityUnit,
                     SimulatedFillRole.TimeExit);
-                AddFill(fills, diagnostics, plan, SimulatedFillRole.TimeExit, remaining,
-                    executionPrice, basePrice, bar.CloseTime, step,
+                decimal timeFilled = AddFill(fills, diagnostics, plan,
+                    SimulatedFillRole.TimeExit, remaining, executionPrice, basePrice,
+                    bar.CloseTime, barSteps, index,
                     ref totalFees, ref totalSlippage);
-                remaining = 0m;
+                remaining = checked(remaining - timeFilled);
                 exitReason = SimulatedRiskExitReason.TimeExit;
                 break;
             }
@@ -513,30 +576,72 @@ public sealed class SimulatedRiskSimulator
         }
 
         return new SimulatedRiskSimulationResult(plan, riskResult, fills, remaining,
-            exitReason, diagnostics, totalFees, totalSlippage);
+            exitReason, diagnostics, totalFees, totalSlippage, _fillSimulator.Version);
     }
 
-    private static void AddFill(List<SimulatedFill> fills, List<string> diagnostics,
+    private decimal AddFill(List<SimulatedFill> fills, List<string> diagnostics,
         SimulatedRiskPlan plan, SimulatedFillRole role, decimal quantity, decimal executionPrice,
-        decimal basePrice, UtcTimestamp filledAt, ReplayStepResult entryBarStepsSequence,
+        decimal basePrice, UtcTimestamp requestedAt, IReadOnlyList<ReplayStepResult> barSteps,
+        int barIndex,
         ref decimal totalFees, ref decimal totalSlippage)
     {
         if (quantity <= 0m)
         {
-            return;
+            return 0m;
         }
 
-        decimal fee = checked(quantity * plan.FillAssumptions.FeePerQuantityUnit);
-        decimal slippage = checked(Math.Abs(executionPrice - basePrice) * quantity);
+        FillSimulationInput input = new(
+            $"{plan.ResearchPlanId}:{role}:{fills.Count + 1}",
+            plan.InstrumentId,
+            plan.Direction,
+            new Quantity(quantity),
+            requestedAt,
+            barSteps.Take(barIndex + 1).Select(static step => step.Envelope.CausalEvent),
+            plan.FillAssumptions.Descriptions,
+            new Price(executionPrice));
+        FillSimulationResult simulation = _fillSimulator.Simulate(input)
+            ?? throw new InvalidOperationException("The fill model returned no result.");
+        if (simulation.Version != _fillSimulator.Version || simulation.Input != input)
+        {
+            throw new InvalidOperationException(
+                "The fill model returned a result with mismatched input or version.");
+        }
+
+        if (simulation.Fills.Count != 1)
+        {
+            throw new InvalidOperationException(
+                "The fill model must return exactly one observation per requested fill.");
+        }
+
+        ResearchFill observation = simulation.Fills[0];
+        if (observation.FilledQuantity.Value > quantity
+            || observation.FilledAt.Value > requestedAt.Value)
+        {
+            throw new InvalidOperationException(
+                "The fill model returned an overfill or a future observation.");
+        }
+
+        CausalMarketEvent? source = input.MarketSnapshot.FirstOrDefault(candidate =>
+            candidate.StableSequence == observation.StableSequence);
+        if (source is null)
+        {
+            throw new InvalidOperationException(
+                "The fill model returned an observation outside the causal snapshot.");
+        }
+
+        decimal filledQuantity = observation.FilledQuantity.Value;
+        decimal fee = checked(filledQuantity * plan.FillAssumptions.FeePerQuantityUnit);
+        decimal slippage = checked(Math.Abs(observation.FillPrice.Value - basePrice)
+            * filledQuantity);
         totalFees = checked(totalFees + fee);
         totalSlippage = checked(totalSlippage + slippage);
         string fillId = $"{plan.ResearchPlanId}:{fills.Count + 1}";
         string currency = plan.RiskInput.Equity.Currency;
-        fills.Add(new SimulatedFill(fillId, role, new Quantity(quantity),
-            new Price(executionPrice), new Money(fee, currency),
-            new Money(slippage, currency), filledAt,
-            entryBarStepsSequence.Envelope.CausalEvent.StableSequence,
-            entryBarStepsSequence.Event.EventId));
+        fills.Add(new SimulatedFill(fillId, role, new Quantity(filledQuantity),
+            observation.FillPrice, new Money(fee, currency),
+            new Money(slippage, currency), observation.FilledAt,
+            observation.StableSequence, source.Payload.EventId));
+        return filledQuantity;
     }
 
     private static decimal ApplySlippage(decimal basePrice, Direction direction,
@@ -590,6 +695,12 @@ public sealed class BacktestRiskSimulator
     public BacktestRiskSimulator(IRiskMathCalculator riskCalculator)
     {
         _inner = new SimulatedRiskSimulator(riskCalculator);
+    }
+
+    public BacktestRiskSimulator(IRiskMathCalculator riskCalculator,
+        IFillSimulator fillSimulator)
+    {
+        _inner = new SimulatedRiskSimulator(riskCalculator, fillSimulator);
     }
 
     public SimulatedRiskSimulationResult Simulate(SimulatedRiskPlan plan,

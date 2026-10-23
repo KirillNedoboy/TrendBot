@@ -309,6 +309,9 @@ public sealed record BacktestReport
     /// <summary>Gets the complete research plan when risk simulation was run.</summary>
     public SimulatedRiskPlan? RiskPlan { get; init; }
 
+    /// <summary>Gets the version of the injected research fill model.</summary>
+    public FillSimulationVersion? FillSimulationVersion { get; init; }
+
     public IReadOnlyList<SimulatedFill> Fills { get; init; } = Array.Empty<SimulatedFill>();
 
     public decimal TotalFees { get; init; }
@@ -423,6 +426,7 @@ public sealed record BacktestReport
                 decisionSnapshot.Select(BacktestDecisionReference.From).ToArray()),
             RiskResult = riskResult,
             RiskPlan = simulation?.Plan,
+            FillSimulationVersion = simulation?.FillSimulationVersion,
             Fills = new ReadOnlyCollection<SimulatedFill>(fills),
             TotalFees = simulation?.TotalFees ?? 0m,
             TotalSlippage = simulation?.TotalSlippage ?? 0m,
@@ -539,6 +543,7 @@ internal static class BacktestReportSerialization
                 StringComparer.Ordinal).ToArray(),
             ToRiskPayload(report.RiskResult),
             ToPlanPayload(report.RiskPlan),
+            report.FillSimulationVersion?.Value,
             report.Fills.Select(BacktestFillPayload.From).ToArray(),
             report.TotalFees,
             report.TotalSlippage,
@@ -619,6 +624,7 @@ internal static class BacktestReportSerialization
         IReadOnlyList<BacktestDecisionReference> Decisions,
         BacktestRiskPayload? RiskResult,
         BacktestPlanPayload? RiskPlan,
+        string? FillSimulationVersion,
         IReadOnlyList<BacktestFillPayload> Fills,
         decimal TotalFees,
         decimal TotalSlippage,
