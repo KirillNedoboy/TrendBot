@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 09 — Replay, backtest, and research validation
-- Milestone: P09-M03 — Frozen research input preparation
-- Current task: P09-M03-T002 (DONE; predeclared criteria and evaluation gate)
-- Next task: P10-M01-T001 (READY; P13-M01-T001 remains independently READY)
+- Phase: 10 — Lane B derivatives and behavior
+- Milestone: P10-M01 — Derivatives behavior confirmation
+- Current task: P10-M01-T003 (DONE; Lane B freshness and causal replay)
+- Next task: P10-M02-T001 (READY; P13-M01-T001 remains independently READY)
 
 ## Confirmed state
 
@@ -439,3 +439,30 @@
 - Evidence: `PromotionCriteriaTests` passed 3/3; the complete affected Replay.Tests assembly passed 32/32. Release Backtesting and Replay builds with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed. No automatic promotion decision or numeric threshold was added.
 - Architecture: [`docs/architecture/research-freeze.md`](docs/architecture/research-freeze.md) records the criteria identity, manifest binding, unresolved-blocker readiness gate, write-once registration, and evidence boundary.
 - Scope: changes are limited to Backtesting, Replay.Tests, the research-freeze architecture note, TASKS, and this handoff. No Core contracts, Infrastructure dependency, package, project graph, execution behavior, P13 behavior, or canonical source change was made; no commit or push was performed. `P10-M01-T001` is now the first READY task; `P13-M01-T001` remains independently READY and implementation stopped at P09-M03.
+
+## P10-M01-T001 evidence
+
+- Startup: the validator selected `P10-M01-T001` as the first READY task; `P09-M03-T002` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD RED: the focused Core.Tests build first failed with the expected missing `LaneBOpenInterestObservation` and `LaneBFundingObservation` contracts.
+- GREEN: Core adds immutable `LaneBInput`, causal OI/funding observations that wrap the existing `OIUpdate`/`FundingUpdate`, explicit source/event identity, instrument, units, funding kind, provenance, event/receive/availability/exchange times, and stable sequence. `LaneBInput.Select` filters the shared causal prefix, preserves exact decimal values, computes only explicitly configured absolute OI deltas, and reports unknown configuration, missing, unavailable, incompatible, conflict, insufficient-history, duplicate, and overflow states without defaults.
+- Focused GREEN: `LaneBInputTests` passed 4/4. The Core Release build with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Architecture: [`docs/architecture/lane-b.md`](docs/architecture/lane-b.md) records the causal input boundary, explicit unit/configuration rules, duplicate/conflict behavior, and synthetic-fixture limits.
+- Scope: changes are limited to Core, Core.Tests, the Lane B architecture note, TASKS, and this handoff. No provider/Binance mapping, Decision handoff, persistence, package, project-graph, or canonical-source change was made; `P10-M01-T002` is now the first READY task and must be rechecked before implementation.
+
+## P10-M01-T002 evidence
+
+- Startup: after T001 the validator selected `P10-M01-T002` as the first READY task; `P10-M01-T001` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD RED: the focused Core.Tests build first failed with the expected missing liquidation, failed-continuation, rule-table, evaluator, and shadow-result contracts.
+- GREEN: Core adds standalone causal `LaneBLiquidationObservation` and externally supplied `LaneBFailedContinuationObservation` with method versions, outcomes, causal links, and provenance. `LaneBEvaluator` consumes only a caller-declared, setup/direction-specific metric table and returns `lane-b-shadow-v1` outcomes (`Confirm`, `Neutral`, `Veto`, `InsufficientData`) with reasons and used IDs. Missing liquidation coverage, unknown failed-continuation methods/links, missing rules, and OI-only confirmation remain insufficient; the evaluator has no Decision, RiskDecision, OrderIntent, or authorization surface.
+- Focused GREEN: `LaneBShadowTests` passed 4/4. The Core Release build with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Architecture: [`docs/architecture/lane-b.md`](docs/architecture/lane-b.md) records standalone liquidation/behavior evidence, explicit rule-table metrics, shadow statuses, external failed-continuation limits, and the absence of a Decision handoff.
+- Scope: changes remain limited to Core, Core.Tests, the Lane B architecture note, TASKS, and this handoff. No Binance mapping, provider integration, persistence, package, project-graph, Decision handoff, or canonical-source change was made; `P10-M01-T003` is now the first READY task and must be rechecked before implementation.
+
+## P10-M01-T003 evidence
+
+- Startup: after T002 the validator selected `P10-M01-T003` as the first READY task; `P10-M01-T002` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- TDD RED: the focused freshness/replay build first failed with the expected missing TTL policy, freshness evidence/evaluator, and Lane B replay fixture contracts.
+- GREEN: Core adds caller-supplied per-series TTL policy with unknown/non-positive values blocked, independent event and availability ages with equality-at-TTL freshness, and `LaneBEvaluator` policy gating. Exact duplicates are retained once with diagnostics; same-identity conflicts block affected evidence; input units/sources and liquidation arithmetic remain explicit failures. Existing `HistoricalReplayRunner` feeds causal OI/funding prefixes to the same selection/evaluator, preserving late records and prior cursor results.
+- Focused GREEN: `LaneBInputTests`, `LaneBShadowTests`, and `LaneBFreshnessTests` passed 13/13; `LaneBReplayTests` passed 4/4. Core and Replay Release builds with warnings-as-errors passed with zero warnings/errors; scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Architecture: [`docs/architecture/lane-b.md`](docs/architecture/lane-b.md) records the caller TTL boundary, independent ages, no-lookahead replay evidence, duplicate/conflict handling, and freshness limitations.
+- Scope: changes are limited to Core, Core.Tests, Replay.Tests, the Lane B architecture note, TASKS, and this handoff. No provider/Binance mapping, persistent causal join, Decision handoff, package, project-graph, or canonical-source change was made. After validation the expected READY tasks are `P10-M02-T001` and `P13-M01-T001`; implementation stops at P10-M01.
