@@ -9,7 +9,7 @@ namespace TradingBot.Infrastructure;
 /// </summary>
 internal static class SqliteDatabase
 {
-    public const int CurrentSchemaVersion = 10;
+    public const int CurrentSchemaVersion = 11;
 
     private static readonly JournalColumn[] RequiredEventColumns =
     [
@@ -106,6 +106,8 @@ internal static class SqliteDatabase
                 MigrateV8ToV9(connection, transaction);
                 SetUserVersion(connection, transaction, 9);
                 MigrateV9ToV10(connection, transaction);
+                SetUserVersion(connection, transaction, 10);
+                MigrateV10ToV11(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
             }
             else if (lockedVersion != CurrentSchemaVersion)
@@ -117,7 +119,7 @@ internal static class SqliteDatabase
             transaction.Commit();
             version = CurrentSchemaVersion;
         }
-        else if (version is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9)
+        else if (version is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10)
         {
             using SqliteTransaction transaction = connection.BeginTransaction(
                 IsolationLevel.Serializable, deferred: false);
@@ -181,6 +183,13 @@ internal static class SqliteDatabase
             if (lockedVersion == 9)
             {
                 MigrateV9ToV10(connection, transaction);
+                SetUserVersion(connection, transaction, 10);
+                lockedVersion = 10;
+            }
+
+            if (lockedVersion == 10)
+            {
+                MigrateV10ToV11(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
                 lockedVersion = CurrentSchemaVersion;
             }
@@ -209,6 +218,7 @@ internal static class SqliteDatabase
         ValidateUniverseSelectionSnapshotSchema(connection);
         ValidateFeatureQualitySnapshotSchema(connection);
         ValidateDecisionProjectionSchema(connection);
+        ValidateRiskEvaluationSchema(connection);
     }
 
     private static void CreateSchemaV1(SqliteConnection connection, SqliteTransaction transaction)
@@ -410,6 +420,22 @@ internal static class SqliteDatabase
                 format_version INTEGER NOT NULL,
                 reason_codes_version TEXT COLLATE BINARY NOT NULL,
                 snapshot_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            """);
+    }
+
+    private static void MigrateV10ToV11(SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE IF NOT EXISTS risk_evaluations
+            (
+                evaluation_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                decision_id TEXT COLLATE BINARY NOT NULL UNIQUE,
+                intent_id TEXT COLLATE BINARY NOT NULL UNIQUE,
+                reservation_id TEXT COLLATE BINARY NOT NULL UNIQUE,
+                portfolio_id TEXT COLLATE BINARY NOT NULL,
+                evidence_json TEXT NOT NULL
             ) WITHOUT ROWID;
             """);
     }
@@ -709,6 +735,35 @@ internal static class SqliteDatabase
         {
             throw new InvalidDataException(
                 $"The decision_projections schema does not match version {CurrentSchemaVersion}.");
+        }
+    }
+
+    private static void ValidateRiskEvaluationSchema(SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'risk_evaluations';
+            """;
+        string? createSql = command.ExecuteScalar() as string;
+        if (createSql is null
+            || createSql.IndexOf("evaluation_id TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("decision_id TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("intent_id TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("reservation_id TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("portfolio_id TEXT COLLATE BINARY",
+                StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("evidence_json TEXT", StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("UNIQUE", StringComparison.OrdinalIgnoreCase) < 0
+            || createSql.IndexOf("WITHOUT ROWID", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            throw new InvalidDataException(
+                $"The risk_evaluations schema does not match version {CurrentSchemaVersion}.");
         }
     }
 

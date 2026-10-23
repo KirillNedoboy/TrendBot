@@ -29,6 +29,11 @@ P08-M02 adds the immutable `DecisionProjectionSnapshot` Core record and its
 transactional SQLite store; decision persistence retains the full Decision
 Engine result, both configurations, the reason-catalog version, and the
 lifecycle checkpoint used for restart recovery.
+P11-M02-T001 authenticates portfolio reservation requests with a complete,
+recomputed `RiskEvaluationResult`, an expected acknowledged reconciliation
+revision, and the shared risk-math implementation. The reservation store
+persists the canonical risk evidence beside the intent and reservation in the
+same transaction.
 
 ## API and migration
 
@@ -56,9 +61,16 @@ The synchronous API is intentionally small:
   retry returns false, while a conflicting portfolio identity throws.
 - FindLimits(portfolioId), ReadReservations(portfolioId), and
   FindReservation(reservationId) read the persisted immutable state.
-- TryReserve(intent, reservation) persists the existing OrderIntent and its
-  reservation together in one immediate serializable transaction. It returns
-  Reserved, AlreadyReserved, or InsufficientCapacity.
+- TryReserve(intent, reservation, riskEvaluation, expectedReconciliationRevision,
+  riskMathCalculator) recomputes the complete risk result with the shared
+  calculator, requires an approved canonical match, and persists the intent,
+  reservation, and risk evidence together in one immediate serializable
+  transaction. The transaction checks the current acknowledged revision and
+  unresolved-state markers, rereads capacity totals, and returns Reserved,
+  AlreadyReserved, or InsufficientCapacity.
+- FindRiskEvaluation(evaluationId) reconstructs saved canonical risk evidence;
+  a legacy reservation without matching evidence is never silently
+  reauthorized.
 - RecordObservation(fill, positionSnapshots, checkpoint) persists the supplied
   fill, immutable position snapshots, and the next portfolio checkpoint in one
   immediate serializable transaction. It returns Recorded or AlreadyRecorded.
@@ -67,8 +79,10 @@ The synchronous API is intentionally small:
   ReadPositionSnapshots(portfolioId) reconstruct the persisted operational
   state after restart.
 - AcknowledgeReconciliation(portfolioId, revision) persists an explicit
-  acknowledgement. CanRetry(portfolioId) requires the current revision to be
-  acknowledged with no unknown or manual markers.
+  acknowledgement only for the current revision when both checkpoint markers
+  and latest actual position origins contain no unknown or manual state.
+  CanRetry(portfolioId) evaluates that same current revision and latest-origin
+  guard in one transaction.
 - ReleaseAfterReconciliation(portfolioId, intentId, revision) marks the full
   reservation released only after the acknowledged current checkpoint shows
   no open intent and a closed associated position. Repeating the release is
@@ -131,18 +145,22 @@ prior rows. The transactional 7 -> 8 migration adds
 `universe_selection_snapshots` without rewriting any prior rows.
 The transactional 8 -> 9 migration adds `feature_quality_snapshots` without
 rewriting any prior rows. The transactional 9 -> 10 migration adds
-`decision_projections` without rewriting any prior rows.
+`decision_projections` without rewriting any prior rows. The transactional
+10 -> 11 migration adds `risk_evaluations` without rewriting any prior rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. Version 10 is validated before use,
-including BINARY collation on event, intent, portfolio, reservation, fill,
+rejected without replacing existing tables. The migrated version 11 is validated
+before use, including BINARY collation on event, intent, portfolio, reservation, fill,
 capture, screener formula, selection algorithm, and feature-quality algorithm
 text identities plus BLOB storage for screener, staged-selection,
 feature-quality, and decision projection identities. The 2 -> 3, 3 -> 4,
 4 -> 5, 5 -> 6, 6 -> 7, 7 -> 8, 8 -> 9, and 9 -> 10 migrations preserve
-existing rows.
+existing rows. Version 11 is validated before use, including BINARY risk and
+reservation identity columns and the canonical evidence payload. The 10 -> 11
+migration preserves all existing intent, portfolio, reservation, and
+operational rows.
 
-The version-2 event table, retained in schema version 10, is:
+The version-2 event table, retained in schema version 11, is:
 
 | Column | Meaning |
 |---|---|
@@ -172,7 +190,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 10, are:
+The version-4 portfolio tables, retained in schema version 11, are:
 
 | Table | Stored state |
 |---|---|
@@ -180,17 +198,36 @@ The version-4 portfolio tables, retained in schema version 10, are:
 | reservations | Reservation identity and portfolio/intent identities in BINARY columns, plus canonical JSON for `PortfolioReservation`; `intent_id` is unique |
 
 Both tables are WITHOUT ROWID. Monetary values and decimal precision remain in
-canonical JSON text; SQLite never stores them as REAL. `TryReserve` reads the
-registered limits and existing reservations inside one immediate serializable
-transaction, adds decimal totals with checked application arithmetic, and
-persists the OrderIntent and reservation together only when every explicit
-risk, notional, and position-slot limit remains available. Identical retries
-return `AlreadyReserved`; capacity overflow returns `InsufficientCapacity`
-without inserting an intent or reservation. Identity conflicts, missing
-portfolios, currency mismatches, write-lock failures, and invalid persisted
-state fail without partial mutation.
+canonical JSON text; SQLite never stores them as REAL. `TryReserve` first
+recomputes and canonically compares the supplied approved risk evaluation,
+then reads the registered limits, current acknowledgement, and existing
+reservations inside one immediate serializable transaction. It adds decimal
+totals with checked application arithmetic and persists the OrderIntent,
+reservation, and risk evidence together only when every explicit risk,
+notional, and position-slot limit remains available. Identical retries return
+`AlreadyReserved`; capacity overflow returns `InsufficientCapacity` without
+inserting an intent or reservation. Decision/evaluation identity conflicts,
+missing portfolios, stale or unresolved reconciliation, currency mismatches,
+write-lock failures, legacy rows without evidence, and invalid persisted state
+fail without partial mutation.
 
-The version-5 operational tables, retained in schema version 10, are:
+The version-11 risk-evaluation table is:
+
+| Column | Meaning |
+|---|---|
+| evaluation_id | Risk evaluation identity, BINARY primary key |
+| decision_id | Canonical risk-decision identity, BINARY unique key |
+| intent_id | Bound OrderIntent identity, BINARY unique key |
+| reservation_id | Bound reservation identity, BINARY unique key |
+| portfolio_id | Bound portfolio identity, BINARY value |
+| evidence_json | Canonical approved `RiskEvaluationResult` JSON |
+
+The table is WITHOUT ROWID. Each saved decision identity can bind to only one
+intent and reservation. Repeated requests require byte-identical canonical
+evidence; old reservations that have no row here remain capacity-accounted but
+cannot be silently reauthorized.
+
+The version-5 operational tables, retained in schema version 11, are:
 
 | Table | Stored state |
 |---|---|
@@ -206,14 +243,19 @@ before commit. A new observation always stores `Unreconciled`, including when
 the caller supplied an acknowledged value. Fill and snapshot rows are
 append-only observations, while the current checkpoint row records the latest
 state. Unknown and manual markers remain explicit in the checkpoint.
-Acknowledgement is persisted separately and does not clear those markers, so
-the retry guard remains closed until they are resolved. A complete reservation
-stays counted through partial fills. Release marks that complete reservation
-only after an acknowledged current checkpoint confirms the order is closed and
-every latest associated position snapshot is closed; repeated release leaves
-the durable state unchanged.
+Acknowledgement is persisted separately only after checkpoint markers and the
+latest actual position origins contain no unknown or manual state; it never
+silently clears unresolved evidence. A complete reservation
+stays counted through sequential partial fills. Release marks that complete
+reservation only after an acknowledged current checkpoint confirms the order is
+closed and at least one latest associated position snapshot exists and is
+closed; a closed intent without a linked snapshot and a closed snapshot with an
+open intent both fail. Repeated release leaves the durable state unchanged and
+the saved risk evidence remains available after release. Fill JSON preserves
+exact quantity, price, nullable fee, event time, exchange time, receive time,
+availability time, and stable sequence across restart.
 
-The version-6 capture tables, retained in schema version 10, are:
+The version-6 capture tables, retained in schema version 11, are:
 
 | Table | Stored state |
 |---|---|
@@ -238,7 +280,7 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
-The version-7 screener snapshot table, retained in schema version 10, is:
+The version-7 screener snapshot table, retained in schema version 11, is:
 
 | Column | Meaning |
 |---|---|
@@ -255,7 +297,7 @@ mismatches, and identity mismatches. Appends use an immediate serializable
 transaction; identical retries commit and return false, while a failed or
 conflicting append leaves no partial row.
 
-The version-8 staged-selection chain table, retained in schema version 10, is:
+The version-8 staged-selection chain table, retained in schema version 11, is:
 
 | Column | Meaning |
 |---|---|
@@ -363,7 +405,7 @@ ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
 first, then orders eligible events by payload EventTime and StableSequence.
 Receive time is retained metadata and is never substituted for event time.
 
-The version-9 feature-quality snapshot table, retained in schema version 10, is:
+The version-9 feature-quality snapshot table, retained in schema version 11, is:
 
 | Column | Meaning |
 |---|---|

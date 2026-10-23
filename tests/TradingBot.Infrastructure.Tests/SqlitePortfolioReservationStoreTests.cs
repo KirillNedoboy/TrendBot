@@ -1,5 +1,6 @@
 ﻿using Microsoft.Data.Sqlite;
 using TradingBot.Core;
+using TradingBot.Core.Tests;
 using TradingBot.Infrastructure;
 using Xunit;
 
@@ -25,7 +26,7 @@ public sealed class SqlitePortfolioReservationStoreTests
         {
             Assert.True(store.Register(limits));
             Assert.Equal(PortfolioReservationResult.Reserved,
-                store.TryReserve(intent, reservation));
+                RiskReservationTestSupport.Reserve(store, intent, reservation));
             Assert.Equal(limits, store.FindLimits(portfolioId));
             Assert.Equal(reservation, Assert.Single(store.ReadReservations(portfolioId)));
         }
@@ -51,13 +52,13 @@ public sealed class SqlitePortfolioReservationStoreTests
         PortfolioReservation firstReservation = CreateReservation("reservation-1", portfolioId,
             firstIntent, risk: 5m, notional: 10m, slots: 1);
         Assert.Equal(PortfolioReservationResult.Reserved,
-            store.TryReserve(firstIntent, firstReservation));
+            RiskReservationTestSupport.Reserve(store, firstIntent, firstReservation));
 
         OrderIntent rejectedIntent = CreateIntent("intent-2", "client-2");
         PortfolioReservation rejectedReservation = CreateReservation("reservation-2", portfolioId,
             rejectedIntent, risk: 0.0000000000000000000000000001m, notional: 1m, slots: 1);
         Assert.Equal(PortfolioReservationResult.InsufficientCapacity,
-            store.TryReserve(rejectedIntent, rejectedReservation));
+            RiskReservationTestSupport.Reserve(store, rejectedIntent, rejectedReservation));
         Assert.Null(store.FindReservation(rejectedReservation.ReservationId));
         using SqliteOrderIntentJournal intents = SqliteOrderIntentJournal.Open(database.Path);
         Assert.Null(intents.Find(rejectedIntent.IntentId));
@@ -76,13 +77,13 @@ public sealed class SqlitePortfolioReservationStoreTests
         PortfolioReservation firstReservation = CreateReservation("reservation-1", portfolioId,
             firstIntent, risk: 1m, notional: 50m, slots: 1);
         Assert.Equal(PortfolioReservationResult.Reserved,
-            store.TryReserve(firstIntent, firstReservation));
+            RiskReservationTestSupport.Reserve(store, firstIntent, firstReservation));
 
         OrderIntent rejectedIntent = CreateIntent("intent-2", "client-2");
         PortfolioReservation rejectedReservation = CreateReservation("reservation-2", portfolioId,
             rejectedIntent, risk: 1m, notional: 0.00000000000000000001m, slots: 1);
         Assert.Equal(PortfolioReservationResult.InsufficientCapacity,
-            store.TryReserve(rejectedIntent, rejectedReservation));
+            RiskReservationTestSupport.Reserve(store, rejectedIntent, rejectedReservation));
         Assert.Null(store.FindReservation(rejectedReservation.ReservationId));
     }
 
@@ -99,13 +100,13 @@ public sealed class SqlitePortfolioReservationStoreTests
         PortfolioReservation firstReservation = CreateReservation("reservation-1", portfolioId,
             firstIntent, risk: 1m, notional: 1m, slots: 1);
         Assert.Equal(PortfolioReservationResult.Reserved,
-            store.TryReserve(firstIntent, firstReservation));
+            RiskReservationTestSupport.Reserve(store, firstIntent, firstReservation));
 
         OrderIntent rejectedIntent = CreateIntent("intent-2", "client-2");
         PortfolioReservation rejectedReservation = CreateReservation("reservation-2", portfolioId,
             rejectedIntent, risk: 1m, notional: 1m, slots: 1);
         Assert.Equal(PortfolioReservationResult.InsufficientCapacity,
-            store.TryReserve(rejectedIntent, rejectedReservation));
+            RiskReservationTestSupport.Reserve(store, rejectedIntent, rejectedReservation));
         Assert.Null(store.FindReservation(rejectedReservation.ReservationId));
     }
 
@@ -121,19 +122,22 @@ public sealed class SqlitePortfolioReservationStoreTests
         PortfolioReservation reservation = CreateReservation("reservation-1", portfolioId, intent,
             risk: 1m, notional: 2m, slots: 1);
 
-        Assert.Equal(PortfolioReservationResult.Reserved, store.TryReserve(intent, reservation));
+        Assert.Equal(PortfolioReservationResult.Reserved,
+            RiskReservationTestSupport.Reserve(store, intent, reservation));
         Assert.Equal(PortfolioReservationResult.AlreadyReserved,
-            store.TryReserve(intent, reservation));
+            RiskReservationTestSupport.Reserve(store, intent, reservation));
 
         PortfolioReservation reservationConflict = CreateReservation("reservation-1", portfolioId,
             intent, risk: 2m, notional: 2m, slots: 1);
-        Assert.Throws<InvalidOperationException>(() => store.TryReserve(intent, reservationConflict));
+        Assert.Throws<InvalidOperationException>(() =>
+            RiskReservationTestSupport.Reserve(store, intent, reservationConflict));
 
         OrderIntent intentConflict = CreateIntent("intent-2", "client-1");
         PortfolioReservation intentReservationConflict = CreateReservation("reservation-2",
             portfolioId, intentConflict, risk: 2m, notional: 2m, slots: 1);
         Assert.Throws<InvalidOperationException>(() =>
-            store.TryReserve(intentConflict, intentReservationConflict));
+            RiskReservationTestSupport.Reserve(store, intentConflict,
+                intentReservationConflict));
 
         Assert.Equal(reservation, Assert.Single(store.ReadReservations(portfolioId)));
         using SqliteOrderIntentJournal intents = SqliteOrderIntentJournal.Open(database.Path);
@@ -155,13 +159,13 @@ public sealed class SqlitePortfolioReservationStoreTests
             missingPortfolioId, missingIntent, risk: 1m, notional: 1m, slots: 1);
 
         Assert.Throws<InvalidOperationException>(() =>
-            store.TryReserve(missingIntent, missingReservation));
+            RiskReservationTestSupport.Reserve(store, missingIntent, missingReservation));
 
         OrderIntent currencyIntent = CreateIntent("currency-intent", "currency-client");
         PortfolioReservation currencyReservation = new("currency-reservation", portfolioId,
             currencyIntent.IntentId, new Money(1m, "USD"), new Money(1m, "USD"), 1);
         Assert.Throws<ArgumentException>(() =>
-            store.TryReserve(currencyIntent, currencyReservation));
+            RiskReservationTestSupport.Reserve(store, currencyIntent, currencyReservation));
 
         Assert.Empty(store.ReadReservations(portfolioId));
         using SqliteOrderIntentJournal intents = SqliteOrderIntentJournal.Open(database.Path);
@@ -189,12 +193,14 @@ public sealed class SqlitePortfolioReservationStoreTests
         Task<PortfolioReservationResult> firstAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return first.TryReserve(CreateIntent("intent-1", "client-1"), firstReservation);
+            return RiskReservationTestSupport.Reserve(first,
+                CreateIntent("intent-1", "client-1"), firstReservation);
         });
         Task<PortfolioReservationResult> secondAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return second.TryReserve(CreateIntent("intent-2", "client-2"), secondReservation);
+            return RiskReservationTestSupport.Reserve(second,
+                CreateIntent("intent-2", "client-2"), secondReservation);
         });
 
         PortfolioReservationResult[] results = await Task.WhenAll(firstAttempt, secondAttempt);
@@ -224,12 +230,12 @@ public sealed class SqlitePortfolioReservationStoreTests
         Task<PortfolioReservationResult> firstAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return first.TryReserve(firstIntent, firstReservation);
+            return RiskReservationTestSupport.Reserve(first, firstIntent, firstReservation);
         });
         Task<PortfolioReservationResult> secondAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return second.TryReserve(secondIntent, secondReservation);
+            return RiskReservationTestSupport.Reserve(second, secondIntent, secondReservation);
         });
 
         PortfolioReservationResult[] results = await Task.WhenAll(firstAttempt, secondAttempt);
@@ -259,12 +265,12 @@ public sealed class SqlitePortfolioReservationStoreTests
         Task<PortfolioReservationResult> firstAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return first.TryReserve(firstIntent, firstReservation);
+            return RiskReservationTestSupport.Reserve(first, firstIntent, firstReservation);
         });
         Task<PortfolioReservationResult> secondAttempt = Task.Run(() =>
         {
             barrier.SignalAndWait(TimeSpan.FromSeconds(10));
-            return second.TryReserve(secondIntent, secondReservation);
+            return RiskReservationTestSupport.Reserve(second, secondIntent, secondReservation);
         });
 
         PortfolioReservationResult[] results = await Task.WhenAll(firstAttempt, secondAttempt);
@@ -287,7 +293,8 @@ public sealed class SqlitePortfolioReservationStoreTests
         OrderIntent intent = CreateIntent("blocked-intent", "blocked-client");
         PortfolioReservation reservation = CreateReservation("blocked-reservation", portfolioId,
             intent, risk: 1m, notional: 1m, slots: 1);
-        Assert.Throws<SqliteException>(() => store.TryReserve(intent, reservation));
+        Assert.Throws<SqliteException>(() =>
+            RiskReservationTestSupport.Reserve(store, intent, reservation));
 
         ExecuteNonQuery(blocker, "ROLLBACK;");
         Assert.Null(store.FindReservation(reservation.ReservationId));
@@ -362,11 +369,13 @@ public sealed class SqlitePortfolioReservationStoreTests
 
         using SqlitePortfolioReservationStore migrated = SqlitePortfolioReservationStore.Open(database.Path);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(10L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(11L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(0L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM portfolios;"));
         Assert.Equal(0L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM reservations;"));
+        Assert.Equal(0L, ExecuteScalar<long>(verify,
+            "SELECT COUNT(*) FROM risk_evaluations;"));
 
         using SqliteEventJournal events = SqliteEventJournal.Open(database.Path);
         Assert.Equal(expectedEvent, Assert.Single(events.ReadStream("stream-a")));
@@ -381,6 +390,8 @@ public sealed class SqlitePortfolioReservationStoreTests
         SqlitePortfolioReservationStore store =
             SqlitePortfolioReservationStore.Open(path, commandTimeoutSeconds);
         Assert.True(store.Register(limits));
+        Assert.Equal(ReconciliationStatus.Acknowledged,
+            store.AcknowledgeReconciliation(limits.PortfolioId, 0).Status);
         return store;
     }
 
@@ -390,8 +401,11 @@ public sealed class SqlitePortfolioReservationStoreTests
             new Money(notional, "USDT"), slots);
 
     private static OrderIntent CreateIntent(string intentId, string clientOrderId) =>
-        new(intentId, "strategy-run-1", "setup-1", clientOrderId, Instrument, Direction.Long,
-            OrderRole.Entry, 1, new Quantity(1m), new Price(100m));
+        new(intentId, "strategy-run-1",
+            DecisionProjectionFixtures.CreateProjection(DecisionEngineProfile.Allow)
+                .Result.Decision.SetupId,
+            clientOrderId, Instrument, Direction.Long, OrderRole.Entry, 1,
+            new Quantity(1m), new Price(100m));
 
     private static UtcTimestamp Time(int minutes) =>
         new(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero).AddMinutes(minutes));

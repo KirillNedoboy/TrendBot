@@ -135,3 +135,24 @@ calculator failure injection, capacity overflow, causal lookahead, strict JSON,
 and execution-surface absence. These fixtures prove deterministic guardrails
 only; they do not authorize or execute an order and do not establish live
 profitability or venue feasibility.
+
+P11-M02-T001 adds the persistence boundary that consumes this result without
+re-evaluating strategy policy. `SqlitePortfolioReservationStore.TryReserve`
+requires the complete approved result, the expected current reconciliation
+revision, and the same `IRiskMathCalculator` implementation. It recomputes and
+compares canonical evidence before an immediate transaction checks the
+registered limits, current acknowledgement, and capacity totals. The
+transaction binds one evaluation and decision identity to one intent and
+reservation, and stores the evidence with both rows. An approved result cannot
+shrink the requested intent quantity; blocked, stale, mismatched, legacy, and
+identity-conflicting inputs fail without partial rows. This durable binding is
+an execution prerequisite and remains separate from order submission.
+
+P11-M02-T003 keeps this reservation gate tied to the same acknowledged
+reconciliation revision. `AcknowledgeReconciliation`, `CanRetry`, new
+reservations, and release inspect the latest actual position snapshots in
+their transaction; manual or unknown origins block even when a checkpoint omits
+markers. New observations invalidate prior acknowledgement, and an empty
+portfolio requires an explicit revision-zero acknowledgement. Known open
+positions remain capacity-bearing until their linked reservation is released
+after an acknowledged closed observation.

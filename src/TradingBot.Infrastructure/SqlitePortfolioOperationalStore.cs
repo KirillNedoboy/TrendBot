@@ -167,9 +167,9 @@ public sealed partial class SqlitePortfolioReservationStore
     }
 
     /// <summary>
-    /// Marks the current revision as explicitly acknowledged. Acknowledgement
-    /// never removes unknown or manual markers; the retry guard still blocks
-    /// while either remains unresolved.
+    /// Marks the current revision as explicitly acknowledged only when the
+    /// checkpoint and latest actual position snapshots contain no unresolved
+    /// unknown or manual state.
     /// </summary>
     public ReconciliationCheckpoint AcknowledgeReconciliation(PortfolioId portfolioId,
         long revision)
@@ -208,6 +208,8 @@ public sealed partial class SqlitePortfolioReservationStore
                 "The requested reconciliation revision is stale or missing.");
         }
 
+        EnsureNoUnresolvedPositionOrigins(connection, transaction, portfolioId.Value);
+
         if (current.Status == ReconciliationStatus.Acknowledged)
         {
             transaction.Commit();
@@ -229,10 +231,24 @@ public sealed partial class SqlitePortfolioReservationStore
     /// </summary>
     public bool CanRetry(PortfolioId portfolioId)
     {
-        ReconciliationCheckpoint checkpoint = ReadCheckpoint(portfolioId);
-        return checkpoint.Status == ReconciliationStatus.Acknowledged
+        ArgumentNullException.ThrowIfNull(portfolioId);
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        CheckpointRow? row = FindCheckpoint(connection, transaction, portfolioId.Value);
+        if (row is null)
+        {
+            transaction.Commit();
+            return false;
+        }
+
+        ReconciliationCheckpoint checkpoint = DeserializeCheckpoint(row);
+        bool canRetry = checkpoint.Status == ReconciliationStatus.Acknowledged
             && checkpoint.UnknownMarkers.Count == 0
-            && checkpoint.ManualPositionIds.Count == 0;
+            && checkpoint.ManualPositionIds.Count == 0
+            && !HasUnresolvedPositionOrigins(connection, transaction, portfolioId.Value);
+        transaction.Commit();
+        return canRetry;
     }
 
     /// <summary>
@@ -273,11 +289,14 @@ public sealed partial class SqlitePortfolioReservationStore
                 "A reservation can be released only after acknowledged reconciliation.");
         }
 
+        EnsureNoUnresolvedPositionOrigins(connection, transaction, portfolioId.Value);
+
         if (checkpoint.OpenIntentIds.Contains(intentId, StringComparer.Ordinal))
         {
             throw new InvalidOperationException("The order intent remains open.");
         }
 
+        bool hasAssociatedPositionSnapshot = false;
         foreach (PortfolioPositionSnapshot snapshot in ReadLatestSnapshots(connection, transaction,
             portfolioId.Value))
         {
@@ -286,6 +305,8 @@ public sealed partial class SqlitePortfolioReservationStore
                 continue;
             }
 
+            hasAssociatedPositionSnapshot = true;
+
             if (snapshot.Position.Quantity.Value > 0m
                 || checkpoint.OpenPositionIds.Contains(snapshot.Position.PositionId,
                     StringComparer.Ordinal))
@@ -293,6 +314,12 @@ public sealed partial class SqlitePortfolioReservationStore
                 throw new InvalidOperationException(
                     "The associated position remains open.");
             }
+        }
+
+        if (!hasAssociatedPositionSnapshot)
+        {
+            throw new InvalidOperationException(
+                "An associated position snapshot is required before release.");
         }
 
         ReservationRow? reservation = FindReservationByIntentId(connection, transaction, intentId);
@@ -574,6 +601,23 @@ public sealed partial class SqlitePortfolioReservationStore
         }
 
         return snapshots;
+    }
+
+    private static bool HasUnresolvedPositionOrigins(SqliteConnection connection,
+        SqliteTransaction transaction, string portfolioId)
+    {
+        return ReadLatestSnapshots(connection, transaction, portfolioId).Any(snapshot =>
+            snapshot.Origin is PositionOrigin.Manual or PositionOrigin.Unknown);
+    }
+
+    private static void EnsureNoUnresolvedPositionOrigins(SqliteConnection connection,
+        SqliteTransaction transaction, string portfolioId)
+    {
+        if (HasUnresolvedPositionOrigins(connection, transaction, portfolioId))
+        {
+            throw new InvalidOperationException(
+                "Latest actual position snapshots contain unresolved manual or unknown state.");
+        }
     }
 
     private static List<PortfolioPositionSnapshot> ReadSnapshots(SqliteCommand command)

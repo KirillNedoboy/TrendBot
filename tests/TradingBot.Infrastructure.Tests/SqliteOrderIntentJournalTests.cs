@@ -26,7 +26,7 @@ public sealed class SqliteOrderIntentJournalTests
 
         using (SqliteConnection connection = OpenRaw(database.Path))
         {
-            Assert.Equal(10L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
+            Assert.Equal(11L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
             Assert.Equal(CoreJsonSerializer.Serialize(expected), ExecuteScalar<string>(
                 connection, "SELECT intent_json FROM order_intents WHERE intent_id = 'intent-1';"));
         }
@@ -165,7 +165,7 @@ public sealed class SqliteOrderIntentJournalTests
         using SqliteEventJournal events = SqliteEventJournal.Open(database.Path);
         Assert.Equal(expectedEvent, Assert.Single(events.ReadStream("stream-a")));
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(10L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(11L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM order_intents;"));
     }
