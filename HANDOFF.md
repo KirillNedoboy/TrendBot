@@ -1,9 +1,84 @@
 # Current checkpoint
 
-- Phase: 13 — Lane C
-- Milestone: P13-M02 — Lane C quality and research evidence
-- Current task: P13-M02-T003 (DONE; fixed Lane C evidence replay)
-- Next task: P14-M01-T001 (READY)
+- Phase: 14 — Full Historical Replay
+- Milestone: P14-M01 — Multi-source replay dataset
+- Current task: P14-M01-T003 (DONE; end-to-end decision trace regression)
+- Next task: P14-M02-T001 (READY; implementation stopped before this task)
+
+## P14-M01-T001 evidence
+
+- Startup: the required documents were reread, Git was clean, and the docs
+  validator selected `P14-M01-T001`; both dependencies were DONE.
+- TDD RED: the focused Release Infrastructure.Tests DLL discovered one
+  `MultiSourceDatasetManifestTests` case and failed at runtime because the Core
+  manifest contract was absent.
+- GREEN: Core now defines format-one source, causal ordering, and dataset
+  manifest contracts with explicit lane/coverage/quality, source-local and
+  dataset-wide sequence identities, unknown-state retention, reference/bounds
+  validation, and canonical SHA-256 identity. Infrastructure atomically
+  persists and reopens manifests and rejects changed content.
+- Acceptance: `MultiSourceDatasetManifestTests` 6/6,
+  `CaptureDatasetManifestTests` 7/7, `LaneCCaptureExclusionTests` 6/6,
+  `CoreBoundaryTests` 2/2, and `ArchitectureTests` 1/1 passed. Core.Tests and
+  Infrastructure.Tests Release warnings-as-errors builds and scoped format
+  verification passed. `tools/validate-docs.ps1` and `git diff --check` passed.
+- Scope: no packages, schema migration, execution behavior, canonical source,
+  `graft/`, commit, or push. `P14-M01-T002` is READY and must repeat preflight
+  before implementation.
+
+## P14-M01-T002 evidence
+
+- Startup: the required documents, Git status, dependencies, and documentation
+  validator were rechecked; `P14-M01-T002` was READY after T001.
+- TDD RED: the focused Release Replay.Tests DLL discovered one
+  `MultiSourceReplayTests` case and failed at runtime because the shared runner
+  was absent.
+- GREEN: Backtesting adds typed records tied to manifest causal references and
+  a shared replay clock across Core market events, capture rows/diagnostics,
+  and independent Lane B liquidation observations. Delivery uses availability,
+  event time, persisted global sequence, and bar close. Each callback receives
+  one cursor and an immutable causal prefix. Missing rows and conflicting
+  payloads fail before delivery; exact duplicates are recorded and delivered
+  once. Existing single-stream overloads remain unchanged.
+- Acceptance: `MultiSourceReplayTests` 6/6,
+  `HistoricalReplayRunnerTests` 4/4, `LaneBReplayTests` 4/4,
+  `BacktestRegressionTests` 5/5, and the affected Replay.Tests Release build
+  with `--warnaserror` passed. T001 manifest profile was rerun 6/6 after the
+  shared evidence-reference field was added. Scoped format verification,
+  documentation validation, and `git diff --check` passed.
+- Scope: no package, persistence schema change, live transport, order,
+  canonical source, `graft/`, commit, or push. `P14-M01-T003` is DONE after its
+  acceptance passed; see the evidence below.
+
+## P14-M01-T003 evidence
+
+- Startup: all five required documents, Git status, task dependencies, SDK, and
+  `tools/validate-docs.ps1` were checked before this task; T002 was DONE and
+  T003 was selected READY. The canonical source and `graft/` remain untouched.
+- TDD RED: the focused Release IntegrationTests DLL built and discovered one
+  `MultiLaneDecisionTraceRegressionTests` case, then failed at runtime because
+  `MultiSourceReplayResult.ReadinessReasons` was absent.
+- GREEN: Backtesting results now expose deterministic readiness reasons for
+  incomplete source coverage and non-ready source quality. Replay remains
+  available for research, while `DecisionReadinessConfirmed` requires successful
+  replay and complete/ready metadata for all included sources.
+- Regression fixture: IntegrationTests persists and reopens four capture rows
+  and the multi-source manifest, then replays capture and funding lanes and runs
+  Lane C features/shadow, Lane B evaluation, Lane A setup evidence, lifecycle
+  transitions, Decision, risk evaluation, research plan, and fill simulation.
+  Identical Run A/Run B canonical traces match; changing funding rate changes
+  Lane B identity and Decision outcome. Partial/degraded capture coverage keeps
+  its reasons and blocks the Lane C decision evidence even though the synthetic
+  feature values are individually ready. Numeric fixture inputs are test-only.
+- GREEN and acceptance: `MultiLaneDecisionTraceRegressionTests` passed 3/3;
+  `MultiSourceDatasetManifestTests` 6/6, `MultiSourceReplayTests` 6/6,
+  `LaneCEvidenceReplayTests` 2/2, and `ArchitectureTests` 1/1 passed. Sequential
+  Core, Infrastructure, Backtesting, App, Infrastructure.Tests, Replay.Tests,
+  and IntegrationTests Release builds with `--warnaserror` passed with zero
+  warnings/errors. Scoped format verification, `tools/validate-docs.ps1`, and
+  `git diff --check` passed. Validator selects `P14-M02-T001` READY.
+- No package, schema migration, project-graph change, production activation,
+  commit, or push was made. Implementation stops before `P14-M02-T001`.
 
 ## Confirmed state
 

@@ -5,6 +5,9 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\TradingBot.Core.Tests\LaneASetupFixtures.cs" Link="Fixtures\LaneASetupFixtures.cs" />
+    <Compile Include="..\TradingBot.Core.Tests\LifecycleInputFixtures.cs" Link="Fixtures\LifecycleInputFixtures.cs" />
+    <Compile Include="..\Fixtures\DecisionProjectionFixtures.cs" Link="Fixtures\DecisionProjectionFixtures.cs" />
     <ProjectReference Include="..\..\src\TradingBot.App\TradingBot.App.csproj" />
     <ProjectReference Include="..\..\src\TradingBot.Backtesting\TradingBot.Backtesting.csproj" />
     <ProjectReference Include="..\..\src\TradingBot.Infrastructure\TradingBot.Infrastructure.csproj" />
