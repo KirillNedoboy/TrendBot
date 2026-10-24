@@ -95,7 +95,7 @@ public sealed class ParquetCaptureStoreTests
         }.ConnectionString))
         {
             connection.Open();
-            Assert.Equal(11L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
+            Assert.Equal(12L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
             Assert.Equal(1L, ExecuteScalar<long>(connection,
                 "SELECT COUNT(*) FROM event_journal WHERE stream_id = 'trade-stream';"));
             Assert.Equal(1L, ExecuteScalar<long>(connection,

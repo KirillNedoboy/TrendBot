@@ -28,7 +28,7 @@ public sealed class SqliteRiskReservationTests
         using SqlitePortfolioReservationStore reopened =
             SqlitePortfolioReservationStore.Open(database.Path);
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(11L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(12L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(0L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM risk_evaluations;"));
     }

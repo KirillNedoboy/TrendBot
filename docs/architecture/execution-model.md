@@ -45,5 +45,38 @@ idempotent, conflicts/overfill/checked overflow roll back, and release remains
 idempotent while retaining the saved risk evidence. A closed intent alone or a
 closed position snapshot alone cannot release a reservation.
 
-No Binance calls, credentials, order endpoints, venue adapters, or execution
-behavior are present in the current solution.
+The private Binance adapter is present at the exchange boundary for T001. It
+contains only injected REST/WebSocket transport, signing, time, and parser seams;
+it does not retain secrets, perform live calls in fixtures, submit an order, or
+authorize execution. P12-M01-T002 adds BCL-only deterministic execution states
+and observations for accepted, rejected, partial, filled, cancel-requested,
+cancelled, timeout, unknown, and conflict outcomes. An exact receipt repeats
+idempotently; a conflicting receipt, overfill, terminal mutation, timeout, or
+unknown outcome stays fail-closed and requires reconciliation. Partial fills
+remain associated with the durable reservation.
+
+`SqlitePortfolioOperationalStore` composes the existing reservation and
+operational store. It persists the intent state, dispatch attempts, and event
+receipts in one schema-12 SQLite boundary. An immediate transaction checks the
+explicit acknowledged portfolio revision and gives only one concurrent caller a
+dispatch claim. The App coordinator requires an approved `RiskEvaluationResult`,
+then lets the existing store atomically persist intent/reservation before the
+durable claim; only a fresh `Claimed` result can reach an injected adapter. A
+duplicate claim is blocked without a second adapter call. Adapter timeout and
+unknown exceptions become durable reconciliation-required observations. No
+private network, real order, production activation, or automatic Sol audit is
+part of this boundary.
+
+P12-M01-T003 adds restart recovery at the same boundary. `ExecutionRecoveryEvidence`
+must identify the intent and current acknowledged reconciliation revision, declare
+fresh complete order-history, position, and reservation knowledge, and carry exact
+fill/position/reservation identities. The coordinator compares those identities
+with durable SQLite facts before it can act. A fresh complete no-order result can
+explicitly reset a reconciliation-required lifecycle to `IntentPersisted` for a
+new dispatch attempt; absence from limited order history, stale or conflicting
+revision, unknown/manual state, and identity mismatch remain blocked. Known order
+observations are replayed in causal order, including repeated accepted events,
+partial fills, and cancel races, with the existing receipt idempotency and
+reservation guards. Failure-injection seams cover the durable claim, external
+result, and observation-commit boundaries. Recovery fixtures use only artificial
+transport/evidence and do not authorize blind retries or real execution.

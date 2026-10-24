@@ -34,6 +34,10 @@ recomputed `RiskEvaluationResult`, an expected acknowledged reconciliation
 revision, and the shared risk-math implementation. The reservation store
 persists the canonical risk evidence beside the intent and reservation in the
 same transaction.
+P12-M01-T002 adds durable execution lifecycle state, dispatch claims, and
+idempotency receipts while preserving the existing reservation and operational
+boundaries. Core remains BCL-only; the SQLite execution tables are owned by
+Infrastructure and the App coordinator only composes these APIs.
 
 ## API and migration
 
@@ -87,6 +91,20 @@ The synchronous API is intentionally small:
   reservation released only after the acknowledged current checkpoint shows
   no open intent and a closed associated position. Repeating the release is
   idempotent.
+- SqlitePortfolioOperationalStore.Open(databasePath, commandTimeoutSeconds = 30)
+  composes the reservation and operational stores and applies schema 12.
+- TryClaimDispatch(portfolioId, intent, expectedReconciliationRevision,
+  claimedAt) verifies the durably persisted intent and current acknowledged
+  revision, then atomically creates one dispatch attempt and lifecycle state.
+  A concurrent or repeated claim returns `AlreadyClaimed`; stale, unresolved,
+  conflicting, or non-persisted state is blocked or rejected fail-closed.
+- ApplyExecutionObservation(portfolioId, observation,
+  expectedReconciliationRevision) applies the Core transition and stores the
+  receipt and state together. Exact receipt repeats return `AlreadyApplied`;
+  conflicting receipts persist a `Conflict` state; unknown and timeout
+  observations require reconciliation. ReadExecutionState,
+  ReadExecutionAttempts, and ReadExecutionReceipts reconstruct the same
+  canonical state after restart.
 - ParquetCaptureStore.Open(databasePath, segmentDirectory, options) opens the
   shared schema for one explicitly named capture stream. Append accepts only
   version-one depth, trade, or diagnostic CaptureEnvelope values and assigns no
@@ -146,21 +164,22 @@ prior rows. The transactional 7 -> 8 migration adds
 The transactional 8 -> 9 migration adds `feature_quality_snapshots` without
 rewriting any prior rows. The transactional 9 -> 10 migration adds
 `decision_projections` without rewriting any prior rows. The transactional
-10 -> 11 migration adds `risk_evaluations` without rewriting any prior rows.
+10 -> 11 migration adds `risk_evaluations`, and 11 -> 12 adds the execution
+state, attempt, and receipt tables without rewriting any prior rows.
 user_version is the database migration version, not a Core contract version or
 a wire-schema version. A non-empty version-0 file and an unknown version are
-rejected without replacing existing tables. The migrated version 11 is validated
+rejected without replacing existing tables. The migrated version 12 is validated
 before use, including BINARY collation on event, intent, portfolio, reservation, fill,
-capture, screener formula, selection algorithm, and feature-quality algorithm
-text identities plus BLOB storage for screener, staged-selection,
+capture, screener formula, selection algorithm, feature-quality algorithm, and
+execution identity columns plus BLOB storage for screener, staged-selection,
 feature-quality, and decision projection identities. The 2 -> 3, 3 -> 4,
 4 -> 5, 5 -> 6, 6 -> 7, 7 -> 8, 8 -> 9, and 9 -> 10 migrations preserve
-existing rows. Version 11 is validated before use, including BINARY risk and
-reservation identity columns and the canonical evidence payload. The 10 -> 11
-migration preserves all existing intent, portfolio, reservation, and
-operational rows.
+existing rows. Version 12 is validated before use, including BINARY risk,
+reservation, and execution identity columns and canonical JSON payloads. The
+10 -> 11 and 11 -> 12 migrations preserve all existing intent, portfolio,
+reservation, and operational rows.
 
-The version-2 event table, retained in schema version 11, is:
+The version-2 event table, retained in schema version 12, is:
 
 | Column | Meaning |
 |---|---|
@@ -190,7 +209,7 @@ different value for either identity throws before insert and leaves both the
 event journal and intent rows unchanged. A successful append returns only after
 its transaction commits.
 
-The version-4 portfolio tables, retained in schema version 11, are:
+The version-4 portfolio tables, retained in schema version 12, are:
 
 | Table | Stored state |
 |---|---|
@@ -211,7 +230,7 @@ missing portfolios, stale or unresolved reconciliation, currency mismatches,
 write-lock failures, legacy rows without evidence, and invalid persisted state
 fail without partial mutation.
 
-The version-11 risk-evaluation table is:
+The version-11 risk-evaluation table, retained in schema version 12, is:
 
 | Column | Meaning |
 |---|---|
@@ -227,7 +246,7 @@ intent and reservation. Repeated requests require byte-identical canonical
 evidence; old reservations that have no row here remain capacity-accounted but
 cannot be silently reauthorized.
 
-The version-5 operational tables, retained in schema version 11, are:
+The version-5 operational tables, retained in schema version 12, are:
 
 | Table | Stored state |
 |---|---|
@@ -255,7 +274,7 @@ the saved risk evidence remains available after release. Fill JSON preserves
 exact quantity, price, nullable fee, event time, exchange time, receive time,
 availability time, and stable sequence across restart.
 
-The version-6 capture tables, retained in schema version 11, are:
+The version-6 capture tables, retained in schema version 12, are:
 
 | Table | Stored state |
 |---|---|
@@ -280,7 +299,7 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
-The version-7 screener snapshot table, retained in schema version 11, is:
+The version-7 screener snapshot table, retained in schema version 12, is:
 
 | Column | Meaning |
 |---|---|
@@ -297,7 +316,7 @@ mismatches, and identity mismatches. Appends use an immediate serializable
 transaction; identical retries commit and return false, while a failed or
 conflicting append leaves no partial row.
 
-The version-8 staged-selection chain table, retained in schema version 11, is:
+The version-8 staged-selection chain table, retained in schema version 12, is:
 
 | Column | Meaning |
 |---|---|
@@ -405,7 +424,7 @@ ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
 first, then orders eligible events by payload EventTime and StableSequence.
 Receive time is retained metadata and is never substituted for event time.
 
-The version-9 feature-quality snapshot table, retained in schema version 11, is:
+The version-9 feature-quality snapshot table, retained in schema version 12, is:
 
 | Column | Meaning |
 |---|---|
@@ -437,7 +456,47 @@ The table is WITHOUT ROWID. Exact retries are idempotent; a conflicting
 projection identity or DecisionId fails before insert and leaves the database
 unchanged. Appends use an immediate serializable transaction.
 
+The version-12 execution tables are:
+
+| Table | Stored state |
+|---|---|
+| execution_states | Durable `ExecutionStateSnapshot` keyed by intent identity, with the client-order identity and canonical state JSON |
+| execution_attempts | Immutable dispatch-attempt identity, intent, attempt number, expected reconciliation revision, and canonical attempt JSON |
+| execution_receipts | `(intent_id, receipt_id)` idempotency key and canonical `ExecutionObservation` JSON |
+
+All three tables are WITHOUT ROWID and use BINARY text identities. A claim
+opens one immediate serializable transaction, verifies the persisted intent and
+current acknowledged revision, and inserts or updates the state with exactly
+one deterministic attempt. A repeated or competing claim cannot create another
+attempt. Observation application reads the state and receipt under the same
+transaction, applies the Core state machine, and commits the new state and a
+new receipt together. Canonical row identity and revision mismatches fail
+closed; exact receipts return without mutation, while conflicting evidence
+records a reconciliation-required conflict state. No table or API submits an
+exchange order.
+
 ## Evidence and limits
+
+`SqliteExecutionStateTests` cover TDD RED/GREEN for migration 11 -> 12,
+atomic duplicate and concurrent dispatch claims, restart restoration of state
+and attempts, revision checks, exact receipt idempotency, conflicting receipt
+fail-closed state, and durable unknown outcomes. The focused execution tests
+passed 6/6 and the complete affected Infrastructure.Tests run passed 95/95.
+
+P12-M01-T003 adds recovery reads and guards on top of schema 12. The operational
+facade reconstructs durable intents, execution state, attempts, receipts, fills,
+position snapshots, reservations, and the current checkpoint from independent
+connections. `RecoverExecutionForRetry` requires the explicitly acknowledged
+current revision and complete fresh no-order evidence; `BeginExecutionReconciliation`
+binds replay to the acknowledged revision before observations are applied. The
+App recovery coordinator compares exact persisted fill, position, and reservation
+identity sets with adapter evidence, replays known observations idempotently, and
+leaves limited-history absence, stale/conflicting/unknown/manual evidence, and
+local identity mismatches blocked. T003 recovery fixtures passed 7/7, including
+restart state, repeated post-commit events, partial-fill/cancel ordering,
+durable fill/position matching, manual/conflicting evidence, and injected failure
+after an external result; related Core/Infrastructure/App profiles passed as
+recorded in `docs/TASKS.md`. No SQLite migration beyond schema 12 was required.
 
 tests/TradingBot.Infrastructure.Tests/SqliteEventJournalTests.cs,
 ReplayEnvelopeJournalTests.cs, and SqliteOrderIntentJournalTests.cs cover
@@ -491,7 +550,7 @@ referencing Exchange, Backtesting, or App.
 
 The journal, snapshot builder, reservation store, operational state store,
 capture store, and staged-selection store remain bounded recording and view
-boundaries. They do not provide
-a full replay runner, StrategyRun or ConfigVersion persistence, venue adapters,
-execution, or orderbook recovery policy. Those guarantees belong to later
-Phase 3, Phase 4, and Phase 12 tasks.
+boundaries. They do not provide a full replay runner, StrategyRun or ConfigVersion
+persistence, or orderbook recovery policy. The private execution adapter and
+recovery boundary remain isolated from production activation and real-money
+execution.

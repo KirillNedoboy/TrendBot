@@ -544,3 +544,111 @@
 - Focused GREEN: `SqliteOperationalStateTests` passed 14/14; `SqlitePortfolioReservationStoreTests` passed 11/11; `SqliteRiskReservationTests` passed 6/6. The complete affected Infrastructure.Tests Release run passed 89/89. The Release build with `--warnaserror`, scoped format verification, `tools/validate-docs.ps1`, and `git diff --check` passed.
 - Documentation: persistence, execution, and risk-model architecture notes now record the schema-11 risk evidence, authenticated reservation boundary, partial-fill/release conditions, and latest-origin reconciliation guard. `docs/TASKS.md` marks `P11-M02-T003` DONE and exposes `P12-M01-T001` plus `P13-M01-T001` as READY.
 - Scope: no Core contract, project graph, package, order submission, execution adapter, `graft/`, or canonical source change was made; no commit or push was performed. Implementation stops after the P11-M02 block; the next READY tasks are confirmed by the final validator.
+
+## P12-M01-T001 evidence
+
+- Startup: the bundled PowerShell validator selected `P12-M01-T001` as the first READY task; `P11-M02-T003` was DONE and `P13-M01-T001` remained independently READY. The canonical source SHA-256 remained `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- Official protocol review: on 2026-10-24, the current Binance USDⓈ-M Trade, Account, and User Data Streams documentation was rechecked for signed/API-key authentication, timestamp and `recvWindow` limits, order/Algo paths and fields, error classes including HTTP 503 unknown outcomes, order-history retention, stream event envelopes, and position freshness. Unknown freshness policy and undocumented nested Algo fields remain explicit unknowns; no endpoint or credential was used.
+- TDD RED: after adding the profile fixtures and a compile-only contract shell, the direct Release DLL run discovered 9 tests and failed 9 at runtime with `NotImplementedException` from the absent adapter behavior. The test class was present, the DLL executed, and the selection was non-zero.
+- GREEN: `IBinancePrivateRestClient`, signed REST/API-key stream operations, exact-decimal order/trade/position DTOs, One-way/BOTH fail-closed mode checks, injected private stream parser/transport, causal metadata, delta `ACCOUNT_UPDATE`, fill mapping, opaque `ALGO_UPDATE`, bounded responses, and secret-safe unknown-outcome errors are implemented. Focused `BinancePrivateAdapterTests` passed 12/12; full `TradingBot.Exchange.Binance.Tests` passed 50/50. The Release test build with `--warnaserror` passed with 0 warnings and 0 errors; scoped format verification passed; docs validation and `git diff --check` passed after this transition.
+- Changed files: `src/TradingBot.Exchange.Binance/BinancePrivateContracts.cs`, `BinancePrivateRestClient.cs`, `BinancePrivateStreamParser.cs`, `BinancePrivateWebSocketClient.cs`, `tests/TradingBot.Exchange.Binance.Tests/BinancePrivateAdapterTests.cs`, `docs/architecture/private-protocol.md`, `docs/architecture/execution-model.md`, `docs/TASKS.md`, and this handoff.
+- Scope and limits: no Core contract, SQLite schema, durable execution state, real/private network request, production activation, package, project-graph, `graft/`, canonical source, commit, or push was changed. Hedge/unknown position mode, unknown Algo operations, unknown outcomes, and missing freshness evidence remain blocked until later reconciliation work.
+- After validation, `P12-M01-T002` is READY and `P13-M01-T001` remains independently READY. T002 must recheck task/dependency state and the validator before adding tests; no Sol post-audit was run.
+
+## P12-M01-T002 evidence
+
+- Startup: after T001, the PowerShell validator was re-run and selected
+  `P12-M01-T002` as the first READY task; `P12-M01-T001` was DONE and
+  `P13-M01-T001` remained independently READY. No user changes, `graft/`,
+  canonical source, package, or project-graph files were altered.
+- TDD RED: focused Release DLLs were compiled with compile-only shells and
+  executed directly with the required xUnit runner. Core discovered 6 and
+  failed 6 at runtime with `NotImplementedException`; Infrastructure
+  discovered 5 and failed 5 at runtime; App coordinator integration
+  discovered 2 and failed 2 at runtime. No RED relied on a missing class,
+  compile failure, or zero-test selection.
+- GREEN: Core adds BCL-only deterministic lifecycle states and observations for
+  accepted, rejected, partial, filled, cancel-requested, cancelled, timeout,
+  unknown, and conflict outcomes. Exact receipts are idempotent; conflicting
+  receipts, overfills, terminal mutations, timeout, and unknown outcomes fail
+  closed. `ExecutionStateMachineTests` passed 6/6 and full Core.Tests passed
+  277/277.
+- GREEN: Infrastructure adds SQLite schema migration 11 -> 12 with durable
+  `execution_states`, `execution_attempts`, and `execution_receipts`. The new
+  `SqlitePortfolioOperationalStore` atomically verifies the acknowledged
+  reconciliation revision, creates a deterministic dispatch claim, persists
+  observations and receipts, and reconstructs state after restart. Sequential
+  and concurrent duplicate claims cannot create a second attempt; unknown and
+  conflicting receipts remain reconciliation-required. Focused execution
+  tests passed 6/6 and full Infrastructure.Tests passed 95/95.
+- GREEN: App `ExecutionCoordinator` requires an approved existing
+  `RiskEvaluationResult`, invokes the existing atomic reservation/intent store,
+  then dispatches only after a durable `Claimed` result. `AlreadyClaimed` is
+  blocked without another adapter call; timeout and adapter exceptions become
+  durable timeout/unknown observations. Focused coordinator tests passed 2/2
+  and full IntegrationTests passed 8/8. The adapter remains injected and no
+  private network or real order is reachable from these fixtures.
+- Verification: affected Core.Tests, Infrastructure.Tests, and
+  IntegrationTests Release builds with `--warnaserror` passed with zero
+  warnings/errors; scoped `dotnet format --verify-no-changes`,
+  `tools/validate-docs.ps1`, and `git diff --check` passed. No commit, push,
+  production activation, or automatic Sol audit was performed.
+- Changed files: `src/TradingBot.Core/ExecutionLifecycleContracts.cs`,
+  `tests/TradingBot.Core.Tests/ExecutionStateMachineTests.cs`,
+  `src/TradingBot.Infrastructure/SqliteDatabase.cs`,
+  `src/TradingBot.Infrastructure/SqliteExecutionStateStore.cs`,
+  `tests/TradingBot.Infrastructure.Tests/SqliteExecutionStateTests.cs`,
+  affected schema-version assertions in Infrastructure.Tests,
+  `src/TradingBot.App/ExecutionCoordinator.cs`,
+  `tests/TradingBot.IntegrationTests/ExecutionCoordinatorTests.cs`,
+  `docs/architecture/execution-model.md`,
+  `docs/architecture/persistence.md`, `docs/TASKS.md`, and this handoff.
+- After validation, `P12-M01-T003` is the first READY task and
+  `P13-M01-T001` remains independently READY. T003 must recheck status,
+  dependencies, and the validator before adding restart-reconciliation tests;
+  implementation stops at T002 until that check.
+
+## P12-M01-T003 evidence
+
+- Startup: after T002, the validator was re-run before implementation and
+  selected `P12-M01-T003` as the first READY task; `P12-M01-T002` was DONE and
+  `P13-M01-T001` remained independently READY. No user changes, `graft/`,
+  canonical source, package, or project-graph files were altered.
+- Official protocol boundary retained: recovery uses only injected adapter
+  evidence. It does not call Binance, submit an order, retain credentials, or
+  activate production/private execution. Position mode remains One-way/BOTH;
+  unknown and Hedge modes stay blocked.
+- TDD RED: the compile-only recovery shell built successfully, then the direct
+  Release DLL discovered 5 tests and failed all 5 at runtime with
+  `NotImplementedException`. The failures covered restart/no-order retry,
+  limited-history absence, duplicate post-commit evidence, partial-fill/cancel
+  ordering, and an injected interruption after the external result. No missing
+  class, compile failure, or zero-test selection was used as RED.
+- GREEN: Core adds explicit recovery evidence status, completeness/history flags,
+  and exact fill/position/reservation identity sets. The Infrastructure facade
+  reconstructs fills and local operational facts, binds replay to the current
+  acknowledged revision, and authorizes retry only after complete fresh no-order
+  evidence. The App coordinator replays reconciliation observations idempotently
+  and blocks stale, unknown, manual, conflicting, incomplete, limited-history,
+  or identity-mismatched evidence. Durable facts are checked before retry and a
+  fresh no-order recovery advances the dispatch attempt only after explicit
+  recovery.
+- Focused GREEN: `ExecutionRecoveryTests` passed 7/7; Core recovery tests 3/3;
+  related Core state-machine tests 6/6; Infrastructure execution tests 6/6,
+  operational regressions 14/14, and reservation regressions 11/11; coordinator
+  regressions 2/2. The affected Core, Infrastructure, App, Core.Tests,
+  Infrastructure.Tests, and IntegrationTests Release builds with
+  `--warnaserror` passed with zero warnings/errors. Scoped format write and
+  `--verify-no-changes`, `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Changed files: `src/TradingBot.Core/ExecutionRecoveryContracts.cs`,
+  `src/TradingBot.Infrastructure/SqliteExecutionStateStore.cs`,
+  `src/TradingBot.App/ExecutionCoordinator.cs`,
+  `tests/TradingBot.Core.Tests/ExecutionRecoveryStateTests.cs`,
+  `tests/TradingBot.IntegrationTests/ExecutionRecoveryTests.cs`,
+  `docs/TASKS.md`, `docs/architecture/execution-model.md`,
+  `docs/architecture/persistence.md`, and this handoff. Earlier T001/T002 files
+  remain part of the uncommitted P12-M01 working tree.
+- Scope: no commit, push, Sol post-audit, real/private network request, order
+  submission, production activation, package, project-graph, canonical source,
+  or `graft/` change was made. The next READY tasks after final validation are
+  `P12-M02-T001` and the independent `P13-M01-T001`; implementation stops here.

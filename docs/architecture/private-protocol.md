@@ -2,9 +2,34 @@
 
 Status: evidence catalogue and diagnostic matrix for `P04-M02-T001` and `P04-M02-T003`.
 
-Checked: **2026-10-15**. The review used only the current official Binance Developer
+Checked: **2026-10-24**. The review used only the current official Binance Developer
 Documentation. No Binance API endpoint was called, no credentials were used, and no
 order was submitted.
+
+## T001 adapter evidence
+
+`TradingBot.Exchange.Binance` now contains an isolated private REST and user-data
+stream adapter. `IBinancePrivateRestClient` owns the documented USDⓈ-M order, Algo,
+trade, position, position-mode, and listen-key paths. Signed requests receive an
+injected canonical-query signer, timestamp provider, bounded response reader, and
+API-key header; listen-key lifecycle calls use only the API-key header. The adapter
+does not retain a secret, log a request body, or activate a private network path in
+tests. The WebSocket reader receives an injected transport, preserves event,
+transaction, receive, availability, session, and stable-sequence values, and does
+not reconnect or submit orders.
+
+One-way mode is the only accepted mode: `dualSidePosition=true`, `LONG`, `SHORT`,
+and unknown position sides fail closed. `ACCOUNT_UPDATE` is represented as a delta;
+`ORDER_TRADE_UPDATE` produces exact-decimal order/fill observations. `ALGO_UPDATE`
+keeps its nested `o` object as an opaque JSON element and requires reconciliation;
+unknown Algo order types and unknown position/status values cannot be promoted to an
+execution operation. HTTP 503 unknown outcomes are surfaced as reconciliation-required
+without echoing the exchange response.
+
+The focused synthetic-fixture evidence is 12/12 adapter tests and 50/50 Exchange
+tests. No numeric freshness TTL is invented: stream freshness remains a caller-owned
+policy, and the order-history retention limits documented below mean absence from a
+bounded history is not proof of absence.
 
 ## Scope and evidence rules
 
