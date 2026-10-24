@@ -9,7 +9,7 @@ namespace TradingBot.Infrastructure;
 /// </summary>
 internal static class SqliteDatabase
 {
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 14;
 
     private static readonly JournalColumn[] RequiredEventColumns =
     [
@@ -110,6 +110,10 @@ internal static class SqliteDatabase
                 MigrateV10ToV11(connection, transaction);
                 SetUserVersion(connection, transaction, 11);
                 MigrateV11ToV12(connection, transaction);
+                SetUserVersion(connection, transaction, 12);
+                MigrateV12ToV13(connection, transaction);
+                SetUserVersion(connection, transaction, 13);
+                MigrateV13ToV14(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
             }
             else if (lockedVersion != CurrentSchemaVersion)
@@ -121,7 +125,7 @@ internal static class SqliteDatabase
             transaction.Commit();
             version = CurrentSchemaVersion;
         }
-        else if (version is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11)
+        else if (version is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13)
         {
             using SqliteTransaction transaction = connection.BeginTransaction(
                 IsolationLevel.Serializable, deferred: false);
@@ -199,6 +203,20 @@ internal static class SqliteDatabase
             if (lockedVersion == 11)
             {
                 MigrateV11ToV12(connection, transaction);
+                SetUserVersion(connection, transaction, 12);
+                lockedVersion = 12;
+            }
+
+            if (lockedVersion == 12)
+            {
+                MigrateV12ToV13(connection, transaction);
+                SetUserVersion(connection, transaction, 13);
+                lockedVersion = 13;
+            }
+
+            if (lockedVersion == 13)
+            {
+                MigrateV13ToV14(connection, transaction);
                 SetUserVersion(connection, transaction, CurrentSchemaVersion);
                 lockedVersion = CurrentSchemaVersion;
             }
@@ -481,6 +499,38 @@ internal static class SqliteDatabase
             """);
     }
 
+    private static void MigrateV12ToV13(SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE IF NOT EXISTS development_dispatch_claims
+            (
+                attempt_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                intent_id TEXT COLLATE BINARY NOT NULL,
+                claim_json TEXT NOT NULL,
+                UNIQUE (intent_id, attempt_id)
+            ) WITHOUT ROWID;
+            """);
+    }
+
+    private static void MigrateV13ToV14(SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE IF NOT EXISTS protective_dispatch_claims
+            (
+                intent_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+                attempt_id TEXT COLLATE BINARY NOT NULL UNIQUE,
+                portfolio_id TEXT COLLATE BINARY NOT NULL,
+                position_id TEXT COLLATE BINARY NOT NULL,
+                source_intent_id TEXT COLLATE BINARY NOT NULL,
+                reconciliation_revision INTEGER NOT NULL,
+                request_json TEXT NOT NULL,
+                UNIQUE (portfolio_id, position_id, source_intent_id)
+            ) WITHOUT ROWID;
+            """);
+    }
+
     private static void ValidateOrderIntentSchema(SqliteConnection connection)
     {
         using SqliteCommand command = connection.CreateCommand();
@@ -576,7 +626,8 @@ internal static class SqliteDatabase
             SELECT name, sql
             FROM sqlite_master
             WHERE type = 'table'
-              AND name IN ('execution_states', 'execution_attempts', 'execution_receipts')
+              AND name IN ('execution_states', 'execution_attempts', 'execution_receipts',
+                           'development_dispatch_claims', 'protective_dispatch_claims')
             ORDER BY name;
             """;
         using SqliteDataReader reader = command.ExecuteReader();
@@ -597,7 +648,19 @@ internal static class SqliteDatabase
             || !definitions.TryGetValue("execution_receipts", out string? receiptsSql)
             || receiptsSql.IndexOf("intent_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
             || receiptsSql.IndexOf("receipt_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
-            || receiptsSql.IndexOf("receipt_json TEXT", StringComparison.OrdinalIgnoreCase) < 0)
+            || receiptsSql.IndexOf("receipt_json TEXT", StringComparison.OrdinalIgnoreCase) < 0
+            || !definitions.TryGetValue("development_dispatch_claims", out string? claimsSql)
+            || claimsSql.IndexOf("attempt_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || claimsSql.IndexOf("intent_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || claimsSql.IndexOf("claim_json TEXT", StringComparison.OrdinalIgnoreCase) < 0
+            || !definitions.TryGetValue("protective_dispatch_claims", out string? protectiveSql)
+            || protectiveSql.IndexOf("intent_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("attempt_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("portfolio_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("position_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("source_intent_id TEXT COLLATE BINARY", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("reconciliation_revision INTEGER", StringComparison.OrdinalIgnoreCase) < 0
+            || protectiveSql.IndexOf("request_json TEXT", StringComparison.OrdinalIgnoreCase) < 0)
         {
             throw new InvalidDataException(
                 $"The execution schema does not match version {CurrentSchemaVersion}.");

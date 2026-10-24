@@ -652,3 +652,105 @@
   submission, production activation, package, project-graph, canonical source,
   or `graft/` change was made. The next READY tasks after final validation are
   `P12-M02-T001` and the independent `P13-M01-T001`; implementation stops here.
+
+## P12-M02-T001 evidence
+
+- Startup: the required project documents, clean working-tree status, and
+  `tools/validate-docs.ps1` were rechecked. `P12-M02-T001` was the first READY
+  task with `P12-M01-T003` DONE; `P13-M01-T001` remained independently READY.
+- TDD RED: the focused Release IntegrationTests assembly built successfully,
+  then the direct xUnit DLL run discovered 4 tests and failed all 4 at runtime
+  because the development harness and durable single-use claim behavior were
+  absent. RED did not rely on a compile failure, missing test class, or zero
+  tests.
+- GREEN: App adds a sealed, programmatic-only
+  `PrivateExecutionDevelopmentHarness` over the existing dispatcher and
+  reconciler seams. It accepts only stores and scripted Core observations; it
+  exposes no URI, HTTP transport, Binance client, credential, or activation
+  input. Infrastructure migrates SQLite schema 12 -> 13 with the durable
+  `development_dispatch_claims` table. The claim is exact and single-use,
+  survives restart, requires a persisted intent and reservation, and rejects
+  forged/conflicting claims before any scripted dispatcher call. The scripted
+  reconciler remains synthetic and fail-closed when evidence is absent.
+- GREEN evidence: `PrivateExecutionDevelopmentHarnessTests` passed 7/7;
+  affected `Infrastructure.Tests` passed 95/95 and `IntegrationTests` passed
+  22/22. Infrastructure, App, and IntegrationTests Release builds with
+  `--warnaserror` passed with zero warnings/errors. Scoped format verification,
+  `tools/validate-docs.ps1`, and `git diff --check` all passed.
+- Scope: no private network request, credential, real order, production
+  activation, package, project-graph, canonical source, `graft/`, commit, push,
+  or automatic Sol audit was performed. The next READY task is
+  `P12-M02-T002`; status, dependencies, and the validator must be rechecked
+  before its TDD cycle begins.
+
+## P12-M02-T002 evidence
+
+- Startup: after T001, the task table and validator were rechecked. The first
+  READY task was `P12-M02-T002`, its dependency `P12-M02-T001` was DONE, and
+  `P13-M01-T001` remained independently READY.
+- TDD RED: the focused Release IntegrationTests DLL discovered 5
+  `ProtectiveExecutionTests` and failed all 5 at runtime because the protective
+  request and claim path were absent. The focused Exchange.Binance.Tests DLL
+  discovered 4 `ReduceOnlyOrderMappingTests` and failed all 4 at runtime because
+  the protective mapper was absent. Both DLLs compiled successfully; neither RED
+  used a missing test class, compile failure, or zero-test selection.
+- GREEN: Core adds `ProtectiveExecutionRequest`, which requires a Stop,
+  TakeProfit, or Emergency role, `ReduceOnly`, a known position owned by the
+  source intent, matching instrument, opposite direction, and quantity within
+  the known position. Infrastructure advances SQLite schema 13 -> 14 with an
+  atomic `protective_dispatch_claims` record bound to the durable execution
+  attempt, position, source intent, and expected acknowledged revision. App
+  obtains protective claims without entry risk or reservation capacity. The
+  Binance mapper emits only One-way/BOTH, opposite-side, reduce-only mappings:
+  Stop/TakeProfit use Algo market types and Emergency uses a market order; Hedge
+  and unknown modes fail closed.
+- GREEN evidence: `ProtectiveExecutionTests` passed 6/6 and
+  `ReduceOnlyOrderMappingTests` passed 4/4. Affected Infrastructure.Tests
+  passed 95/95, IntegrationTests 28/28, and Exchange.Binance.Tests 54/54.
+  Core, Infrastructure, App, Exchange, and affected test Release builds with
+  `--warnaserror` passed with zero warnings/errors. Scoped format verification,
+  `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Scope: protective claims remain development/test composition only. No private
+  network request, real order, production activation, credential, package,
+  project-graph, canonical source, `graft/`, commit, push, or automatic Sol
+  audit was performed. `P12-M02-T003` was READY and its status/dependency
+  preflight plus validator were rechecked before the next TDD cycle.
+
+## P12-M02-T003 evidence
+
+- Startup: `P12-M02-T002` was DONE and `P12-M02-T003` was the first READY task;
+  `P13-M01-T001` remained an independent READY task. The validator passed before
+  tests and no unrelated block was started.
+- TDD RED: the focused Release IntegrationTests assembly built successfully,
+  then the direct xUnit DLL discovered 4
+  `ActivationSeparationEvidenceTests` and failed all 4 at runtime because the
+  activation-separation evidence builder was absent. RED did not use a missing
+  test class, compile failure, or zero-test selection.
+- GREEN: App adds `ActivationSeparationEvidence` and a static
+  `ActivationSeparationEvidenceBuilder` that accepts only the sealed
+  `PrivateExecutionDevelopmentHarness`, bounded provenance labels, a captured
+  UTC timestamp, and a nonzero fully passing profile. The builder records a
+  deterministic identity and scripted dispatch count while fixing private
+  transport, credentials, and real-money activation facts closed; it exposes no
+  activation method, endpoint, signer, or credential input. No SQLite schema or
+  production composition change was added.
+- GREEN evidence: `ActivationSeparationEvidenceTests` passed 4/4;
+  `PrivateExecutionDevelopmentHarnessTests` passed 7/7,
+  `ProtectiveExecutionTests` 6/6, and `ExecutionCoordinatorTests` 2/2.
+  Affected App and IntegrationTests Release builds with `--warnaserror` passed
+  with zero warnings/errors. Scoped format write and `--verify-no-changes`,
+  `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Official protocol and prior-stage evidence remains unchanged: T001 RED was
+  4/4 runtime failures and GREEN was 7/7; T002 recorded the official Binance
+  private REST/user-stream boundary in the isolated adapter, migrated SQLite
+  schema 13 -> 14 for protective claims, and passed its focused 6/6 and 4/4
+  profiles plus affected regressions. T003 adds no private network call.
+- Changed files for T003: `src/TradingBot.App/ActivationSeparationEvidenceBuilder.cs`,
+  `tests/TradingBot.IntegrationTests/ActivationSeparationEvidenceTests.cs`,
+  `docs/TASKS.md`, `docs/architecture/execution-model.md`,
+  `docs/architecture/persistence.md`, and this handoff. Earlier P12-M02 files
+  remain part of the uncommitted working tree.
+- Scope: no commit, push, Sol post-audit, private network request, credential,
+  real order, production activation, package, project-graph, canonical source,
+  or `graft/` change was made. Final validation must leave
+  `P13-M01-T001` as the next READY task; implementation stops here.

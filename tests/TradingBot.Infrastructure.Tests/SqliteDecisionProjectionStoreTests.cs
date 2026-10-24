@@ -65,7 +65,7 @@ public sealed class SqliteDecisionProjectionStoreTests
         }
 
         using SqliteConnection verify = OpenRaw(database.Path);
-        Assert.Equal(12L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
+        Assert.Equal(14L, ExecuteScalar<long>(verify, "PRAGMA user_version;"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,
             "SELECT COUNT(*) FROM event_journal WHERE stream_id = 'stream-before-projection';"));
         Assert.Equal(1L, ExecuteScalar<long>(verify,

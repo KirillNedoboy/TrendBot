@@ -80,3 +80,37 @@ partial fills, and cancel races, with the existing receipt idempotency and
 reservation guards. Failure-injection seams cover the durable claim, external
 result, and observation-commit boundaries. Recovery fixtures use only artificial
 transport/evidence and do not authorize blind retries or real execution.
+
+P12-M02-T001 adds the development-only seam used to exercise this lifecycle.
+`PrivateExecutionDevelopmentHarness` is a sealed App composition object over the
+existing `IPrivateOrderDispatcher` and `IPrivateOrderReconciler` interfaces. Its
+constructor accepts a portfolio store and scripted Core observations only; it
+has no URI, HTTP client, Binance adapter, credential, or activation parameter.
+The harness requires the intent and reservation to be durable before a scripted
+dispatch can be reached. A separate durable development claim is single-use,
+exactly repeatable across restart, and rejects a foreign or conflicting claim
+before the scripted dispatcher is invoked. This is a test boundary and leaves
+Bootstrap inert; it cannot establish real-money activation evidence.
+
+P12-M02-T002 adds the separate protective path. Core
+`ProtectiveExecutionRequest` binds a Stop, TakeProfit, or Emergency intent to a
+known intent-owned position and requires reduce-only, opposite direction,
+matching instrument, and quantity no greater than the position quantity. The
+App coordinator obtains a durable protective claim without running entry risk or
+acquiring entry capacity. The claim checks the current acknowledged revision and
+the latest durable position snapshot before any injected dispatcher call; stale,
+manual, unknown, conflicting, or same-side state fails closed. Repeated claims
+return the existing lifecycle without another dispatch. The Binance mapping is a
+pure One-way/BOTH boundary: Stop and TakeProfit use reduce-only Algo market
+types, while Emergency uses a reduce-only market order. Hedge and unknown modes
+remain unsupported.
+
+P12-M02-T003 records activation-separation evidence only after a completed
+scripted development-harness profile. `ActivationSeparationEvidenceBuilder`
+accepts the sealed `PrivateExecutionDevelopmentHarness`, bounded source and
+profile labels, a captured UTC timestamp, and a nonzero fully passing profile.
+The resulting immutable evidence has a deterministic identity and carries the
+scripted dispatch count, while private transport, credentials, and real-money
+activation remain fixed closed facts. This is review provenance only: no
+activation command, signer, endpoint, or live dispatch is exposed, and a later
+explicit user command remains required by the real-money gate.

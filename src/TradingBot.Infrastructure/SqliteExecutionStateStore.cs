@@ -158,6 +158,13 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         ValidateStateIntent(state, intent);
         ValidateStateRevision(state, expectedReconciliationRevision);
 
+        if (ReadProtectiveClaim(connection, transaction, intent.IntentId) is not null)
+        {
+            transaction.Commit();
+            return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Conflict, state,
+                null);
+        }
+
         if (state.State == ExecutionLifecycleState.DispatchClaimed)
         {
             transaction.Commit();
@@ -201,6 +208,261 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         transaction.Commit();
         return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Claimed, claimed,
             attempt);
+    }
+
+    /// <summary>
+    /// Atomically claims a reduce-only protective dispatch against a known
+    /// position. Protective claims do not acquire entry reservation capacity.
+    /// </summary>
+    public ExecutionDispatchClaimResult TryClaimProtectiveDispatch(
+        ProtectiveExecutionRequest request, UtcTimestamp claimedAt)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(claimedAt);
+        ProtectiveExecutionGuard.Validate(request);
+
+        PortfolioId portfolioId = request.Position.PortfolioId;
+        OrderIntent intent = request.Intent;
+        long expectedRevision = request.ExpectedReconciliationRevision;
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        OrderIntent storedIntent = ReadIntent(connection, transaction, intent.IntentId);
+        EnsureSameIntent(storedIntent, intent);
+        ReconciliationCheckpoint checkpoint = ReadCheckpoint(connection, transaction,
+            portfolioId.Value)
+            ?? throw new InvalidOperationException(
+                "A protective dispatch requires a durable reconciliation checkpoint.");
+        if (checkpoint.Revision != expectedRevision)
+        {
+            throw new InvalidOperationException(
+                "The protective dispatch reconciliation revision is stale or missing.");
+        }
+
+        if (!IsRetryable(checkpoint))
+        {
+            ExecutionStateSnapshot blockedState = ReadState(connection, transaction, intent.IntentId)
+                ?? ExecutionStateMachine.Start(intent, expectedRevision);
+            transaction.Commit();
+            return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Blocked,
+                blockedState, null);
+        }
+
+        PortfolioPositionSnapshot? storedPosition = ReadLatestPositionSnapshot(connection,
+            transaction, portfolioId.Value, request.Position.Position.PositionId,
+            out long positionRevision);
+        if (storedPosition is null || positionRevision != expectedRevision
+            || !storedPosition.Equals(request.Position)
+            || !checkpoint.OpenPositionIds.Contains(request.Position.Position.PositionId,
+                StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The protective dispatch position is stale or conflicts with durable state.");
+        }
+
+        ProtectiveClaimRow? existingProtective = ReadProtectiveClaim(connection, transaction,
+            intent.IntentId);
+        if (existingProtective is not null)
+        {
+            ProtectiveExecutionRequest storedRequest = Deserialize<ProtectiveExecutionRequest>(
+                existingProtective.RequestJson, value =>
+                    StringComparer.Ordinal.Equals(value.Intent.IntentId, existingProtective.IntentId)
+                    && StringComparer.Ordinal.Equals(value.Intent.IntentId, intent.IntentId)
+                    && StringComparer.Ordinal.Equals(value.Position.PortfolioId.Value,
+                        existingProtective.PortfolioId)
+                    && StringComparer.Ordinal.Equals(value.Position.Position.PositionId,
+                        existingProtective.PositionId)
+                    && value.ExpectedReconciliationRevision ==
+                        existingProtective.ReconciliationRevision,
+                "The persisted protective claim identity does not match its SQLite row.");
+            if (!storedRequest.Equals(request))
+            {
+                throw new InvalidDataException(
+                    "The protective claim identity already contains different evidence.");
+            }
+
+            ExecutionStateSnapshot existingState = ReadState(connection, transaction, intent.IntentId)
+                ?? throw new InvalidDataException(
+                    "The protective claim is missing its durable execution state.");
+            ValidateStateIntent(existingState, intent);
+            transaction.Commit();
+            return new ExecutionDispatchClaimResult(
+                existingState.State == ExecutionLifecycleState.DispatchClaimed
+                    ? ExecutionDispatchClaimStatus.AlreadyClaimed
+                    : ExecutionDispatchClaimStatus.Conflict,
+                existingState, null);
+        }
+
+        ExecutionStateSnapshot? existing = ReadState(connection, transaction, intent.IntentId);
+        ExecutionStateSnapshot state = existing ?? ExecutionStateMachine.Start(intent,
+            expectedRevision);
+        ValidateStateIntent(state, intent);
+        ValidateStateRevision(state, expectedRevision);
+        if (state.State == ExecutionLifecycleState.DispatchClaimed)
+        {
+            transaction.Commit();
+            return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Conflict, state,
+                null);
+        }
+
+        if (state.RequiresReconciliation || state.State != ExecutionLifecycleState.IntentPersisted)
+        {
+            if (existing is null)
+            {
+                InsertState(connection, transaction, state);
+            }
+
+            transaction.Commit();
+            return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Blocked, state,
+                null);
+        }
+
+        int attemptNumber = checked(state.DispatchAttempt + 1);
+        ExecutionDispatchAttempt attempt = new(
+            $"dispatch:{intent.IntentId}:{attemptNumber}", intent.IntentId, attemptNumber,
+            expectedRevision, claimedAt);
+        ExecutionStateSnapshot claimed = ExecutionStateMachine.Claim(state, attemptNumber);
+        if (existing is null)
+        {
+            InsertState(connection, transaction, claimed);
+        }
+        else
+        {
+            UpdateState(connection, transaction, claimed);
+        }
+
+        InsertAttempt(connection, transaction, attempt);
+        InsertProtectiveClaim(connection, transaction, request, attempt);
+        transaction.Commit();
+        return new ExecutionDispatchClaimResult(ExecutionDispatchClaimStatus.Claimed, claimed,
+            attempt);
+    }
+
+    /// <summary>
+    /// Atomically grants a scripted development adapter one durable side-effect
+    /// permission for an already claimed attempt. The claim is single-use across
+    /// process restarts; a conflicting persisted attempt fails closed.
+    /// </summary>
+    public bool TryClaimDevelopmentDispatch(ExecutionDispatchAttempt attempt)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        ExecutionDispatchAttempt persisted = ReadAttempt(connection, transaction,
+            attempt.AttemptId)
+            ?? throw new InvalidOperationException(
+                "A development dispatch claim requires a durable dispatch attempt.");
+        if (!persisted.Equals(attempt))
+        {
+            throw new InvalidOperationException(
+                "The development dispatch attempt identity conflicts with durable state.");
+        }
+
+        ExecutionStateSnapshot state = ReadState(connection, transaction, attempt.IntentId)
+            ?? throw new InvalidOperationException(
+                "A development dispatch claim requires a durable execution state.");
+        if (state.State != ExecutionLifecycleState.DispatchClaimed
+            || state.DispatchAttempt != attempt.Attempt)
+        {
+            throw new InvalidOperationException(
+                "A development dispatch claim requires the matching claimed lifecycle state.");
+        }
+
+        DevelopmentClaimRow? existing = ReadDevelopmentClaim(connection, transaction,
+            attempt.AttemptId);
+        if (existing is not null)
+        {
+            ExecutionDispatchAttempt stored = Deserialize<ExecutionDispatchAttempt>(
+                existing.ClaimJson, value =>
+                    StringComparer.Ordinal.Equals(value.AttemptId, existing.AttemptId)
+                    && StringComparer.Ordinal.Equals(value.IntentId, existing.IntentId)
+                    && StringComparer.Ordinal.Equals(value.IntentId, attempt.IntentId),
+                "The persisted development dispatch claim identity does not match its row.");
+            if (!stored.Equals(attempt))
+            {
+                throw new InvalidDataException(
+                    "The development dispatch claim contains conflicting attempt evidence.");
+            }
+
+            transaction.Commit();
+            return false;
+        }
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO development_dispatch_claims
+                (attempt_id, intent_id, claim_json)
+            VALUES ($attempt_id, $intent_id, $claim_json);
+            """;
+        command.Parameters.AddWithValue("$attempt_id", attempt.AttemptId);
+        command.Parameters.AddWithValue("$intent_id", attempt.IntentId);
+        command.Parameters.AddWithValue("$claim_json", CoreJsonSerializer.Serialize(attempt));
+        command.ExecuteNonQuery();
+        transaction.Commit();
+        return true;
+    }
+
+    /// <summary>Reads durable scripted side-effect claims for one intent.</summary>
+    public IReadOnlyList<ExecutionDispatchAttempt> ReadDevelopmentDispatchClaims(string intentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(intentId);
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT attempt_id, intent_id, claim_json
+            FROM development_dispatch_claims
+            WHERE intent_id = $intent_id COLLATE BINARY
+            ORDER BY attempt_id ASC;
+            """;
+        command.Parameters.AddWithValue("$intent_id", intentId);
+        List<ExecutionDispatchAttempt> claims = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            claims.Add(Deserialize<ExecutionDispatchAttempt>(reader.GetString(2), value =>
+                    StringComparer.Ordinal.Equals(value.AttemptId, reader.GetString(0))
+                    && StringComparer.Ordinal.Equals(value.IntentId, reader.GetString(1))
+                    && StringComparer.Ordinal.Equals(value.IntentId, intentId),
+                "The persisted development dispatch claim identity does not match its row."));
+        }
+
+        return claims.AsReadOnly();
+    }
+
+    /// <summary>Reads durable protective claims for one intent.</summary>
+    public IReadOnlyList<ProtectiveExecutionRequest> ReadProtectiveDispatchClaims(string intentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(intentId);
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT intent_id, attempt_id, portfolio_id, position_id,
+                   source_intent_id, reconciliation_revision, request_json
+            FROM protective_dispatch_claims
+            WHERE intent_id = $intent_id COLLATE BINARY
+            ORDER BY intent_id ASC;
+            """;
+        command.Parameters.AddWithValue("$intent_id", intentId);
+        List<ProtectiveExecutionRequest> claims = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ProtectiveClaimRow row = new(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetInt64(5),
+                reader.GetString(6));
+            claims.Add(Deserialize<ProtectiveExecutionRequest>(row.RequestJson, value =>
+                    StringComparer.Ordinal.Equals(value.Intent.IntentId, row.IntentId)
+                    && StringComparer.Ordinal.Equals(value.Intent.IntentId, intentId)
+                    && StringComparer.Ordinal.Equals(value.Position.PortfolioId.Value,
+                        row.PortfolioId)
+                    && StringComparer.Ordinal.Equals(value.Position.Position.PositionId,
+                        row.PositionId)
+                    && StringComparer.Ordinal.Equals(value.SourceIntentId, row.SourceIntentId)
+                    && value.ExpectedReconciliationRevision == row.ReconciliationRevision,
+                "The persisted protective claim identity does not match its SQLite row."));
+        }
+
+        return claims.AsReadOnly();
     }
 
     public ExecutionStateSnapshot? ReadExecutionState(string intentId)
@@ -589,6 +851,97 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
             "The persisted execution state identity does not match its SQLite row.");
     }
 
+    private static ExecutionDispatchAttempt? ReadAttempt(SqliteConnection connection,
+        SqliteTransaction transaction, string attemptId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT attempt_id, intent_id, attempt, reconciliation_revision, attempt_json
+            FROM execution_attempts
+            WHERE attempt_id = $attempt_id COLLATE BINARY;
+            """;
+        command.Parameters.AddWithValue("$attempt_id", attemptId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return reader.Read()
+            ? DeserializeAttempt(new AttemptRow(reader.GetString(0), reader.GetString(1),
+                reader.GetInt32(2), reader.GetInt64(3), reader.GetString(4)),
+                reader.GetString(1))
+            : null;
+    }
+
+    private static DevelopmentClaimRow? ReadDevelopmentClaim(SqliteConnection connection,
+        SqliteTransaction transaction, string attemptId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT attempt_id, intent_id, claim_json
+            FROM development_dispatch_claims
+            WHERE attempt_id = $attempt_id COLLATE BINARY;
+            """;
+        command.Parameters.AddWithValue("$attempt_id", attemptId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return reader.Read()
+            ? new DevelopmentClaimRow(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2))
+            : null;
+    }
+
+    private static ProtectiveClaimRow? ReadProtectiveClaim(SqliteConnection connection,
+        SqliteTransaction transaction, string intentId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT intent_id, attempt_id, portfolio_id, position_id,
+                   source_intent_id, reconciliation_revision, request_json
+            FROM protective_dispatch_claims
+            WHERE intent_id = $intent_id COLLATE BINARY;
+            """;
+        command.Parameters.AddWithValue("$intent_id", intentId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return reader.Read()
+            ? new ProtectiveClaimRow(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetInt64(5),
+                reader.GetString(6))
+            : null;
+    }
+
+    private static PortfolioPositionSnapshot? ReadLatestPositionSnapshot(
+        SqliteConnection connection, SqliteTransaction transaction, string portfolioId,
+        string positionId, out long revision)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT portfolio_id, position_id, revision, snapshot_json
+            FROM position_snapshots
+            WHERE portfolio_id = $portfolio_id COLLATE BINARY
+              AND position_id = $position_id COLLATE BINARY
+            ORDER BY revision DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$portfolio_id", portfolioId);
+        command.Parameters.AddWithValue("$position_id", positionId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            revision = -1;
+            return null;
+        }
+
+        revision = reader.GetInt64(2);
+        string rowPortfolioId = reader.GetString(0);
+        string rowPositionId = reader.GetString(1);
+        return Deserialize<PortfolioPositionSnapshot>(reader.GetString(3), value =>
+                StringComparer.Ordinal.Equals(value.PortfolioId.Value, rowPortfolioId)
+                && StringComparer.Ordinal.Equals(value.PortfolioId.Value, portfolioId)
+                && StringComparer.Ordinal.Equals(value.Position.PositionId, rowPositionId)
+                && StringComparer.Ordinal.Equals(value.Position.PositionId, positionId),
+            "The persisted position snapshot identity does not match its SQLite row.");
+    }
+
     private static void ValidateStateIntent(ExecutionStateSnapshot state, OrderIntent intent)
     {
         if (!StringComparer.Ordinal.Equals(state.IntentId, intent.IntentId)
@@ -657,6 +1010,29 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         command.Parameters.AddWithValue("$attempt", attempt.Attempt);
         command.Parameters.AddWithValue("$revision", attempt.ReconciliationRevision);
         command.Parameters.AddWithValue("$attempt_json", CoreJsonSerializer.Serialize(attempt));
+        command.ExecuteNonQuery();
+    }
+
+    private static void InsertProtectiveClaim(SqliteConnection connection,
+        SqliteTransaction transaction, ProtectiveExecutionRequest request,
+        ExecutionDispatchAttempt attempt)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO protective_dispatch_claims
+                (intent_id, attempt_id, portfolio_id, position_id, source_intent_id,
+                 reconciliation_revision, request_json)
+            VALUES ($intent_id, $attempt_id, $portfolio_id, $position_id, $source_intent_id,
+                    $revision, $request_json);
+            """;
+        command.Parameters.AddWithValue("$intent_id", request.Intent.IntentId);
+        command.Parameters.AddWithValue("$attempt_id", attempt.AttemptId);
+        command.Parameters.AddWithValue("$portfolio_id", request.Position.PortfolioId.Value);
+        command.Parameters.AddWithValue("$position_id", request.Position.Position.PositionId);
+        command.Parameters.AddWithValue("$source_intent_id", request.SourceIntentId);
+        command.Parameters.AddWithValue("$revision", request.ExpectedReconciliationRevision);
+        command.Parameters.AddWithValue("$request_json", CoreJsonSerializer.Serialize(request));
         command.ExecuteNonQuery();
     }
 
@@ -753,6 +1129,13 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
 
     private sealed record AttemptRow(string AttemptId, string IntentId, int Attempt,
         long ReconciliationRevision, string AttemptJson);
+
+    private sealed record DevelopmentClaimRow(string AttemptId, string IntentId,
+        string ClaimJson);
+
+    private sealed record ProtectiveClaimRow(string IntentId, string AttemptId,
+        string PortfolioId, string PositionId, string SourceIntentId,
+        long ReconciliationRevision, string RequestJson);
 
     private sealed record ReceiptRow(string IntentId, string ReceiptId, string ReceiptJson);
 }

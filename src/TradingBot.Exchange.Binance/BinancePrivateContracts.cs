@@ -49,7 +49,9 @@ public enum BinancePositionSide
 
 public enum BinancePositionMode
 {
-    OneWay
+    OneWay,
+    Hedge,
+    Unknown
 }
 
 public enum BinanceOrderStatus

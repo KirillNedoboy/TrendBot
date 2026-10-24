@@ -148,7 +148,7 @@ public sealed class SqliteExecutionStateTests
 
         using SqlitePortfolioOperationalStore store = OpenStore(database.Path);
         Assert.Equal(intent, SqliteOrderIntentJournal.Open(database.Path).Find(intent.IntentId));
-        Assert.Equal(12L, store.ReadSchemaVersionForTests());
+        Assert.Equal(14L, store.ReadSchemaVersionForTests());
     }
 
     private static SqlitePortfolioOperationalStore OpenStore(string path) =>

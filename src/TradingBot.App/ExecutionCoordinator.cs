@@ -139,6 +139,28 @@ public sealed class ExecutionCoordinator
         _failureInjector?.ThrowIf(ExecutionFailurePoint.AfterObservationCommit);
         return result;
     }
+
+    /// <summary>
+    /// Authorizes a protective dispatch from a known position and obtains one
+    /// durable claim without running entry risk or acquiring entry capacity.
+    /// </summary>
+    public ExecutionDispatchClaimResult AuthorizeProtectiveAndClaim(
+        ProtectiveExecutionRequest request, UtcTimestamp claimedAt)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(claimedAt);
+        ProtectiveExecutionGuard.Validate(request);
+        return _store.TryClaimProtectiveDispatch(request, claimedAt);
+    }
+
+    /// <summary>Claims and dispatches one protected reduce-only intent.</summary>
+    public ExecutionTransitionResult DispatchProtective(ProtectiveExecutionRequest request,
+        UtcTimestamp claimedAt)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ExecutionDispatchClaimResult claim = AuthorizeProtectiveAndClaim(request, claimedAt);
+        return Dispatch(request.Position.PortfolioId, request.Intent, claim);
+    }
 }
 
 public sealed class ExecutionRecoveryCoordinator

@@ -554,3 +554,28 @@ boundaries. They do not provide a full replay runner, StrategyRun or ConfigVersi
 persistence, or orderbook recovery policy. The private execution adapter and
 recovery boundary remain isolated from production activation and real-money
 execution.
+
+P12-M02-T001 advances the SQLite schema from version 12 to version 13. The
+`development_dispatch_claims` WITHOUT ROWID table stores the canonical
+`ExecutionDispatchAttempt` JSON keyed by `(attempt_id, intent_id)`. An immediate
+transaction verifies the persisted attempt and its claimed lifecycle before
+inserting the development claim. An exact duplicate is idempotent; a different
+payload for the same identity fails closed. The table is recreated by the
+12 -> 13 migration and is used only by the sealed scripted development harness;
+it does not submit an exchange request or provide a production activation path.
+
+P12-M02-T002 advances the SQLite schema from version 13 to version 14. The
+`protective_dispatch_claims` WITHOUT ROWID table binds one protective intent to
+its execution attempt, portfolio, known position, source intent, and expected
+reconciliation revision, retaining the canonical Core request JSON. The claim
+and the execution state/attempt are inserted in one immediate transaction after
+the persisted intent, acknowledged checkpoint, and latest position snapshot are
+verified. Exact repeats return the existing claimed lifecycle; identity,
+position, revision, origin, and capacity conflicts fail closed. Protective claims
+do not create or consume entry reservations, and no row or API submits an
+exchange request.
+
+P12-M02-T003 adds no persistence schema or durable activation state. Its
+`ActivationSeparationEvidence` is immutable review provenance built from the
+sealed scripted harness and a fully passing profile; the evidence records no
+credentials, transport, endpoint, or real-money activation capability.

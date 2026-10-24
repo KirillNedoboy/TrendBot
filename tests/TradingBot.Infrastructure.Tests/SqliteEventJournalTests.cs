@@ -114,7 +114,7 @@ public sealed class SqliteEventJournalTests
         }
 
         using SqliteConnection connection = OpenRaw(database.Path);
-        Assert.Equal(12L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
+        Assert.Equal(14L, ExecuteScalar<long>(connection, "PRAGMA user_version;"));
         Assert.Equal("wal", ExecuteScalar<string>(connection, "PRAGMA journal_mode;"));
         Assert.Equal(2L, ExecuteScalar<long>(connection, "PRAGMA synchronous;"));
         Assert.Equal(
