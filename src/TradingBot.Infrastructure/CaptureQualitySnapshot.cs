@@ -128,7 +128,7 @@ public sealed record CaptureQualitySnapshot
         TimeSpan? providerSilenceThreshold, TimeSpan? clockSkewThreshold,
         CaptureFreshnessStatus freshnessStatus,
         CaptureProviderSilenceStatus providerSilenceStatus,
-        CaptureClockSkewStatus clockSkewStatus)
+        CaptureClockSkewStatus clockSkewStatus, long conflictCount = 0)
     {
         if (formatVersion != CurrentFormatVersion)
         {
@@ -148,6 +148,7 @@ public sealed record CaptureQualitySnapshot
         ArgumentOutOfRangeException.ThrowIfNegative(recordCount);
         ValidateCount(gapCount, recordCount, nameof(gapCount));
         ValidateCount(duplicateCount, recordCount, nameof(duplicateCount));
+        ValidateCount(conflictCount, recordCount, nameof(conflictCount));
         ValidateCount(missingFieldCount, recordCount, nameof(missingFieldCount));
         ValidateCount(clockSkewCount, recordCount, nameof(clockSkewCount));
         ValidateCount(staleCount, recordCount, nameof(staleCount));
@@ -181,6 +182,7 @@ public sealed record CaptureQualitySnapshot
         RecordCount = recordCount;
         GapCount = gapCount;
         DuplicateCount = duplicateCount;
+        ConflictCount = conflictCount;
         MissingFieldCount = missingFieldCount;
         ClockSkewCount = clockSkewCount;
         StaleCount = staleCount;
@@ -208,6 +210,8 @@ public sealed record CaptureQualitySnapshot
     public long GapCount { get; }
 
     public long DuplicateCount { get; }
+
+    public long ConflictCount { get; }
 
     public long MissingFieldCount { get; }
 
@@ -260,6 +264,7 @@ public static class CaptureQualitySnapshotBuilder
     {
         Gap,
         Duplicate,
+        Conflict,
         MissingField,
         ClockSkew,
         Stale
@@ -283,6 +288,7 @@ public static class CaptureQualitySnapshotBuilder
         long recordCount = 0;
         long gapCount = 0;
         long duplicateCount = 0;
+        long conflictCount = 0;
         long missingFieldCount = 0;
         long clockSkewCount = 0;
         long staleCount = 0;
@@ -327,6 +333,11 @@ public static class CaptureQualitySnapshotBuilder
                 duplicateCount = checked(duplicateCount + 1);
             }
 
+            if (signals.Contains(QualitySignal.Conflict))
+            {
+                conflictCount = checked(conflictCount + 1);
+            }
+
             if (signals.Contains(QualitySignal.MissingField))
             {
                 missingFieldCount = checked(missingFieldCount + 1);
@@ -343,9 +354,12 @@ public static class CaptureQualitySnapshotBuilder
             }
 
             DateTimeOffset receiveTime = envelope.ReceiveTime.Value.ToUniversalTime();
-            lastReceive = lastReceive is null || receiveTime > lastReceive
-                ? receiveTime
-                : lastReceive;
+            if (receiveTime <= options.AsOfUtc)
+            {
+                lastReceive = lastReceive is null || receiveTime > lastReceive
+                    ? receiveTime
+                    : lastReceive;
+            }
             TimeSpan latency = receiveTime - envelope.EventTime.Value.ToUniversalTime();
             minimumLatency = minimumLatency is null || latency < minimumLatency
                 ? latency
@@ -382,7 +396,7 @@ public static class CaptureQualitySnapshotBuilder
             gapCount, duplicateCount, missingFieldCount, clockSkewCount, staleCount,
             unknownDiagnosticCodeCount, latencySummary, lastReceive,
             options.FreshnessThreshold, options.ProviderSilenceThreshold,
-            options.ClockSkewThreshold, freshness, silence, skew);
+            options.ClockSkewThreshold, freshness, silence, skew, conflictCount);
     }
 
     private static CaptureFreshnessStatus GetFreshness(DateTimeOffset? lastReceive,
@@ -423,31 +437,40 @@ public static class CaptureQualitySnapshotBuilder
 
     private static bool TryMap(string value, out QualitySignal signal)
     {
-        if (value.Equals("gap", StringComparison.OrdinalIgnoreCase))
+        string normalized = new(value.Where(char.IsAsciiLetterOrDigit)
+            .Select(char.ToLowerInvariant).ToArray());
+        if (normalized.Contains("gap", StringComparison.Ordinal)
+            || normalized.Contains("disconnect", StringComparison.Ordinal))
         {
             signal = QualitySignal.Gap;
             return true;
         }
 
-        if (value.Equals("duplicate", StringComparison.OrdinalIgnoreCase))
+        if (normalized.Contains("duplicate", StringComparison.Ordinal))
         {
             signal = QualitySignal.Duplicate;
             return true;
         }
 
-        if (value.Equals("missing-field", StringComparison.OrdinalIgnoreCase))
+        if (normalized.Contains("conflict", StringComparison.Ordinal))
+        {
+            signal = QualitySignal.Conflict;
+            return true;
+        }
+
+        if (normalized.Contains("missingfield", StringComparison.Ordinal))
         {
             signal = QualitySignal.MissingField;
             return true;
         }
 
-        if (value.Equals("clock-skew", StringComparison.OrdinalIgnoreCase))
+        if (normalized.Contains("clockskew", StringComparison.Ordinal))
         {
             signal = QualitySignal.ClockSkew;
             return true;
         }
 
-        if (value.Equals("stale", StringComparison.OrdinalIgnoreCase))
+        if (normalized.Contains("stale", StringComparison.Ordinal))
         {
             signal = QualitySignal.Stale;
             return true;

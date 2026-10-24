@@ -49,6 +49,9 @@ public sealed record DecisionEvidence
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LaneCDecisionEvidenceMetadata? LaneCMetadata { get; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LaneCQualityDecisionMetadata? LaneCQualityMetadata { get; }
+
     [JsonIgnore]
     public LaneBDecisionEvidenceMetadata? Metadata => LaneBMetadata;
 
@@ -62,7 +65,8 @@ public sealed record DecisionEvidence
     public DecisionEvidence(DecisionLane lane, DecisionEvidenceStatus status,
         string evidenceId, string algorithmVersion, CausalEventCursor cursor,
         string provenance, LaneBDecisionEvidenceMetadata? laneBMetadata = null,
-        LaneCDecisionEvidenceMetadata? laneCMetadata = null)
+        LaneCDecisionEvidenceMetadata? laneCMetadata = null,
+        LaneCQualityDecisionMetadata? laneCQualityMetadata = null)
     {
         ContractGuard.RequireDefined(lane, nameof(lane));
         ContractGuard.RequireDefined(status, nameof(status));
@@ -144,6 +148,30 @@ public sealed record DecisionEvidence
             }
         }
 
+        if (laneCQualityMetadata is not null)
+        {
+            DecisionEvidenceStatus expectedStatus = laneCQualityMetadata.State switch
+            {
+                LaneCQualityState.Ready => DecisionEvidenceStatus.Neutral,
+                LaneCQualityState.InsufficientData => DecisionEvidenceStatus.Unknown,
+                LaneCQualityState.Stale or LaneCQualityState.SequenceGap
+                    or LaneCQualityState.Conflict => DecisionEvidenceStatus.Veto,
+                _ => DecisionEvidenceStatus.Unknown
+            };
+            if (lane != DecisionLane.LaneC || laneCMetadata is not null
+                || laneBMetadata is not null || laneCQualityMetadata.Cursor != cursor
+                || !StringComparer.Ordinal.Equals(evidenceId,
+                    laneCQualityMetadata.QualityEvidenceIdentity)
+                || !StringComparer.Ordinal.Equals(algorithmVersion,
+                    laneCQualityMetadata.AlgorithmVersion)
+                || status != expectedStatus)
+            {
+                throw new ArgumentException(
+                    "Lane C quality metadata must match its evidence identity, cursor, and status.",
+                    nameof(laneCQualityMetadata));
+            }
+        }
+
         Lane = lane;
         Status = status;
         EvidenceId = evidenceId;
@@ -152,6 +180,7 @@ public sealed record DecisionEvidence
         Provenance = provenance;
         LaneBMetadata = laneBMetadata;
         LaneCMetadata = laneCMetadata;
+        LaneCQualityMetadata = laneCQualityMetadata;
     }
 
     /// <summary>Creates Decision Evidence from a validated Lane B join.</summary>
@@ -174,6 +203,26 @@ public sealed record DecisionEvidence
         return new DecisionEvidence(DecisionLane.LaneC, result.EvidenceStatus,
             result.ResultIdentity, result.AlgorithmVersion, result.Cursor, provenance,
             laneCMetadata: metadata);
+    }
+
+    public static DecisionEvidence FromLaneCQuality(LaneCQualityEvidence quality,
+        string provenance)
+    {
+        ArgumentNullException.ThrowIfNull(quality);
+        LaneCQualityDecisionMetadata metadata = new(quality.EvidenceIdentity,
+            quality.InstrumentId, quality.InputIdentity, quality.AlgorithmVersion,
+            quality.Cursor, quality.State, quality.Reasons);
+        DecisionEvidenceStatus status = quality.State switch
+        {
+            LaneCQualityState.Ready => DecisionEvidenceStatus.Neutral,
+            LaneCQualityState.InsufficientData => DecisionEvidenceStatus.Unknown,
+            LaneCQualityState.Stale or LaneCQualityState.SequenceGap
+                or LaneCQualityState.Conflict => DecisionEvidenceStatus.Veto,
+            _ => DecisionEvidenceStatus.Unknown
+        };
+        return new DecisionEvidence(DecisionLane.LaneC, status, quality.EvidenceIdentity,
+            quality.AlgorithmVersion, quality.Cursor, provenance,
+            laneCQualityMetadata: metadata);
     }
 
     public static DecisionEvidence CreateFromLaneBJoin(LaneBJoinSnapshot join,
@@ -274,10 +323,19 @@ public sealed record DecisionEngineInput
                 nameof(laneAEvidence));
         }
 
+        DecisionEvidence[] evidenceSnapshot = laneEvidence.ToArray();
+        if (evidenceSnapshot.Any(evidence => evidence.LaneCQualityMetadata is { } quality
+            && quality.InstrumentId != laneAEvidence.InputSequence.InstrumentId))
+        {
+            throw new ArgumentException(
+                "Lane C quality evidence must match the Lane A instrument.",
+                nameof(laneEvidence));
+        }
+
         DecisionId = decisionId;
         Lifecycle = lifecycle;
         LaneAEvidence = laneAEvidence;
-        LaneEvidence = new ImmutableValueList<DecisionEvidence>(laneEvidence);
+        LaneEvidence = new ImmutableValueList<DecisionEvidence>(evidenceSnapshot);
         Provenance = provenance;
     }
 }
