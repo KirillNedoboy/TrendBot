@@ -299,6 +299,16 @@ envelopes accept only `BookDelta`, `Trade`, or `CaptureDiagnostic` values, so
 this boundary records public depth/trades/diagnostics without strategy, order,
 or execution state.
 
+Lane C adds optional typed `CaptureDepthMetadata` and `SourceStableSequence` to
+`CaptureProvenance`. A depth record can preserve Binance `U`/`u`/`pu`, recovery
+generation, and whether its `BookDelta` is the REST recovery snapshot. The
+optional properties deserialize as null for prior capture rows; the Parquet
+format and SQLite schema are unchanged. `LaneCHistoryCapturePipeline` assigns
+one increasing capture/stable sequence across depth, trades, and diagnostics
+for deterministic intake ordering, while retaining each source session's own
+sequence separately. Recovery diagnostics invalidate depth intake until a
+ready snapshot begins a new generation.
+
 The version-7 screener snapshot table, retained in schema version 12, is:
 
 | Column | Meaning |

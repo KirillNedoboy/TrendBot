@@ -45,6 +45,10 @@ public sealed record DecisionEvidence
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LaneBDecisionEvidenceMetadata? LaneBMetadata { get; }
 
+    /// <summary>Optional validated Lane C shadow reason trace.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LaneCDecisionEvidenceMetadata? LaneCMetadata { get; }
+
     [JsonIgnore]
     public LaneBDecisionEvidenceMetadata? Metadata => LaneBMetadata;
 
@@ -57,7 +61,8 @@ public sealed record DecisionEvidence
     [JsonConstructor]
     public DecisionEvidence(DecisionLane lane, DecisionEvidenceStatus status,
         string evidenceId, string algorithmVersion, CausalEventCursor cursor,
-        string provenance, LaneBDecisionEvidenceMetadata? laneBMetadata = null)
+        string provenance, LaneBDecisionEvidenceMetadata? laneBMetadata = null,
+        LaneCDecisionEvidenceMetadata? laneCMetadata = null)
     {
         ContractGuard.RequireDefined(lane, nameof(lane));
         ContractGuard.RequireDefined(status, nameof(status));
@@ -104,6 +109,41 @@ public sealed record DecisionEvidence
             }
         }
 
+        if (laneCMetadata is not null)
+        {
+            if (lane != DecisionLane.LaneC || laneBMetadata is not null)
+            {
+                throw new ArgumentException(
+                    "Lane C metadata can only be attached to Lane C evidence.",
+                    nameof(laneCMetadata));
+            }
+
+            if (laneCMetadata.Cursor != cursor
+                || laneCMetadata.Status switch
+                {
+                    LaneCShadowStatus.Confirm => DecisionEvidenceStatus.Confirm,
+                    LaneCShadowStatus.Neutral => DecisionEvidenceStatus.Neutral,
+                    LaneCShadowStatus.Veto => DecisionEvidenceStatus.Veto,
+                    LaneCShadowStatus.InsufficientData => DecisionEvidenceStatus.Unknown,
+                    _ => DecisionEvidenceStatus.Unknown
+                } != status
+                || !StringComparer.Ordinal.Equals(evidenceId,
+                    laneCMetadata.ShadowResultIdentity))
+            {
+                throw new ArgumentException(
+                    "Lane C metadata must match the evidence identity, cursor, and status.",
+                    nameof(laneCMetadata));
+            }
+
+            if (!StringComparer.Ordinal.Equals(algorithmVersion,
+                    LaneCShadowResult.CurrentAlgorithmVersion))
+            {
+                throw new ArgumentException(
+                    "Lane C evidence must use the shadow algorithm version.",
+                    nameof(algorithmVersion));
+            }
+        }
+
         Lane = lane;
         Status = status;
         EvidenceId = evidenceId;
@@ -111,6 +151,7 @@ public sealed record DecisionEvidence
         Cursor = cursor;
         Provenance = provenance;
         LaneBMetadata = laneBMetadata;
+        LaneCMetadata = laneCMetadata;
     }
 
     /// <summary>Creates Decision Evidence from a validated Lane B join.</summary>
@@ -122,6 +163,17 @@ public sealed record DecisionEvidence
         return new DecisionEvidence(DecisionLane.LaneB, metadata.EvidenceStatus,
             metadata.ShadowEvidenceId, metadata.ShadowAlgorithmVersion, metadata.Cursor,
             provenance, metadata);
+    }
+
+    /// <summary>Creates Decision Evidence from a Lane C shadow result and its reasons.</summary>
+    public static DecisionEvidence FromLaneCShadow(LaneCShadowResult result,
+        string provenance)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        LaneCDecisionEvidenceMetadata metadata = LaneCDecisionEvidenceMetadata.Create(result);
+        return new DecisionEvidence(DecisionLane.LaneC, result.EvidenceStatus,
+            result.ResultIdentity, result.AlgorithmVersion, result.Cursor, provenance,
+            laneCMetadata: metadata);
     }
 
     public static DecisionEvidence CreateFromLaneBJoin(LaneBJoinSnapshot join,

@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 11 — Independent Risk Engine
-- Milestone: P11-M02 — Atomic risk reservations and reconciliation protection
-- Current task: P11-M02-T003 (DONE; unknown/manual reconciliation protection)
-- Next task: P12-M01-T001 and P13-M01-T001 (READY)
+- Phase: 13 — Lane C
+- Milestone: P13-M01 — Shadow microstructure lane
+- Current task: P13-M01-T003 (DONE; Lane C shadow/veto evidence)
+- Next task: P13-M02-T001 (READY)
 
 ## Confirmed state
 
@@ -12,6 +12,9 @@
 - `CausalMarketEvent` carries the immutable payload, local receive/availability timestamps, optional independent exchange timestamp, and non-negative stable sequence. Availability cannot precede receive. Sequence assignment remains caller-owned and stream-scoped.
 - `CausalEventCursor` applies inclusive payload event-time, availability-time, and stable-sequence bounds. `CausalMarketEventOrdering.Compare` orders eligible events by payload EventTime and stable sequence; equal keys do not imply duplicate payloads. Exchange time remains unrelated to local bounds, and receive time is never substituted for event time.
 - `CoreJsonSerializer` provides deterministic compact camelCase JSON for current Core contracts with strict numbers, string enums, rejected unknown members, required constructor parameters, `JsonException` for malformed/domain-invalid input, ordered immutable-list conversion, and `$type` discriminators `trade`, `bar`, `bookDelta`, `fundingUpdate`, and `oiUpdate` for `MarketEvent` values.
+- `LaneCHistoryCapturePipeline` in App stores recovered public depth snapshots, depth updates, trades, and adapter/recovery diagnostics through the existing bounded Parquet capture store. It preserves depth `U`/`u`/`pu`, recovery generation, per-session source sequence, snapshot REST event/transaction times, and a global capture order; depth fails closed after a recovery gap until a ready snapshot is recorded. Details are in [`docs/architecture/lane-c-history.md`](docs/architecture/lane-c-history.md).
+- `LaneCFeatureEvaluator` in BCL-only Core reconstructs captured depth to a causal cursor and computes versioned spread, top-N depth, imbalance, trade flow, per-level changes, and explicit wall/absorption candidates. Window, freshness, size bounds, and caller policy are explicit; absent criteria remain unknown. Details are in [`docs/architecture/lane-c-features.md`](docs/architecture/lane-c-features.md).
+- `LaneCShadowEvaluator` applies an explicit versioned caller rule table to versioned feature evidence and returns traceable Confirm/Neutral/Veto/InsufficientData results. Veto has priority; missing/unready evidence or an empty rule table is insufficient data. `DecisionEvidence.FromLaneCShadow` preserves identity/cursor/reasons and maps InsufficientData to existing Unknown and Veto to Veto; the Decision Engine can block required unknown Lane C evidence or return Shadow without order/execution effects. No numeric default rules are defined. Details are in [`docs/architecture/lane-c-shadow-decision.md`](docs/architecture/lane-c-shadow-decision.md).
 - `ExchangeEligibilityMetadata` is a venue-neutral immutable metadata contract. It preserves exact decimal filters, official symbol fields, deterministic raw unknown fields, onboarding/delivery times, and separate local receive/availability provenance. `MetadataCandidateFilter.Evaluate` applies only the USDT perpetual/trading metadata gate and returns ordinally ordered candidates with stable exclusion reasons; it consumes no clock, network, feature, ranking, pool-limit, trade, or execution state.
 - `ScreenerFeatureInput`, `ScreenerFeatureConfiguration`, and the immutable causal observation contracts define the minimum screener input. `ScreenerCausalSelection` applies the inclusive event-time/availability-time/stable-sequence cursor primitive before ordering observations, and closed bars also require `Bar.CloseTime <= cursor.AsOf`. `ScreenerFeatureCalculator.Calculate` computes only RVOL, price acceleration, ATR expansion, exact quote-volume turnover, spread, and OI anomaly with explicit completeness, caller-supplied TTL freshness, stable quality reasons, warmup, configuration, denominator, input, and overflow states; it uses no thresholds, ranking, persistence, or execution behavior.
 - `ScreenerSnapshot` is the immutable Core format-one record for one minimum screener result. It keeps the complete nullable feature configuration/TTL policy, separate `screener-v1` formula version, causal cursor, normalized finite input/provenance observations, and six feature values with completeness/freshness/reasons. Its identity is the lower-case SHA-256 of canonical Core JSON excluding identity and derived properties; no wall clock is included, and equivalent input orderings normalize to the same identity. `SqliteScreenerSnapshotStore` stores the canonical payload with a 32-byte BLOB identity, verifies row metadata, supported versions, canonical JSON, and recomputed identity on reads, and commits idempotent appends before success.
@@ -43,6 +46,13 @@
 - `LaneASetupFixtureTests` is the test-only cross-family Lane A suite. It exercises a 14-case hand-specified matrix across Boundary Rejection and Center Retest, verifies evidence invariants, round-trips price-context/quality snapshots and setup results, replays cursor prefixes through serialized evidence, checks future/no-lookahead behavior, and covers permutation/culture determinism plus V1/execution boundary guards. No production contracts or behavior were added; details are recorded in [`docs/architecture/lane-a-setup-fixtures.md`](docs/architecture/lane-a-setup-fixtures.md).
 - `SetupEvidenceSnapshot` is the immutable per-direction `setup-evidence-v1` schema bridging Lane A to Phase 8. It retains the complete `price-context-v2`/`feature-quality-v1` input, one family configuration/observation, a validated causal `SetupEvidenceInputSequence`, and explicit `SetupEvidenceInvalidation` state/ClosedThrough/reasons. It has a lower-case SHA-256 content identity, rejects mismatched or tampered JSON, re-evaluates the selected family in its constructor, and `Replay()` reproduces the identity. It contains no lifecycle, decision, risk, order, or execution state; details are recorded in [`docs/architecture/setup-evidence.md`](docs/architecture/setup-evidence.md).
 - The canonical final technical specification was not edited. Graft remains ignored and untouched.
+
+## P13-M01-T003 evidence
+
+- Before T003, the task/dependency status and `pwsh -NoProfile -File tools/validate-docs.ps1` confirmed T003 as the next eligible READY task. TDD RED: focused Core.Tests Release DLL profiles each discovered one test and failed 1/1 at runtime because the Lane C shadow evaluator and `DecisionEvidence.FromLaneCShadow` were absent.
+- GREEN: BCL-only versioned rule, result, and metadata contracts plus a pure shadow evaluator preserve input/result identities, rule version, causal cursor, matched rule IDs, and reason codes. Caller tables have no default thresholds; empty/no-evaluable rules or unavailable features yield InsufficientData, and Veto takes priority over Confirm. Decision evidence maps InsufficientData to Unknown and Veto to Veto; required Unknown blocks, while accepted evidence can yield Shadow without order or execution side effects. Details: [`docs/architecture/lane-c-shadow-decision.md`](docs/architecture/lane-c-shadow-decision.md).
+- Direct Release DLL profiles passed: LaneCShadowTests 4/4, LaneCDecisionTests 3/3, DecisionEvidenceMetadataTests 5/5, DecisionReasonCodesTests 4/4, DecisionProjectionSnapshotTests 4/4, SetupLifecycleTests 12/12, CoreBoundaryTests 2/2, ArchitectureTests 1/1, and LaneCFeatureTests 8/8. Core.Tests Release build with `--warnaserror` completed with zero warnings/errors; scoped format verification, docs validation, and `git diff --check` passed. Validator now selects P13-M02-T001 READY.
+- No full suite, package/project-graph change, canonical source change, `graft/` edit, commit, or push was performed. P13-M01 is complete; stop before P13-M02-T001.
 
 ## P11-M01-T001 evidence
 
@@ -754,3 +764,59 @@
   real order, production activation, package, project-graph, canonical source,
   or `graft/` change was made. Final validation must leave
   `P13-M01-T001` as the next READY task; implementation stops here.
+
+## P13-M01-T001 evidence
+
+- Startup: the worktree was clean and `tools/validate-docs.ps1` confirmed
+  `P13-M01-T001` READY with both dependencies DONE.
+- TDD RED: the focused Release IntegrationTests DLL discovered 2
+  `LaneCHistoryCaptureTests` and failed both at runtime because the Lane C
+  capture pipeline and depth metadata were absent.
+- GREEN: Core capture provenance now optionally retains typed Binance depth
+  `U`/`u`/`pu`, recovery generation, snapshot identity, and the original
+  per-session stable sequence. The Binance recovered-book state carries REST
+  snapshot event/transaction times independently of the diff event that first
+  aligns the book. App adds `LaneCHistoryCapturePipeline`, which assigns one
+  durable capture/stable order to snapshots, public depth/trades, and source or
+  recovery diagnostics; after a gap, depth capture remains closed until a new
+  ready snapshot. Existing bounded Parquet persistence and old capture rows are
+  preserved without a schema bump.
+- GREEN and adjacent evidence: `LaneCHistoryCaptureTests` passed 3/3,
+  `CaptureContractTests` 3/3, `ParquetCaptureStoreTests` 4/4, and
+  `BinanceDepthAndOrderBookTests` 6/6. Release builds for Core.Tests,
+  Infrastructure.Tests, Exchange.Binance.Tests, and IntegrationTests passed
+  with zero warnings/errors. Scoped format verification, documentation
+  validation, and `git diff --check` were run before marking the task DONE.
+- Scope: no private network request, credential, order, execution path,
+  package, project graph, canonical spec, `graft/`, commit, or push was used.
+  The next READY task is P13-M01-T002; status, dependencies, and validator must
+  be rechecked before its TDD cycle begins.
+
+## P13-M01-T002 evidence
+
+- Startup: after T001, the status/dependency preflight and documentation
+  validator selected `P13-M01-T002` READY.
+- TDD RED: the focused Release Core.Tests DLL discovered one
+  `LaneCFeatureTests` case and failed at runtime because the Core evaluator was
+  absent.
+- GREEN: BCL-only Core adds versioned immutable Lane C input, configuration,
+  per-price features, and results. The pure evaluator applies a bounded
+  causal cut, reconstructs depth from snapshot/diff rows, checks Binance
+  sequence continuity, and computes spread, top-N depth, book/aggressor
+  imbalance, price-level changes, wall persistence/replenishment/withdrawal/
+  migration candidates, and absorption candidates only under caller-supplied
+  criteria. No feature threshold has a numeric default; absent evidence and
+  thresholds remain explicit reasons/null results. Canonical input plus
+  configuration determines a stable SHA-256 input identity.
+- GREEN and adjacent evidence: `LaneCFeatureTests` passed 8/8, including
+  hand-calculated decimal outputs, window boundaries, no-lookahead, stale book
+  and trades, recovery gaps, warmup, zero denominator, wall candidates,
+  explicit unknown thresholds, deterministic identity, JSON round-trip, and
+  bounded input. `CoreBoundaryTests` passed 2/2, `ArchitectureTests` 1/1,
+  `CaptureContractTests` 3/3, and `LaneCHistoryCaptureTests` 3/3. Core.Tests
+  and IntegrationTests Release builds passed with zero warnings/errors; scoped
+  format verification passed.
+- Scope: no persistence, package, private network, execution, order, canonical
+  source, `graft/`, commit, or push change was made. The next READY task is
+  P13-M01-T003; status, dependencies, and validator must be rechecked before
+  its TDD cycle begins.

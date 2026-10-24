@@ -10,6 +10,45 @@ public enum CaptureRecordKind
     Diagnostic
 }
 
+/// <summary>Exchange sequence and local recovery identity for captured depth.</summary>
+public sealed record CaptureDepthMetadata
+{
+    public long FirstUpdateId { get; }
+
+    public long FinalUpdateId { get; }
+
+    public long? PreviousUpdateId { get; }
+
+    public long RecoveryGeneration { get; }
+
+    public bool IsSnapshot { get; }
+
+    [JsonConstructor]
+    public CaptureDepthMetadata(long firstUpdateId, long finalUpdateId,
+        long? previousUpdateId, long recoveryGeneration, bool isSnapshot)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(firstUpdateId);
+        ArgumentOutOfRangeException.ThrowIfLessThan(finalUpdateId, firstUpdateId);
+        if (previousUpdateId is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(previousUpdateId));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(recoveryGeneration);
+        if (isSnapshot && previousUpdateId is not null)
+        {
+            throw new ArgumentException("A depth snapshot has no previous update ID.",
+                nameof(previousUpdateId));
+        }
+
+        FirstUpdateId = firstUpdateId;
+        FinalUpdateId = finalUpdateId;
+        PreviousUpdateId = previousUpdateId;
+        RecoveryGeneration = recoveryGeneration;
+        IsSnapshot = isSnapshot;
+    }
+}
+
 /// <summary>Immutable source identity and raw provenance for one capture record.</summary>
 public sealed record CaptureProvenance
 {
@@ -25,20 +64,29 @@ public sealed record CaptureProvenance
 
     public ImmutableValueList<string> QualityFlags { get; }
 
+    public CaptureDepthMetadata? DepthMetadata { get; }
+
+    public long? SourceStableSequence { get; }
+
     public CaptureProvenance(string source, string? streamName, string? sessionId,
         string? sourceEventId, string? rawPayload, IEnumerable<string> qualityFlags)
         : this(source, streamName, sessionId, sourceEventId, rawPayload,
-            SnapshotFlags(qualityFlags, nameof(qualityFlags)))
+            SnapshotFlags(qualityFlags, nameof(qualityFlags)), null)
     {
     }
 
     [JsonConstructor]
     public CaptureProvenance(string source, string? streamName, string? sessionId,
         string? sourceEventId, string? rawPayload,
-        ImmutableValueList<string> qualityFlags)
+        ImmutableValueList<string> qualityFlags, CaptureDepthMetadata? depthMetadata = null,
+        long? sourceStableSequence = null)
     {
         ContractGuard.RequireText(source, nameof(source));
         ArgumentNullException.ThrowIfNull(qualityFlags);
+        if (sourceStableSequence is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sourceStableSequence));
+        }
         if (qualityFlags.Any(static tag => string.IsNullOrWhiteSpace(tag)))
         {
             throw new ArgumentException("Capture provenance flags must be non-empty.",
@@ -51,6 +99,8 @@ public sealed record CaptureProvenance
         SourceEventId = NormalizeOptional(sourceEventId);
         RawPayload = NormalizeOptional(rawPayload);
         QualityFlags = new ImmutableValueList<string>(qualityFlags);
+        DepthMetadata = depthMetadata;
+        SourceStableSequence = sourceStableSequence;
     }
 
     private static ImmutableValueList<string> SnapshotFlags(IEnumerable<string> tags,

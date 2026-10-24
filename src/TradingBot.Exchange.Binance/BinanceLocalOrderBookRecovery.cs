@@ -74,7 +74,9 @@ public sealed record BinanceOrderBookState
         UtcTimestamp? lastAvailabilityTime = null,
         UtcTimestamp? lastExchangeTime = null,
         UtcTimestamp? snapshotReceiveTime = null,
-        UtcTimestamp? snapshotAvailabilityTime = null)
+        UtcTimestamp? snapshotAvailabilityTime = null,
+        long? snapshotEventTimeMilliseconds = null,
+        long? snapshotTransactionTimeMilliseconds = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         if (!Enum.IsDefined(kind))
@@ -99,6 +101,12 @@ public sealed record BinanceOrderBookState
                 "Book availability cannot precede receive time.", nameof(lastAvailabilityTime));
         }
 
+        if (snapshotEventTimeMilliseconds is < 0
+            || snapshotTransactionTimeMilliseconds is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(snapshotEventTimeMilliseconds));
+        }
+
         Symbol = symbol;
         Kind = kind;
         LastUpdateId = lastUpdateId;
@@ -114,6 +122,8 @@ public sealed record BinanceOrderBookState
         LastExchangeTime = lastExchangeTime;
         SnapshotReceiveTime = snapshotReceiveTime;
         SnapshotAvailabilityTime = snapshotAvailabilityTime;
+        SnapshotEventTimeMilliseconds = snapshotEventTimeMilliseconds;
+        SnapshotTransactionTimeMilliseconds = snapshotTransactionTimeMilliseconds;
     }
 
     public string Symbol { get; }
@@ -146,9 +156,22 @@ public sealed record BinanceOrderBookState
 
     public UtcTimestamp? SnapshotAvailabilityTime { get; }
 
+    public long? SnapshotEventTimeMilliseconds { get; }
+
+    public long? SnapshotTransactionTimeMilliseconds { get; }
+
     public UtcTimestamp? LastEventTime => LastEventTimeMilliseconds is long milliseconds
         ? new UtcTimestamp(BinanceTimestamp.ToUtc(milliseconds))
         : null;
+
+    public UtcTimestamp? SnapshotEventTime => SnapshotEventTimeMilliseconds is long milliseconds
+        ? new UtcTimestamp(BinanceTimestamp.ToUtc(milliseconds))
+        : null;
+
+    public UtcTimestamp? SnapshotExchangeTime =>
+        SnapshotTransactionTimeMilliseconds is long milliseconds
+            ? new UtcTimestamp(BinanceTimestamp.ToUtc(milliseconds))
+            : null;
 
     private static ReadOnlyCollection<BinanceDepthLevel> SnapshotLevels(
         IEnumerable<BinanceDepthLevel> levels, string parameterName)
@@ -363,7 +386,8 @@ public sealed class BinanceLocalOrderBookRecovery
             SortLevels(_asks, descending: false), _recoveryGeneration, envelope.StableSequence,
             update.EventTimeMilliseconds, update.TransactionTimeMilliseconds,
             envelope.ReceiveTime, envelope.AvailabilityTime, envelope.ExchangeTime,
-            _snapshot.ReceiveTime, _snapshot.AvailabilityTime);
+            _snapshot.ReceiveTime, _snapshot.AvailabilityTime,
+            _snapshot.EventTimeMilliseconds, _snapshot.TransactionTimeMilliseconds);
     }
 
     private bool IsGap(BinanceDepthUpdateEvent update)
