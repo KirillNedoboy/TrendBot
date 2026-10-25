@@ -1,9 +1,9 @@
 # Current checkpoint
 
 - Phase: 14 — Full Historical Replay
-- Milestone: P14-M01 — Multi-source replay dataset
-- Current task: P14-M01-T003 (DONE; end-to-end decision trace regression)
-- Next task: P14-M02-T001 (READY; implementation stopped before this task)
+- Milestone: P14-M02 — Promotion evidence and frozen OOS gate
+- Current task: P14-M02-T001 (DONE; frozen OOS evaluation)
+- Next task: P14-M02-T002 (READY; implementation stops before this task)
 
 ## P14-M01-T001 evidence
 
@@ -79,6 +79,42 @@
   `git diff --check` passed. Validator selects `P14-M02-T001` READY.
 - No package, schema migration, project-graph change, production activation,
   commit, or push was made. Implementation stops before `P14-M02-T001`.
+
+## P14-M02-T001 evidence
+
+- Startup: reread `AGENTS.md`, `docs/PROJECT_SPEC.md`,
+  `docs/EXECUTION_PLAN.md`, `docs/TASKS.md`, and this handoff; Git was clean,
+  SDK `10.0.401` matched `global.json`, and the docs validator selected only
+  `P14-M02-T001` READY with `P14-M01-T003` DONE.
+- TDD RED: the Release Replay.Tests build completed with zero warnings/errors;
+  direct execution of `TradingBot.Replay.Tests.FrozenOosEvaluationTests`
+  discovered 6 tests and failed all 6 at runtime with `NotImplementedException`
+  from the compile-only evaluation definition shell. RED did not use compile
+  failure or zero discovery.
+- GREEN: Backtesting adds immutable model-version and criteria-evidence
+  contracts, a pre-replay definition that retains the old frozen manifest and
+  criteria IDs while hashing typed multi-source payloads with all causal
+  ordering fields, and a deterministic report/evaluator. Changed research,
+  criteria, multi-source manifest, payload, configuration, or model identity
+  invalidates the prior record before trace projection. Unknown model versions,
+  missing quality references, degraded/unknown coverage, unresolved criteria,
+  and absent/unacknowledged reconciliation stay explicit; each delivered trace
+  row retains event, exchange, receive, availability, and source-sequence data.
+  Reports retain frozen exclusions and exact-duplicate replay diagnostics.
+  `Evaluated` records an assessment only, not promotion authority.
+- Acceptance: focused `FrozenOosEvaluationTests` passed 11/11;
+  `ResearchFreezeTests` 4/4, `PromotionCriteriaTests` 3/3,
+  `MultiSourceReplayTests` 6/6, Replay `ArchitectureTests` 1/1,
+  `MultiLaneDecisionTraceRegressionTests` 3/3, and
+  `MultiSourceDatasetManifestTests` 6/6 passed. Backtesting/Replay.Tests,
+  IntegrationTests, and Infrastructure.Tests Release builds with
+  `--warnaserror` passed with zero warnings/errors. Scoped format verification,
+  `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Limits and scope: only synthetic OOS fixtures are present. Real OOS
+  performance, shadow/paper, or reconciliation evidence remains unknown and is
+  not inferred. No package, project graph, canonical source, `graft/`, order,
+  production activation, commit, or push was changed. Validator selects
+  `P14-M02-T002` READY; implementation stops before T002.
 
 ## Confirmed state
 

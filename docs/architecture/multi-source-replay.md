@@ -42,3 +42,19 @@ compares canonical traces across identical runs and confirms a funding-input
 change alters Lane B identity and Decision outcome. Partial/degraded capture
 quality blocks the decision while retaining the original quality reasons. The
 fixture's numeric values and explicit rules are synthetic test data only.
+
+`FrozenOosEvaluationDefinition` snapshots the exact typed source payloads
+before an OOS replay and verifies each row against its saved causal ordering
+entry. Its content identity includes event time, exchange time, receive time,
+availability time, and both source-local and dataset-wide stable sequences.
+`FrozenOosEvaluator` reuses `MultiSourceReplayRunner` only when the research,
+criteria, and multi-source manifest identities, configuration, payloads, and
+model versions still match their frozen values. A changed value invalidates
+the previous evaluation before its trace callback runs. Reports retain the
+source quality evidence references and states, readiness reasons, and each
+delivered trace entry's causal fields. Exact duplicate-input diagnostics and
+the frozen research exclusions remain in the canonical report. Unknown or incomplete source quality
+blocks the evaluation while the research replay result and reasons remain
+visible. No promotion thresholds or real OOS conclusions are supplied by the
+synthetic fixtures; assembling the broader evidence bundle remains a later
+task.

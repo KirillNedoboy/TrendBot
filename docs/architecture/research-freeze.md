@@ -38,3 +38,28 @@ before replay or evaluation snapshot capture; replacing a registered record or
 using a foreign manifest is rejected. The API records readiness and evidence
 links only; it does not compute a promotion decision or introduce a numeric
 threshold.
+
+P14-M02-T001 adds `FrozenOosEvaluationDefinition` and
+`FrozenOosEvaluator` in Backtesting. The definition is created before replay
+and binds the existing research and criteria identities to a multi-source
+manifest, a SHA-256 of each typed replay payload plus its full causal ordering
+entry, the frozen configuration hash, and a canonical set of model-version
+declarations. It leaves all existing manifest formats and IDs unchanged. A
+null model version remains null and blocks a resolved evaluation. A changed
+research, criteria, multi-source manifest, replay payload, configuration, or
+model version marks the prior evaluation `Invalidated` before the projection
+callback runs; the report continues to identify the original frozen inputs.
+
+The canonical `FrozenOosEvaluationReport` records the original identities,
+per-source coverage/quality references and reasons, the supplied reconciliation
+checkpoint, original exclusions, replay diagnostics, predeclared question
+assessments and evidence links, blockers, and one causal trace entry per
+delivered event. Exact duplicate inputs remain recorded as runner diagnostics,
+even when established replay behavior delivers them only once. Each trace entry
+preserves event, exchange, receive, and availability times and the source
+sequence; an absent projection remains null. Missing quality evidence, incomplete/unknown quality,
+unacknowledged or absent reconciliation, unknown required criteria, and
+unresolved evidence remain explicit blockers. `Evaluated` means the evidence
+assessment completed; it does not mean promoted or authorize execution. The
+fixtures are synthetic and no real frozen OOS dataset is present, so they do
+not establish strategy performance.
