@@ -63,3 +63,26 @@ unresolved evidence remain explicit blockers. `Evaluated` means the evidence
 assessment completed; it does not mean promoted or authorize execution. The
 fixtures are synthetic and no real frozen OOS dataset is present, so they do
 not establish strategy performance.
+
+P14-M02-T002 adds the App-level `PromotionEvidenceBundle` and
+`PromotionEvidenceSnapshot`. The builder binds the bundle to the frozen
+definition and report identities, preserves the existing research, criteria,
+multi-source, replay-input, configuration, and model-version identities, and
+captures immutable canonical snapshots of supplied quality, reconciliation,
+Lane C shadow, and separate research-simulation artifacts. A snapshot retains
+the producer-native identity separately from its SHA-256 content hash and
+copies causal fields, provenance, exclusions, unknown values, and blockers.
+Unknown values remain null or explicitly listed; no numeric promotion
+threshold or trading setting is introduced.
+
+Each required evidence category is present in the bundle even when no artifact
+was supplied. Operational shadow, local-paper, and exchange-test categories
+remain missing in the current synthetic fixture set, while research shadow and
+simulation snapshots carry reasons that they are not operational proof.
+Quality and shadow snapshots validate their linked source/report identities;
+simulation configuration and stream links are checked against the frozen
+manifest. Canonical bundle restore rejects tampering. `ValidateAgainst`
+compares current frozen context and snapshot identities, reports affected
+categories as invalidated, and leaves the previous immutable bundle and its
+blockers unchanged. The bundle records evidence for review; the P14-M02-T003
+gate task remains responsible for the promotion decision.

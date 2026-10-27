@@ -2,8 +2,8 @@
 
 - Phase: 14 — Full Historical Replay
 - Milestone: P14-M02 — Promotion evidence and frozen OOS gate
-- Current task: P14-M02-T001 (DONE; frozen OOS evaluation)
-- Next task: P14-M02-T002 (READY; implementation stops before this task)
+- Current task: P14-M02-T002 (DONE; promotion evidence bundle)
+- Next task: P14-M02-T003 (READY; implementation stops before this task)
 
 ## P14-M01-T001 evidence
 
@@ -115,6 +115,46 @@
   not inferred. No package, project graph, canonical source, `graft/`, order,
   production activation, commit, or push was changed. Validator selects
   `P14-M02-T002` READY; implementation stops before T002.
+
+## P14-M02-T002 evidence
+
+- Startup: reread `AGENTS.md`, `docs/PROJECT_SPEC.md`,
+  `docs/EXECUTION_PLAN.md`, `docs/TASKS.md`, and this handoff; Git was clean,
+  SDK `10.0.401` matched `global.json`, `P14-M02-T001` was DONE, and
+  `tools/validate-docs.ps1` selected only `P14-M02-T002` READY.
+- TDD RED: the Release IntegrationTests build completed with zero
+  warnings/errors; direct execution of
+  `TradingBot.IntegrationTests.PromotionEvidenceBundleTests` discovered 1 test
+  and failed at runtime with `NotImplementedException`. RED was a runtime
+  behavior failure, not a compile failure or zero-discovery run.
+- GREEN: App adds `PromotionEvidenceBundle`, immutable
+  `PromotionEvidenceSnapshot`, typed `PromotionEvidenceBundleSources`, and a
+  builder bound to the frozen OOS definition/report. Canonical snapshots keep
+  producer-native identities separate from content hashes and retain causal
+  fields (including null unknowns), provenance, exclusions, model/configuration
+  identities, quality/reconciliation reasons, and all unresolved blockers.
+  Lane C quality/shadow and research simulation artifacts are checked against
+  their linked source/configuration identities. Operational shadow, local-paper,
+  and exchange-test evidence remain explicit missing categories; synthetic
+  research shadow/simulation evidence is not treated as operational proof.
+  `ValidateAgainst` reports affected invalidations without mutating the prior
+  bundle, while T003 remains responsible for the review decision.
+- Acceptance: the direct GREEN profile passed `PromotionEvidenceBundleTests`
+  4/4. Related profiles passed `FrozenOosEvaluationTests` 11/11,
+  `ResearchFreezeTests` 4/4, `PromotionCriteriaTests` 3/3,
+  `MultiSourceReplayTests` 6/6, `LaneCEvidenceReplayTests` 2/2,
+  `MultiLaneDecisionTraceRegressionTests` 3/3, and
+  `MultiSourceDatasetManifestTests` 6/6. Affected IntegrationTests,
+  Replay.Tests, and Infrastructure.Tests Release builds with `--warnaserror`
+  passed with zero warnings/errors; scoped format verification and
+  `git diff --check` passed. `tools/validate-docs.ps1` reports
+  `P14-M02-T003` as the next READY task.
+- Evidence limits: the repository contains only synthetic OOS/shadow/simulation
+  fixtures. Real performance, operational shadow, local paper, exchange-test,
+  and external reconciliation proof remains unknown and is preserved as
+  blockers. No promotion decision, numeric threshold, trading setting, package,
+  project-graph, canonical source, `graft/`, commit, or push was changed.
+  Implementation stops before `P14-M02-T003`.
 
 ## Confirmed state
 

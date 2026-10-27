@@ -56,5 +56,23 @@ delivered trace entry's causal fields. Exact duplicate-input diagnostics and
 the frozen research exclusions remain in the canonical report. Unknown or incomplete source quality
 blocks the evaluation while the research replay result and reasons remain
 visible. No promotion thresholds or real OOS conclusions are supplied by the
-synthetic fixtures; assembling the broader evidence bundle remains a later
-task.
+synthetic fixtures.
+
+P14-M02-T002 assembles the App-level promotion evidence bundle from this
+frozen report and the linked typed snapshots. It retains the source manifest,
+quality and reconciliation references, causal fields, provenance, exclusions,
+unknown values, and unresolved blockers. A supplied Lane C quality report or
+shadow bundle must carry an identity referenced by the frozen source records;
+the research simulation snapshot must preserve its canonical report,
+configuration link, stream identity, and model-version reference. Native
+identities are stored separately from snapshot content hashes so an opaque
+producer identity is never replaced or inferred.
+
+The bundle always makes data-quality, reconciliation, research shadow,
+research simulation, operational shadow, local-paper, and exchange-test
+categories explicit. Synthetic research shadow/simulation artifacts remain
+separate from operational proof, and missing operational categories remain
+unknown or blocked. Bundle restore verifies canonical content and
+`ValidateAgainst` reports changed OOS context or evidence as invalidated
+without mutating the prior record. Promotion review and the final gate remain
+the next P14-M02-T003 task.
