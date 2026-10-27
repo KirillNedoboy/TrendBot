@@ -36,19 +36,46 @@ public static class OperationalShadowCommand
                 mode = "shadow",
                 status = result.Gate.CanCreateHypotheticalEntry ? "ready" : "blocked",
                 hypotheticalEntry = result.HypotheticalEntryCreated,
-                realOrderCount = result.RealOrderCount
+                realOrderCount = result.RealOrderCount,
+                gateReasons = result.Gate.BlockReasons.Select(static reason => reason.ToString())
+            });
+            output.WriteLine(json);
+            output.Flush();
+        }
+
+        void WriteHealth(OperationalShadowHealthSnapshot snapshot)
+        {
+            string json = JsonSerializer.Serialize(new
+            {
+                mode = "shadow",
+                status = snapshot.Status.ToString().ToLowerInvariant(),
+                checkedAt = snapshot.CheckedAt,
+                dataStale = snapshot.DataStale,
+                sequenceGap = snapshot.SequenceGap,
+                reconnecting = snapshot.Reconnecting,
+                recoveryComplete = snapshot.RecoveryComplete,
+                persistenceHealthy = snapshot.PersistenceHealthy,
+                killSwitchKnown = snapshot.KillSwitchKnown,
+                killSwitchEnabled = snapshot.KillSwitchEnabled,
+                gateOpen = snapshot.CanCreateHypotheticalEntry,
+                gateReasons = snapshot.BlockReasons,
+                reconciliationStatus = snapshot.ReconciliationStatus.ToString(),
+                feeds = snapshot.Feeds,
+                realOrderCount = snapshot.RealOrderCount
             });
             output.WriteLine(json);
             output.Flush();
         }
 
         runtime.CycleCompleted += WriteCycle;
+        runtime.HealthChanged += WriteHealth;
         await WriteJsonAsync(output, new
         {
             mode = "shadow",
             status = "started",
             realOrderCount = 0L
         }).ConfigureAwait(false);
+        WriteHealth(runtime.HealthSnapshot);
 
         try
         {
@@ -77,6 +104,7 @@ public static class OperationalShadowCommand
             {
                 mode = "shadow",
                 status = "faulted",
+                reason = "runtime-fault",
                 realOrderCount = 0L
             }).ConfigureAwait(false);
             return 1;
@@ -84,6 +112,7 @@ public static class OperationalShadowCommand
         finally
         {
             runtime.CycleCompleted -= WriteCycle;
+            runtime.HealthChanged -= WriteHealth;
             await runtime.DisposeAsync().ConfigureAwait(false);
         }
     }

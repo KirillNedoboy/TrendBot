@@ -252,6 +252,9 @@ public sealed class OperationalShadowRuntimeTests
             Assert.False(result.Gate.CanCreateHypotheticalEntry);
             Assert.Contains(OperationalShadowBlockReason.KillSwitchEnabled,
                 result.Gate.BlockReasons);
+            Assert.True(runtime.HealthSnapshot.KillSwitchKnown);
+            Assert.True(runtime.HealthSnapshot.KillSwitchEnabled);
+            Assert.False(runtime.HealthSnapshot.CanCreateHypotheticalEntry);
             Assert.False(result.HypotheticalEntryCreated);
             Assert.Equal(0, result.RealOrderCount);
         }
@@ -368,7 +371,7 @@ public sealed class OperationalShadowRuntimeTests
         yield break;
     }
 
-    private static OperationalShadowMarketObservation CreateObservation(bool ready,
+    internal static OperationalShadowMarketObservation CreateObservation(bool ready,
         OperationalShadowEvaluation? evaluation, long stableSequence = 1)
     {
         UtcTimestamp time = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z",
@@ -380,7 +383,7 @@ public sealed class OperationalShadowRuntimeTests
             killSwitchEnabled: false, killSwitchKnown: true, evaluation: evaluation);
     }
 
-    private static OperationalShadowEvaluation CreateShadowEvaluation()
+    internal static OperationalShadowEvaluation CreateShadowEvaluation()
     {
         SetupEvidenceSnapshot evidence = LifecycleInputFixtures.All[0].Evidence;
         SetupLifecycleIdentity identity = SetupLifecycleIdentity.Create(

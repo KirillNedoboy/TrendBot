@@ -34,6 +34,33 @@ structured lines. `deploy/systemd/tradingbot-shadow.service` is declarative only
 it uses `Type=simple`, `Restart=on-failure`, a non-root `tradingbot` user,
 `StateDirectory`, and journald output; it performs no installation or deployment.
 
-Operational shadow runtime and service verification is Windows-only in this task.
-Linux/systemd execution and a 24/7 soak are intentionally deferred to
-P15-M01-T002/T003 and are not claimed here.
+Operational shadow runtime and service verification is Windows-only in these
+tasks. Linux/systemd execution and a 24/7 soak remain unverified and are
+deferred to P15-M01-T003 and later operational work.
+
+## P15-M01-T002 health, metrics, and reconnect signals
+
+`OperationalShadowHealthSnapshot` is the immutable App health surface. It
+records the checked-at time, per-feed connection/freshness state, last receive
+and availability timestamps, stale and sequence-gap flags, reconnect and
+recovery state, persistence health, kill-switch knowledge and value, effective
+gate state and reasons, the invariant zero real-order count, and the explicit
+`NotApplicableInShadow` private-reconciliation status. The runtime exposes the
+snapshot through `HealthSnapshot` and notifies `HealthChanged`; the initial
+snapshot is `Unknown` and an empty or incomplete health provider fails closed.
+
+`IOperationalShadowHealthSource` lets public market and depth adapters publish
+their states independently. Binance disconnect, reconnect, stale, gap, parse,
+frame, and recovery diagnostics invalidate only the affected feed, while the
+combined runtime gate requires every required feed to be fresh, connected, and
+recovered. A depth gap creates a recovering order-book state and requires a
+fresh snapshot/diff recovery. If either required stream ends unexpectedly, the
+source cancels the peer pump and faults the command for systemd restart.
+
+The runtime refreshes health on source changes and on a five-second timer, so
+stale data remains visible even when no market messages arrive. JSON health
+records are written beside startup, cycle, stop, and fault records for
+journald. `OperationalShadowMetrics` uses BCL `System.Diagnostics.Metrics`
+gauges for health status, stale/gap, reconnect/recovery, persistence, gate,
+kill-switch, reconciliation applicability, and real-order count; no private
+dispatcher or real-order surface is introduced.

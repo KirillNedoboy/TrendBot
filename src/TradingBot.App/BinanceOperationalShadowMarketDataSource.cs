@@ -9,26 +9,37 @@ namespace TradingBot.App;
 /// causal observation seam used by the operational shadow runtime.
 /// </summary>
 public sealed class BinanceOperationalShadowMarketDataSource :
-    IOperationalShadowMarketDataSource, IDisposable
+    IOperationalShadowMarketDataSource, IOperationalShadowHealthSource, IDisposable
 {
-    private readonly IBinancePublicRestClient _restClient;
+    private readonly IBinanceDepthSnapshotSource _snapshotSource;
     private readonly BinanceMarketWebSocketClient _marketClient;
     private readonly BinanceDepthWebSocketClient _depthClient;
     private readonly string _symbol;
     private readonly int _depthLimit;
     private readonly IReadOnlyList<BinanceSubscription> _marketSubscriptions;
-    private int _dataFresh = 1;
-    private int _reconnectReady = 1;
-    private int _recoveryComplete;
+    private readonly string[] _requiredMarketStreams;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _staleAfter;
+    private BinanceLocalOrderBookRecovery _orderBookRecovery;
+    private readonly object _healthLock = new();
+    private readonly Dictionary<string, (DateTimeOffset Receive, DateTimeOffset Availability)>
+        _marketTimes = new(StringComparer.Ordinal);
+    private DateTimeOffset? _depthReceiveTime;
+    private DateTimeOffset? _depthAvailabilityTime;
+    private bool _marketGap;
+    private bool _marketReconnecting = true;
+    private bool _depthGap;
+    private bool _depthReconnecting = true;
     private long _nextStableSequence;
     private bool _disposed;
 
     public BinanceOperationalShadowMarketDataSource(IBinancePublicRestClient restClient,
         BinanceMarketWebSocketClient marketClient, BinanceDepthWebSocketClient depthClient,
         string symbol, IReadOnlyList<BinanceSubscription> marketSubscriptions,
-        int depthLimit = 100, long initialStableSequence = -1)
+        int depthLimit = 100, long initialStableSequence = -1,
+        TimeProvider? timeProvider = null, TimeSpan? staleAfter = null)
     {
-        _restClient = restClient ?? throw new ArgumentNullException(nameof(restClient));
+        ArgumentNullException.ThrowIfNull(restClient);
         _marketClient = marketClient ?? throw new ArgumentNullException(nameof(marketClient));
         _depthClient = depthClient ?? throw new ArgumentNullException(nameof(depthClient));
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
@@ -43,8 +54,16 @@ public sealed class BinanceOperationalShadowMarketDataSource :
         ArgumentOutOfRangeException.ThrowIfLessThan(initialStableSequence, -1);
         _symbol = symbol.ToUpperInvariant();
         _depthLimit = depthLimit;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _staleAfter = staleAfter ?? TimeSpan.FromMinutes(2);
+        if (_staleAfter <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(staleAfter));
+        }
         _nextStableSequence = initialStableSequence;
         _marketSubscriptions = marketSubscriptions.ToArray();
+        _requiredMarketStreams = _marketSubscriptions.Select(static item => item.StreamName)
+            .ToArray();
         if (_marketSubscriptions.Any(static subscription =>
             subscription.Kind == BinanceWebSocketEventKind.Depth))
         {
@@ -53,8 +72,41 @@ public sealed class BinanceOperationalShadowMarketDataSource :
                 nameof(marketSubscriptions));
         }
 
-        _marketClient.Diagnostic += OnDiagnostic;
-        _depthClient.Diagnostic += OnDiagnostic;
+        _marketClient.Diagnostic += OnMarketDiagnostic;
+        _depthClient.Diagnostic += OnDepthDiagnostic;
+        IBinanceDepthSnapshotSource snapshotSource = restClient as IBinanceDepthSnapshotSource
+            ?? throw new ArgumentException("The Binance REST client must support depth snapshots.",
+                nameof(restClient));
+        _snapshotSource = snapshotSource;
+        _orderBookRecovery = CreateOrderBookRecovery(snapshotSource);
+    }
+
+    public event Action? HealthChanged;
+
+    public IReadOnlyList<OperationalShadowFeedHealth> GetHealth(DateTimeOffset checkedAt,
+        TimeSpan staleAfter)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(staleAfter, TimeSpan.Zero);
+        lock (_healthLock)
+        {
+            OperationalShadowFeedHealth[] market = _requiredMarketStreams.Select(stream =>
+            {
+                _marketTimes.TryGetValue(stream, out var times);
+                bool seen = _marketTimes.ContainsKey(stream);
+                bool fresh = seen && checkedAt - times.Availability <= staleAfter;
+                return new OperationalShadowFeedHealth(stream,
+                    seen && !_marketReconnecting, fresh, _marketGap,
+                    _marketReconnecting || !seen, seen, times.Receive, times.Availability);
+            }).ToArray();
+            bool depthSeen = _depthAvailabilityTime is not null;
+            bool depthFresh = depthSeen
+                && checkedAt - _depthAvailabilityTime!.Value <= staleAfter;
+            OperationalShadowFeedHealth depth = new("depth", depthSeen && !_depthReconnecting,
+                depthFresh, _depthGap, _depthReconnecting || !depthSeen,
+                _orderBookRecovery.State.Kind == BinanceOrderBookStateKind.Ready,
+                _depthReceiveTime, _depthAvailabilityTime);
+            return Array.AsReadOnly([.. market, depth]);
+        }
     }
 
     public async IAsyncEnumerable<OperationalShadowMarketObservation> ReadAsync(
@@ -62,11 +114,6 @@ public sealed class BinanceOperationalShadowMarketDataSource :
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        BinanceDepthSnapshot snapshot = await _restClient.GetDepthSnapshotAsync(_symbol,
-            _depthLimit, cancellationToken).ConfigureAwait(false);
-        Interlocked.Exchange(ref _recoveryComplete, 1);
-        yield return SnapshotObservation(snapshot);
-
         Channel<OperationalShadowMarketObservation> channel =
             Channel.CreateBounded<OperationalShadowMarketObservation>(
                 new BoundedChannelOptions(256)
@@ -79,7 +126,7 @@ public sealed class BinanceOperationalShadowMarketDataSource :
             cancellationToken);
         Task marketPump = PumpMarketAsync(channel.Writer, linked.Token);
         Task depthPump = PumpDepthAsync(channel.Writer, linked.Token);
-        Task completion = CompleteChannelAsync(channel.Writer, marketPump, depthPump);
+        Task completion = CompleteChannelAsync(channel.Writer, marketPump, depthPump, linked);
         try
         {
             while (await channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -107,8 +154,9 @@ public sealed class BinanceOperationalShadowMarketDataSource :
         }
 
         _disposed = true;
-        _marketClient.Diagnostic -= OnDiagnostic;
-        _depthClient.Diagnostic -= OnDiagnostic;
+        _marketClient.Diagnostic -= OnMarketDiagnostic;
+        _depthClient.Diagnostic -= OnDepthDiagnostic;
+        _orderBookRecovery.Diagnostic -= OnRecoveryDiagnostic;
         _marketClient.Dispose();
         _depthClient.Dispose();
         GC.SuppressFinalize(this);
@@ -120,6 +168,17 @@ public sealed class BinanceOperationalShadowMarketDataSource :
         await foreach (BinanceStreamEnvelope envelope in _marketClient.ReadAsync(
             _marketSubscriptions, cancellationToken).ConfigureAwait(false))
         {
+            lock (_healthLock)
+            {
+                _marketTimes[envelope.Payload.StreamName] =
+                    (envelope.ReceiveTime.Value, envelope.AvailabilityTime.Value);
+                if (_requiredMarketStreams.All(_marketTimes.ContainsKey))
+                {
+                    _marketReconnecting = false;
+                    _marketGap = false;
+                }
+            }
+            HealthChanged?.Invoke();
             if (envelope.ToCoreCausalEvent() is not { } causal)
             {
                 continue;
@@ -137,11 +196,23 @@ public sealed class BinanceOperationalShadowMarketDataSource :
             [BinanceDepthSubscription.Diff(_symbol)], cancellationToken)
             .ConfigureAwait(false))
         {
-            if (envelope.ToCoreCausalEvent() is not { } causal)
+            BinanceLocalOrderBookRecovery recovery = _orderBookRecovery;
+            BinanceOrderBookState state = await recovery.AcceptAsync(envelope,
+                cancellationToken).ConfigureAwait(false);
+            if (state.Kind != BinanceOrderBookStateKind.Ready
+                || envelope.ToCoreCausalEvent() is not { } causal)
             {
                 continue;
             }
 
+            lock (_healthLock)
+            {
+                _depthReceiveTime = envelope.ReceiveTime.Value;
+                _depthAvailabilityTime = envelope.AvailabilityTime.Value;
+                _depthReconnecting = false;
+                _depthGap = false;
+            }
+            HealthChanged?.Invoke();
             await writer.WriteAsync(CreateObservation(envelope, causal), cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -149,10 +220,19 @@ public sealed class BinanceOperationalShadowMarketDataSource :
 
     private static async Task CompleteChannelAsync(
         ChannelWriter<OperationalShadowMarketObservation> writer, Task marketPump,
-        Task depthPump)
+        Task depthPump, CancellationTokenSource linked)
     {
         try
         {
+            Task first = await Task.WhenAny(marketPump, depthPump).ConfigureAwait(false);
+            await first.ConfigureAwait(false);
+            if (!linked.IsCancellationRequested)
+            {
+                linked.Cancel();
+                await Task.WhenAll(marketPump, depthPump).ConfigureAwait(false);
+                throw new IOException("A required Binance public stream ended unexpectedly.");
+            }
+
             await Task.WhenAll(marketPump, depthPump).ConfigureAwait(false);
             writer.TryComplete();
         }
@@ -163,27 +243,23 @@ public sealed class BinanceOperationalShadowMarketDataSource :
     }
 
     private OperationalShadowMarketObservation CreateObservation(BinanceStreamEnvelope envelope,
-        CausalMarketEvent causal) => new("shadow", ReSequence(causal),
-        Volatile.Read(ref _dataFresh) != 0,
-        Volatile.Read(ref _reconnectReady) != 0, Volatile.Read(ref _recoveryComplete) != 0,
-        killSwitchEnabled: false, killSwitchKnown: false);
-
-    private OperationalShadowMarketObservation SnapshotObservation(BinanceDepthSnapshot snapshot)
+        CausalMarketEvent causal)
     {
-        string symbol = snapshot.Symbol ?? _symbol;
-        UtcTimestamp receive = snapshot.ReceiveTime ?? snapshot.AvailabilityTime
-            ?? new UtcTimestamp(DateTimeOffset.UtcNow);
-        UtcTimestamp availability = snapshot.AvailabilityTime ?? receive;
-        BookDelta payload = new($"depth-snapshot:{snapshot.LastUpdateId}",
-            new InstrumentId(symbol), snapshot.EventTime,
-            snapshot.Bids.Select(static level => new BookLevel(new Price(level.Price),
-                new Quantity(level.Quantity))),
-            snapshot.Asks.Select(static level => new BookLevel(new Price(level.Price),
-                new Quantity(level.Quantity))));
-        CausalMarketEvent causal = new(payload, receive, availability, NextStableSequence(),
-            snapshot.EventTime);
-        return new OperationalShadowMarketObservation("shadow", causal,
-            dataFresh: true, reconnectReady: true, recoveryComplete: true,
+        IReadOnlyList<OperationalShadowFeedHealth> feeds = GetHealth(
+            _timeProvider.GetUtcNow(), _staleAfter);
+        bool marketReady;
+        lock (_healthLock)
+        {
+            marketReady = feeds.Where(static feed => feed.Stream != "depth")
+                .All(static feed => feed.Connected && feed.Fresh && !feed.GapDetected
+                    && !feed.Reconnecting);
+        }
+
+        bool depthReady = feeds.Any(static feed => feed.Stream == "depth"
+            && feed.Connected && feed.Fresh && feed.RecoveryComplete
+            && !feed.GapDetected && !feed.Reconnecting);
+        return new OperationalShadowMarketObservation("shadow", ReSequence(causal),
+            marketReady && depthReady, marketReady && depthReady, depthReady,
             killSwitchEnabled: false, killSwitchKnown: false);
     }
 
@@ -192,32 +268,93 @@ public sealed class BinanceOperationalShadowMarketDataSource :
 
     private long NextStableSequence() => Interlocked.Increment(ref _nextStableSequence);
 
-    private void OnDiagnostic(BinanceStreamDiagnostic diagnostic)
+    private void OnMarketDiagnostic(BinanceStreamDiagnostic diagnostic) =>
+        OnDiagnostic(diagnostic, isDepth: false);
+
+    private void OnDepthDiagnostic(BinanceStreamDiagnostic diagnostic) =>
+        OnDiagnostic(diagnostic, isDepth: true);
+
+    private void OnDiagnostic(BinanceStreamDiagnostic diagnostic, bool isDepth)
     {
-        switch (diagnostic.Kind)
+        lock (_healthLock)
         {
-            case BinanceStreamDiagnosticKind.Stale:
-            case BinanceStreamDiagnosticKind.Gap:
-            case BinanceStreamDiagnosticKind.IdentityConflict:
-            case BinanceStreamDiagnosticKind.ParseError:
-            case BinanceStreamDiagnosticKind.Late:
-            case BinanceStreamDiagnosticKind.FrameTooLarge:
-            case BinanceStreamDiagnosticKind.BufferOverflow:
-            case BinanceStreamDiagnosticKind.SnapshotRejected:
-                Interlocked.Exchange(ref _dataFresh, 0);
-                break;
-            case BinanceStreamDiagnosticKind.Disconnect:
-                Interlocked.Exchange(ref _reconnectReady, 0);
-                break;
-            case BinanceStreamDiagnosticKind.Reconnect:
-                Interlocked.Exchange(ref _reconnectReady, 0);
-                break;
-            case BinanceStreamDiagnosticKind.Recovery:
-                Interlocked.Exchange(ref _dataFresh, 1);
-                Interlocked.Exchange(ref _recoveryComplete, 1);
-                Interlocked.Exchange(ref _reconnectReady, 1);
-                break;
+            if (isDepth)
+            {
+                switch (diagnostic.Kind)
+                {
+                    case BinanceStreamDiagnosticKind.Disconnect:
+                    case BinanceStreamDiagnosticKind.Reconnect:
+                        _depthReconnecting = true;
+                        _depthReceiveTime = null;
+                        _depthAvailabilityTime = null;
+                        ResetOrderBookRecovery();
+                        break;
+                    case BinanceStreamDiagnosticKind.Gap:
+                    case BinanceStreamDiagnosticKind.Stale:
+                    case BinanceStreamDiagnosticKind.IdentityConflict:
+                    case BinanceStreamDiagnosticKind.ParseError:
+                    case BinanceStreamDiagnosticKind.Late:
+                    case BinanceStreamDiagnosticKind.FrameTooLarge:
+                    case BinanceStreamDiagnosticKind.BufferOverflow:
+                    case BinanceStreamDiagnosticKind.SnapshotRejected:
+                        _depthGap = true;
+                        _depthReceiveTime = null;
+                        _depthAvailabilityTime = null;
+                        break;
+                }
+            }
+            else
+            {
+                switch (diagnostic.Kind)
+                {
+                    case BinanceStreamDiagnosticKind.Disconnect:
+                    case BinanceStreamDiagnosticKind.Reconnect:
+                        _marketReconnecting = true;
+                        _marketTimes.Clear();
+                        break;
+                    case BinanceStreamDiagnosticKind.Gap:
+                    case BinanceStreamDiagnosticKind.Stale:
+                    case BinanceStreamDiagnosticKind.IdentityConflict:
+                    case BinanceStreamDiagnosticKind.ParseError:
+                    case BinanceStreamDiagnosticKind.Late:
+                    case BinanceStreamDiagnosticKind.FrameTooLarge:
+                    case BinanceStreamDiagnosticKind.BufferOverflow:
+                        _marketGap = true;
+                        _marketTimes.Clear();
+                        break;
+                }
+            }
         }
+
+        HealthChanged?.Invoke();
+    }
+
+    private void OnRecoveryDiagnostic(BinanceOrderBookRecoveryDiagnostic diagnostic)
+    {
+        lock (_healthLock)
+        {
+            _depthGap = true;
+            _depthReceiveTime = null;
+            _depthAvailabilityTime = null;
+        }
+
+        HealthChanged?.Invoke();
+    }
+
+    private BinanceLocalOrderBookRecovery CreateOrderBookRecovery(
+        IBinanceDepthSnapshotSource snapshotSource)
+    {
+        BinanceLocalOrderBookRecovery recovery = new(snapshotSource,
+            new BinanceOrderBookRecoveryOptions { SnapshotLimit = _depthLimit }, _symbol,
+            _timeProvider);
+        recovery.Diagnostic += OnRecoveryDiagnostic;
+        return recovery;
+    }
+
+    private void ResetOrderBookRecovery()
+    {
+        _orderBookRecovery.Diagnostic -= OnRecoveryDiagnostic;
+        _orderBookRecovery = CreateOrderBookRecovery(_snapshotSource);
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

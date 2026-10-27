@@ -94,13 +94,16 @@ public sealed record OperationalShadowRuntimeOptions
 {
     public string StreamId { get; init; } = "shadow";
     public TimeSpan CycleDelay { get; init; } = TimeSpan.Zero;
+    public TimeSpan HealthCheckInterval { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan StaleAfter { get; init; } = TimeSpan.FromMinutes(2);
 
     public OperationalShadowRuntimeOptions Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(StreamId);
-        if (CycleDelay < TimeSpan.Zero)
+        if (CycleDelay < TimeSpan.Zero || HealthCheckInterval <= TimeSpan.Zero
+            || StaleAfter <= TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(CycleDelay));
+            throw new ArgumentOutOfRangeException(nameof(HealthCheckInterval));
         }
 
         return this;
@@ -153,21 +156,47 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
     private readonly OperationalShadowStore _store;
     private readonly OperationalShadowRuntimeOptions _options;
     private readonly OperationalShadowMetrics _metrics;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _healthLock = new();
+    private OperationalShadowMarketObservation? _lastObservation;
+    private OperationalShadowCycleResult? _lastCycleResult;
+    private OperationalShadowHealthSnapshot _healthSnapshot;
     private bool _disposed;
 
     public OperationalShadowRuntime(IOperationalShadowMarketDataSource source,
         OperationalShadowStore store, OperationalShadowRuntimeOptions? options = null,
-        OperationalShadowMetrics? metrics = null)
+        OperationalShadowMetrics? metrics = null, TimeProvider? timeProvider = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _options = (options ?? new OperationalShadowRuntimeOptions()).Validate();
         _metrics = metrics ?? new OperationalShadowMetrics();
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _healthSnapshot = OperationalShadowHealthSnapshot.Unknown(_timeProvider.GetUtcNow());
+        if (_source is IOperationalShadowHealthSource healthSource)
+        {
+            healthSource.HealthChanged += OnSourceHealthChanged;
+        }
+
+        RefreshHealth();
     }
 
     public OperationalShadowMetrics Metrics => _metrics;
 
+    public OperationalShadowHealthSnapshot HealthSnapshot
+    {
+        get
+        {
+            lock (_healthLock)
+            {
+                return _healthSnapshot;
+            }
+        }
+    }
+
     public event Action<OperationalShadowCycleResult>? CycleCompleted;
+
+    public event Action<OperationalShadowHealthSnapshot>? HealthChanged;
 
     public OperationalShadowCycleResult Process(OperationalShadowMarketObservation observation)
     {
@@ -180,9 +209,22 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         bool configurationValid = observation.ConfigurationValid
             && persistedKillSwitch.Valid && persistedKillSwitch.Known;
         bool killSwitchEnabled = observation.KillSwitchEnabled || persistedKillSwitch.Enabled;
+        IReadOnlyList<OperationalShadowFeedHealth> sourceFeeds =
+            _source is IOperationalShadowHealthSource healthSource
+                ? healthSource.GetHealth(_timeProvider.GetUtcNow(), _options.StaleAfter)
+                : Array.Empty<OperationalShadowFeedHealth>();
+        bool hasHealthProvider = _source is IOperationalShadowHealthSource;
+        bool sourceFresh = !hasHealthProvider || (sourceFeeds.Count > 0
+            && sourceFeeds.All(static feed => feed.Fresh && !feed.GapDetected));
+        bool sourceConnected = !hasHealthProvider || (sourceFeeds.Count > 0
+            && sourceFeeds.All(static feed => feed.Connected && !feed.Reconnecting));
+        bool sourceRecovered = !hasHealthProvider || (sourceFeeds.Count > 0
+            && sourceFeeds.All(static feed => feed.RecoveryComplete));
         OperationalShadowGateInput gateInput = new(configurationValid,
-            observation.DataFresh, observation.ReconnectReady, observation.RecoveryComplete,
-            persistenceHealthy, killSwitchEnabled);
+            observation.DataFresh && sourceFresh,
+            observation.ReconnectReady && sourceConnected,
+            observation.RecoveryComplete && sourceRecovered, persistenceHealthy,
+            killSwitchEnabled);
         OperationalShadowGateResult gate = OperationalShadowGate.Evaluate(gateInput);
         DecisionEngineResult? decision = null;
         RiskEvaluationResult? risk = null;
@@ -249,6 +291,7 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
             OperationalShadowCycleResult failed = new(persistenceGate, decision, risk, false,
                 persisted: false, duplicate: false, reasons);
             _metrics.Record(failed);
+            RecordHealth(observation, failed);
             Publish(failed);
             return failed;
         }
@@ -256,6 +299,7 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         OperationalShadowCycleResult result = new(gate, decision, risk, hypotheticalEntry,
             persisted: true, append.Duplicate, reasons);
         _metrics.Record(result);
+        RecordHealth(observation, result);
         Publish(result);
         return result;
     }
@@ -263,14 +307,34 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        await foreach (OperationalShadowMarketObservation observation in _source.ReadAsync(
-            cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        using CancellationTokenSource monitorCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task monitor = MonitorHealthAsync(monitorCancellation.Token);
+        try
         {
-            _ = Process(observation);
-            if (_options.CycleDelay > TimeSpan.Zero)
+            await foreach (OperationalShadowMarketObservation observation in _source.ReadAsync(
+                cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                await Task.Delay(_options.CycleDelay, cancellationToken).ConfigureAwait(false);
+                _ = Process(observation);
+                if (_options.CycleDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.CycleDelay, _timeProvider, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
+        }
+        finally
+        {
+            monitorCancellation.Cancel();
+            try
+            {
+                await monitor.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+            {
+                // The timer is stopped as part of the runtime's normal shutdown.
+            }
+
         }
     }
 
@@ -282,6 +346,11 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         }
 
         _disposed = true;
+        if (_source is IOperationalShadowHealthSource healthSource)
+        {
+            healthSource.HealthChanged -= OnSourceHealthChanged;
+        }
+
         if (_source is IAsyncDisposable asyncDisposable)
         {
             await asyncDisposable.DisposeAsync().ConfigureAwait(false);
@@ -404,6 +473,104 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         try
         {
             CycleCompleted?.Invoke(result);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ObjectDisposedException or IOException)
+        {
+            // Observability subscribers cannot change shadow safety or stop the runtime.
+        }
+    }
+
+    private async Task MonitorHealthAsync(CancellationToken cancellationToken)
+    {
+        using PeriodicTimer timer = new(_options.HealthCheckInterval, _timeProvider);
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        {
+            RefreshHealth();
+        }
+    }
+
+    private void OnSourceHealthChanged() => RefreshHealth();
+
+    private void RecordHealth(OperationalShadowMarketObservation observation,
+        OperationalShadowCycleResult result)
+    {
+        lock (_healthLock)
+        {
+            _lastObservation = observation;
+            _lastCycleResult = result;
+        }
+
+        RefreshHealth();
+    }
+
+    private void RefreshHealth()
+    {
+        OperationalShadowHealthSnapshot snapshot;
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        lock (_healthLock)
+        {
+            IReadOnlyList<OperationalShadowFeedHealth> feeds =
+                _source is IOperationalShadowHealthSource provider
+                    ? provider.GetHealth(now, _options.StaleAfter)
+                    : Array.Empty<OperationalShadowFeedHealth>();
+            bool hasProvider = feeds.Count > 0;
+            bool healthProviderWithoutFeeds = _source is IOperationalShadowHealthSource
+                && !hasProvider;
+            OperationalShadowMarketObservation? observation = _lastObservation;
+            OperationalShadowCycleResult? result = _lastCycleResult;
+            bool feedStale = feeds.Any(static feed => !feed.Fresh || !feed.Connected);
+            bool feedGap = feeds.Any(static feed => feed.GapDetected);
+            bool feedReconnecting = feeds.Any(static feed => feed.Reconnecting
+                || !feed.Connected);
+            bool feedRecoveryComplete = feeds.All(static feed => feed.RecoveryComplete);
+            bool stale = hasProvider ? feedStale : healthProviderWithoutFeeds
+                || observation is null || !observation.DataFresh;
+            bool gap = feedGap;
+            bool reconnecting = hasProvider ? feedReconnecting : healthProviderWithoutFeeds
+                || observation is null || !observation.ReconnectReady;
+            bool recoveryComplete = hasProvider ? feedRecoveryComplete
+                : !healthProviderWithoutFeeds && observation is not null
+                    && observation.RecoveryComplete;
+            bool persistenceHealthy = _store.IsHealthy;
+            bool killSwitchKnown = observation is not null && observation.KillSwitchKnown
+                && (result is null || !result.Gate.BlockReasons.Contains(
+                    OperationalShadowBlockReason.ConfigurationUnknown));
+            bool killSwitchEnabled = observation?.KillSwitchEnabled == true
+                || result?.Gate.BlockReasons.Contains(
+                    OperationalShadowBlockReason.KillSwitchEnabled) == true;
+            bool allowed = result?.Gate.CanCreateHypotheticalEntry == true
+                && !stale && !gap && !reconnecting && recoveryComplete && persistenceHealthy
+                && killSwitchKnown && !killSwitchEnabled;
+            List<string> reasons = [];
+            if (observation is null) reasons.Add("health-unknown");
+            if (healthProviderWithoutFeeds) reasons.Add("feed-health-unknown");
+            if (stale) reasons.Add(OperationalShadowBlockReason.DataStale.ToString());
+            if (gap) reasons.Add("SequenceGap");
+            if (reconnecting) reasons.Add(OperationalShadowBlockReason.ReconnectPending.ToString());
+            if (!recoveryComplete) reasons.Add(OperationalShadowBlockReason.RecoveryPending.ToString());
+            if (!persistenceHealthy) reasons.Add(OperationalShadowBlockReason.PersistenceUnavailable.ToString());
+            if (!killSwitchKnown) reasons.Add(OperationalShadowBlockReason.ConfigurationUnknown.ToString());
+            if (killSwitchEnabled) reasons.Add(OperationalShadowBlockReason.KillSwitchEnabled.ToString());
+            if (result is not null) reasons.AddRange(result.Gate.BlockReasons.Select(static reason =>
+                reason.ToString()));
+            reasons = reasons.Distinct(StringComparer.Ordinal).ToList();
+            OperationalShadowHealthStatus status = observation is null && !hasProvider
+                ? OperationalShadowHealthStatus.Unknown
+                : allowed ? OperationalShadowHealthStatus.Healthy
+                : OperationalShadowHealthStatus.Degraded;
+            snapshot = new OperationalShadowHealthSnapshot(now, status,
+                Array.AsReadOnly(feeds.ToArray()), stale, gap, reconnecting,
+                recoveryComplete, persistenceHealthy, killSwitchKnown,
+                killSwitchEnabled, allowed, reasons.AsReadOnly(),
+                OperationalShadowReconciliationStatus.NotApplicableInShadow, 0);
+            _healthSnapshot = snapshot;
+        }
+
+        _metrics.RecordHealth(snapshot);
+        try
+        {
+            HealthChanged?.Invoke(snapshot);
         }
         catch (Exception exception) when (exception is InvalidOperationException
             or ObjectDisposedException or IOException)

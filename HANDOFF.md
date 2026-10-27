@@ -2,8 +2,8 @@
 
 - Phase: 15 — 24/7 Shadow VPS
 - Milestone: P15-M01 — Operational shadow runtime
-- Current task: P15-M01-T001 (DONE; operational shadow service/runtime)
-- Next task: P15-M01-T002 (READY; health, metrics, and reconnect signals)
+- Current task: P15-M01-T002 (DONE; health, metrics, and reconnect signals)
+- Next task: P15-M01-T003 (READY; shadow soak and recovery)
 
 ## P14-M01-T001 evidence
 
@@ -1054,3 +1054,42 @@
   remains zero in the tested path.
 - Limitations: real Binance network, Linux/systemd deployment, and 24/7 soak
   remain unverified. No real-world trading evidence or activation is claimed.
+
+## P15-M01-T002 evidence
+
+- Startup: the required project documents, Git status, SDK `10.0.401`, and
+  `tools/validate-docs.ps1` were rechecked. `P15-M01-T001` was DONE and the
+  validator selected `P15-M01-T002` as the first READY task. The existing
+  `docs/architecture/operations.md` working-tree marker was preserved while
+  the T002 operations section was updated.
+- TDD RED: the IntegrationTests Release build completed with zero
+  warnings/errors; the direct DLL discovered one
+  `OperationalShadowObservabilityTests` test and failed at runtime because
+  `OperationalShadowRuntime.HealthSnapshot` was absent. RED did not use a
+  compile failure or zero discovery.
+- GREEN: App exposes immutable `OperationalShadowHealthSnapshot` state and a
+  `HealthChanged` event. The snapshot records feed freshness, last receive and
+  availability, stale/gap, reconnect, recovery, persistence, kill-switch,
+  gate reasons, zero real orders, and explicit
+  `NotApplicableInShadow` private-reconciliation status. A health source can
+  publish market and depth state independently; the runtime combines those
+  states fail-closed, refreshes on source diagnostics and a five-second timer,
+  and keeps the existing decision/risk shadow path unchanged. BCL metrics add
+  bounded health, stale/gap, reconnect/recovery, persistence, gate,
+  kill-switch, reconciliation-applicability, and zero-real-order gauges.
+  Structured JSON includes startup, health, cycle, stop, and fault records.
+  Required public stream completion cancels its peer and faults the command so
+  systemd can restart it; depth recovery must return to Ready after a gap.
+- Acceptance: `OperationalShadowObservabilityTests` 3/3,
+  `OperationalShadowRuntimeTests` 16/16,
+  `OperationalShadowCommandTests` 2/2,
+  `BinanceWebSocketClientTests` 8/8,
+  `BinanceDepthAndOrderBookTests` 6/6, and Binance `ArchitectureTests` 1/1
+  passed. App, IntegrationTests, and Exchange.Binance.Tests Release builds
+  with `--warnaserror` passed with zero warnings/errors. Scoped format
+  verification, `tools/validate-docs.ps1`, and `git diff --check` passed.
+- Scope and limits: no private or real order path, credential, package,
+  project-graph, canonical source, or `graft/` change was made. Linux/systemd
+  execution, real Binance connectivity, and long-duration soak remain
+  unverified; `P15-M01-T003` is the next READY task for bounded soak and
+  restart/replay evidence.
