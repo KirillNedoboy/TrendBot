@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 14 — Full Historical Replay
-- Milestone: P14-M02 — Promotion evidence and frozen OOS gate
-- Current task: P14-M02-T003 (DONE; immutable promotion review and invalidation evidence)
-- Next task: P15-M01-T001 (READY; next phase task)
+- Phase: 15 — 24/7 Shadow VPS
+- Milestone: P15-M01 — Operational shadow runtime
+- Current task: P15-M01-T001 (DONE; operational shadow service/runtime)
+- Next task: P15-M01-T002 (READY; health, metrics, and reconnect signals)
 
 ## P14-M01-T001 evidence
 
@@ -1038,3 +1038,19 @@
   activation, canonical source, `graft/`, commit, or push was used.
 - After final validation, `P15-M01-T001` is READY and implementation stops at
   the end of P14.
+
+## P15-M01-T001 evidence
+
+- TDD RED: the initial Release DLL profile discovered 7 tests and failed 7/7 at
+  runtime with `NotImplementedException`; the later risk-safety profile
+  discovered 16 tests and failed 2/16, then runtime GREEN passed 16/16. The
+  command profile passed 1/1.
+- GREEN and validation: isolated SQLite journal, restart, and kill-switch
+  checks passed. Infrastructure, App, and IntegrationTests Release builds with
+  `--warnaserror` passed with zero warnings/errors. Project-wide Infrastructure
+  format passed after two pre-existing files were normalized to BOM+CRLF
+  without code changes; changed-file format passed for 11 C# files. Default
+  evaluation without explicit configuration fails closed and real order count
+  remains zero in the tested path.
+- Limitations: real Binance network, Linux/systemd deployment, and 24/7 soak
+  remain unverified. No real-world trading evidence or activation is claimed.
