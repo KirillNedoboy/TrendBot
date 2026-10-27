@@ -2,8 +2,8 @@
 
 - Phase: 14 — Full Historical Replay
 - Milestone: P14-M02 — Promotion evidence and frozen OOS gate
-- Current task: P14-M02-T002 (DONE; promotion evidence bundle)
-- Next task: P14-M02-T003 (READY; implementation stops before this task)
+- Current task: P14-M02-T003 (DONE; immutable promotion review and invalidation evidence)
+- Next task: P15-M01-T001 (READY; next phase task)
 
 ## P14-M01-T001 evidence
 
@@ -992,3 +992,49 @@
   source, `graft/`, commit, or push change was made. The next READY task is
   P13-M01-T003; status, dependencies, and validator must be rechecked before
   its TDD cycle begins.
+
+## P14-M02-T003 evidence
+
+- Startup: the validator selected `P14-M02-T003` as the first READY task with
+  `P14-M02-T002` DONE. The SDK was `10.0.401`; the canonical source SHA-256
+  remained `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`;
+  no `graft/` or canonical-source diff was present.
+- TDD RED: after adding the target profile and compile-only shell, `dotnet build
+  tests/TradingBot.IntegrationTests/TradingBot.IntegrationTests.csproj -c Release
+  --warnaserror` passed with 0 warnings/errors. The direct Release DLL discovered
+  6 `PromotionReviewRecordTests` and failed all 6 at runtime with
+  `NotImplementedException`; no compile failure or zero-test selection was used.
+- GREEN: App adds immutable SHA-256/content-addressed review and invalidation
+  records. Verdicts are `Blocked`, `Rejected`, and `AcceptedForReviewGate` and
+  callers must supply the verdict explicitly; no auto-accepting review
+  convenience remains. Acceptance is fail-closed for blockers, unknowns,
+  Missing/Unknown/Invalidated evidence, and synthetic provenance. Records
+  retain the canonical linked bundle, definition/report/bundle identities,
+  review reasons, provenance, exclusions, every evidence reference/status and
+  nullable causal field, blockers, and unknowns. All verdicts expose no
+  execution authority.
+- Durability: `PromotionReviewJournal` stores reviews and invalidations in
+  separate content-addressed directories. Each canonical document is written
+  to a flushed CreateNew temp file and atomically moved without overwrite;
+  identical retries are idempotent, filename/content identity is checked on
+  reopen, partial temp files are ignored, and tampered rows fail closed.
+  Invalidation records compare the full bundle identity (including
+  provenance-only changes), retain changed context/evidence/categories/reasons,
+  link to the original decision, and permanently remove it from the active
+  view; a new review attempt identity is required after invalidation. Same
+  native evidence identifiers with changed canonical content are recorded as
+  affected evidence categories while the original review remains unchanged.
+- GREEN evidence: the direct `PromotionReviewRecordTests` profile passed 10/10.
+  Adjacent profiles passed `PromotionEvidenceBundleTests` 4/4,
+  `FrozenOosEvaluationTests` 11/11, `ResearchFreezeTests` 4/4,
+  `PromotionCriteriaTests` 3/3, `MultiLaneDecisionTraceRegressionTests` 3/3,
+  and `ActivationSeparationEvidenceTests` 4/4. App, IntegrationTests, and
+  Replay.Tests Release builds passed with 0 warnings/errors; scoped format
+  verification, documentation validation, and `git diff --check` passed.
+- Evidence boundary: only synthetic OOS/shadow/simulation fixtures exist.
+  Operational shadow, local-paper, exchange-test, performance, and
+  reconciliation proof remain unresolved; no promotion or execution authority
+  is granted. No package, schema migration, private network, credential, order,
+  activation, canonical source, `graft/`, commit, or push was used.
+- After final validation, `P15-M01-T001` is READY and implementation stops at
+  the end of P14.

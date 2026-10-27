@@ -84,5 +84,32 @@ simulation configuration and stream links are checked against the frozen
 manifest. Canonical bundle restore rejects tampering. `ValidateAgainst`
 compares current frozen context and snapshot identities, reports affected
 categories as invalidated, and leaves the previous immutable bundle and its
-blockers unchanged. The bundle records evidence for review; the P14-M02-T003
-gate task remains responsible for the promotion decision.
+blockers unchanged. The bundle records evidence for review; completed
+P14-M02-T003 now preserves the immutable review decision and invalidation
+evidence without granting execution authority.
+
+P14-M02-T003 adds the App-level `PromotionReviewRecord` and
+`PromotionReviewInvalidationRecord`. A review is bound to the canonical bundle
+and separately retains the definition, OOS-report, and bundle identities,
+review reasons, provenance, exclusions, every evidence reference/status and
+causal field (including null values), blockers, and unknowns. `Blocked`,
+`Rejected`, and `AcceptedForReviewGate` are review verdicts only; acceptance is
+impossible with unresolved blockers/unknowns, Missing/Unknown/Invalidated
+evidence, or synthetic provenance, and no verdict grants execution authority.
+The caller must supply the verdict explicitly; the App surface does not
+auto-accept a future clean bundle.
+
+`PromotionReviewJournal` keeps review and invalidation records in separate
+content-addressed directories. Canonical JSON is written through a flushed
+CreateNew temporary file and atomic move without overwrite, then revalidated by
+filename and SHA-256 identity on reopen. Identical retries are idempotent;
+partial temporary files are ignored and tampered rows fail closed. An
+invalidation links to the original decision and records changed context,
+evidence, categories, and reasons. It never mutates or reactivates the old
+decision, even if sources later return to their prior values; a new review
+attempt identity is required. Full bundle identity changes, including
+provenance-only changes, are invalidation evidence; a changed canonical
+artifact with the same native evidence ID still invalidates its affected
+category. Current fixtures remain synthetic and therefore do not supply real
+operational shadow, local-paper, exchange-test, performance, or reconciliation
+proof.

@@ -74,5 +74,28 @@ categories explicit. Synthetic research shadow/simulation artifacts remain
 separate from operational proof, and missing operational categories remain
 unknown or blocked. Bundle restore verifies canonical content and
 `ValidateAgainst` reports changed OOS context or evidence as invalidated
-without mutating the prior record. Promotion review and the final gate remain
-the next P14-M02-T003 task.
+without mutating the prior record. Completed P14-M02-T003 now preserves the
+immutable review decision and invalidation evidence; the final gate remains
+separate and grants no execution authority.
+
+P14-M02-T003 records the review of that frozen bundle without changing replay
+semantics. `PromotionReviewRecord` copies all linked identities, evidence
+statuses/references, causal fields (including null source fields), provenance,
+exclusions, blockers, unknowns, and review reasons into an immutable canonical
+SHA-256 document. Its `Blocked`, `Rejected`, and `AcceptedForReviewGate`
+verdicts never authorize execution; an accepted verdict is rejected whenever
+the bundle still has unresolved blockers/unknowns, Missing/Unknown/Invalidated
+evidence, or synthetic provenance. The caller supplies the verdict explicitly;
+the review API has no auto-accepting convenience.
+
+`PromotionReviewInvalidationRecord` preserves the original decision identity
+and records changed frozen context/evidence/categories/reasons. Separate
+content-addressed review and invalidation files are created with flushed temp
+files and atomic no-overwrite moves; retries with identical content are
+idempotent, while changed content, filename mismatches, or tampered canonical
+JSON fail closed. Full bundle identity differences, including provenance-only
+changes, are recorded even when individual evidence snapshot IDs are stable;
+same-native-ID canonical content changes identify the affected category. The
+journal's active view remains invalidated after source restoration; a new
+review attempt is required. No new replay inputs, thresholds, synthetic
+real-world evidence, or execution path are introduced.
