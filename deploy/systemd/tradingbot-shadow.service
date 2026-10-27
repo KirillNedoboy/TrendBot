@@ -1,0 +1,24 @@
+[Unit]
+Description=TradingBot operational shadow runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot
+ExecStart=/usr/bin/dotnet /opt/tradingbot/TradingBot.App.dll shadow
+Restart=on-failure
+RestartSec=5s
+StateDirectory=tradingbot-shadow
+Environment=TRADINGBOT_SHADOW_STATE_DIRECTORY=%S/tradingbot-shadow
+Environment=TRADINGBOT_LOG_FORMAT=json
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradingbot-shadow
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,417 @@
+﻿using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using TradingBot.Core;
+using TradingBot.Infrastructure;
+
+namespace TradingBot.App;
+
+/// <summary>One complete, caller-supplied evaluation snapshot for shadow mode.</summary>
+public sealed record OperationalShadowEvaluation
+{
+    public DecisionEngineInput DecisionInput { get; }
+    public DecisionEngineConfiguration DecisionConfiguration { get; }
+    public RiskEvaluationInput RiskInput { get; }
+    public RiskEvaluationConfiguration RiskConfiguration { get; }
+    public IRiskMathCalculator RiskMathCalculator { get; }
+
+    public OperationalShadowEvaluation(DecisionEngineInput decisionInput,
+        DecisionEngineConfiguration decisionConfiguration, RiskEvaluationInput riskInput,
+        RiskEvaluationConfiguration riskConfiguration, IRiskMathCalculator riskMathCalculator)
+    {
+        ArgumentNullException.ThrowIfNull(decisionInput);
+        ArgumentNullException.ThrowIfNull(decisionConfiguration);
+        ArgumentNullException.ThrowIfNull(riskInput);
+        ArgumentNullException.ThrowIfNull(riskConfiguration);
+        ArgumentNullException.ThrowIfNull(riskMathCalculator);
+        DecisionInput = decisionInput;
+        DecisionConfiguration = decisionConfiguration;
+        RiskInput = riskInput;
+        RiskConfiguration = riskConfiguration;
+        RiskMathCalculator = riskMathCalculator;
+    }
+
+    public bool IsConfigurationValid => DecisionConfiguration.Profile == DecisionEngineProfile.Shadow;
+}
+
+/// <summary>One causal public-market observation consumed by the shadow runtime.</summary>
+public sealed record OperationalShadowMarketObservation
+{
+    public string StreamId { get; }
+    public CausalMarketEvent CausalEvent { get; }
+    public bool DataFresh { get; }
+    public bool ReconnectReady { get; }
+    public bool RecoveryComplete { get; }
+    public bool KillSwitchEnabled { get; }
+    public bool KillSwitchKnown { get; }
+    public OperationalShadowEvaluation? Evaluation { get; }
+
+    public OperationalShadowMarketObservation(string streamId, CausalMarketEvent causalEvent,
+        bool dataFresh, bool reconnectReady, bool recoveryComplete, bool killSwitchEnabled,
+        bool killSwitchKnown, OperationalShadowEvaluation? evaluation = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
+        ArgumentNullException.ThrowIfNull(causalEvent);
+        StreamId = streamId;
+        CausalEvent = causalEvent;
+        DataFresh = dataFresh;
+        ReconnectReady = reconnectReady;
+        RecoveryComplete = recoveryComplete;
+        KillSwitchEnabled = killSwitchEnabled;
+        KillSwitchKnown = killSwitchKnown;
+        Evaluation = evaluation;
+    }
+
+    public bool ConfigurationValid => KillSwitchKnown && Evaluation?.IsConfigurationValid == true;
+}
+
+/// <summary>Source of public market observations. It has no order/execution surface.</summary>
+public interface IOperationalShadowMarketDataSource
+{
+    IAsyncEnumerable<OperationalShadowMarketObservation> ReadAsync(
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Delegate seam used by deterministic runtime fixtures and local smoke tests.</summary>
+public sealed class DelegateOperationalShadowMarketDataSource : IOperationalShadowMarketDataSource
+{
+    private readonly Func<CancellationToken,
+        IAsyncEnumerable<OperationalShadowMarketObservation>> _reader;
+
+    public DelegateOperationalShadowMarketDataSource(Func<CancellationToken,
+        IAsyncEnumerable<OperationalShadowMarketObservation>> reader)
+    {
+        _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+    }
+
+    public IAsyncEnumerable<OperationalShadowMarketObservation> ReadAsync(
+        CancellationToken cancellationToken = default) => _reader(cancellationToken)
+        ?? throw new InvalidOperationException("The shadow source returned a null stream.");
+}
+
+/// <summary>Runtime-only options; no strategy or risk defaults are supplied.</summary>
+public sealed record OperationalShadowRuntimeOptions
+{
+    public string StreamId { get; init; } = "shadow";
+    public TimeSpan CycleDelay { get; init; } = TimeSpan.Zero;
+
+    public OperationalShadowRuntimeOptions Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(StreamId);
+        if (CycleDelay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(CycleDelay));
+        }
+
+        return this;
+    }
+}
+
+/// <summary>Passive result of one shadow cycle. It never contains an order intent.</summary>
+public sealed record OperationalShadowCycleResult
+{
+    public OperationalShadowGateResult Gate { get; }
+    public DecisionEngineResult? Decision { get; }
+    public RiskEvaluationResult? Risk { get; }
+    public bool HypotheticalEntryCreated { get; }
+    public bool Persisted { get; }
+    public bool Duplicate { get; }
+    public long RealOrderCount { get; }
+    public IReadOnlyList<string> Reasons { get; }
+
+    public OperationalShadowCycleResult(OperationalShadowGateResult gate,
+        DecisionEngineResult? decision, RiskEvaluationResult? risk,
+        bool hypotheticalEntryCreated, bool persisted, bool duplicate,
+        IEnumerable<string> reasons)
+    {
+        ArgumentNullException.ThrowIfNull(gate);
+        ArgumentNullException.ThrowIfNull(reasons);
+        Gate = gate;
+        Decision = decision;
+        Risk = risk;
+        HypotheticalEntryCreated = hypotheticalEntryCreated;
+        Persisted = persisted;
+        Duplicate = duplicate;
+        RealOrderCount = 0;
+        Reasons = reasons.Where(static reason => !string.IsNullOrWhiteSpace(reason))
+            .Distinct(StringComparer.Ordinal).ToArray();
+    }
+}
+
+/// <summary>
+/// Composes public market observations, the Core Decision Engine, and the
+/// side-effect-free shared Risk Evaluation Engine for continuous shadow mode.
+/// </summary>
+public sealed class OperationalShadowRuntime : IAsyncDisposable
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = false
+    };
+
+    private readonly IOperationalShadowMarketDataSource _source;
+    private readonly OperationalShadowStore _store;
+    private readonly OperationalShadowRuntimeOptions _options;
+    private readonly OperationalShadowMetrics _metrics;
+    private bool _disposed;
+
+    public OperationalShadowRuntime(IOperationalShadowMarketDataSource source,
+        OperationalShadowStore store, OperationalShadowRuntimeOptions? options = null,
+        OperationalShadowMetrics? metrics = null)
+    {
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _options = (options ?? new OperationalShadowRuntimeOptions()).Validate();
+        _metrics = metrics ?? new OperationalShadowMetrics();
+    }
+
+    public OperationalShadowMetrics Metrics => _metrics;
+
+    public event Action<OperationalShadowCycleResult>? CycleCompleted;
+
+    public OperationalShadowCycleResult Process(OperationalShadowMarketObservation observation)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        ThrowIfDisposed();
+
+        PersistedKillSwitchState persistedKillSwitch = ReadPersistedKillSwitch(
+            observation.StreamId);
+        bool persistenceHealthy = _store.IsHealthy;
+        bool configurationValid = observation.ConfigurationValid
+            && persistedKillSwitch.Valid && persistedKillSwitch.Known;
+        bool killSwitchEnabled = observation.KillSwitchEnabled || persistedKillSwitch.Enabled;
+        OperationalShadowGateInput gateInput = new(configurationValid,
+            observation.DataFresh, observation.ReconnectReady, observation.RecoveryComplete,
+            persistenceHealthy, killSwitchEnabled);
+        OperationalShadowGateResult gate = OperationalShadowGate.Evaluate(gateInput);
+        DecisionEngineResult? decision = null;
+        RiskEvaluationResult? risk = null;
+        bool hypotheticalEntry = false;
+        List<string> reasons = [.. gate.BlockReasons.Select(static reason => reason.ToString())];
+
+        if (gate.CanCreateHypotheticalEntry && observation.Evaluation is { } evaluation)
+        {
+            try
+            {
+                decision = DecisionEngine.Evaluate(evaluation.DecisionInput,
+                    evaluation.DecisionConfiguration);
+                risk = RiskEvaluationEngine.Evaluate(evaluation.RiskInput,
+                    evaluation.RiskConfiguration, evaluation.RiskMathCalculator);
+                reasons.AddRange(decision.Reasons);
+                reasons.AddRange(risk.Reasons);
+                if (risk.Reasons.Any(IsRiskEvaluationUnavailable))
+                {
+                    gate = OperationalShadowGate.Evaluate(
+                        gateInput with { ConfigurationValid = false });
+                    reasons.Clear();
+                    reasons.AddRange(gate.BlockReasons.Select(static reason => reason.ToString()));
+                    reasons.AddRange(decision.Reasons);
+                    reasons.AddRange(risk.Reasons);
+                    reasons.Add("shadow-evaluation-unavailable");
+                }
+                else
+                {
+                    hypotheticalEntry = decision.Decision.Outcome == DecisionOutcome.Shadow
+                        && risk.IsApproved;
+                }
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or InvalidOperationException or OverflowException)
+            {
+                gate = OperationalShadowGate.Evaluate(
+                    gateInput with { ConfigurationValid = false });
+                reasons.Clear();
+                reasons.AddRange(gate.BlockReasons.Select(static reason => reason.ToString()));
+                reasons.Add("shadow-evaluation-unavailable");
+            }
+        }
+
+        bool effectiveKillSwitchKnown = observation.KillSwitchKnown && persistedKillSwitch.Known;
+        OperationalShadowJournalEntry entry = CreateEntry(observation, gate, decision, risk,
+            hypotheticalEntry, effectiveKillSwitchKnown, killSwitchEnabled);
+        OperationalShadowAppendResult append;
+        try
+        {
+            append = _store.Append(entry);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or InvalidOperationException or ObjectDisposedException or SqliteException)
+        {
+            List<OperationalShadowBlockReason> persistenceReasons =
+                [.. gate.BlockReasons];
+            if (!persistenceReasons.Contains(OperationalShadowBlockReason.PersistenceUnavailable))
+            {
+                persistenceReasons.Add(OperationalShadowBlockReason.PersistenceUnavailable);
+            }
+
+            OperationalShadowGateResult persistenceGate = new(false, persistenceReasons);
+            reasons.Add(OperationalShadowBlockReason.PersistenceUnavailable.ToString());
+            OperationalShadowCycleResult failed = new(persistenceGate, decision, risk, false,
+                persisted: false, duplicate: false, reasons);
+            _metrics.Record(failed);
+            Publish(failed);
+            return failed;
+        }
+
+        OperationalShadowCycleResult result = new(gate, decision, risk, hypotheticalEntry,
+            persisted: true, append.Duplicate, reasons);
+        _metrics.Record(result);
+        Publish(result);
+        return result;
+    }
+
+    public async Task RunAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await foreach (OperationalShadowMarketObservation observation in _source.ReadAsync(
+            cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            _ = Process(observation);
+            if (_options.CycleDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(_options.CycleDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_source is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+        }
+        else if (_source is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _store.Dispose();
+        _metrics.Dispose();
+    }
+
+    private OperationalShadowJournalEntry CreateEntry(OperationalShadowMarketObservation observation,
+        OperationalShadowGateResult gate, DecisionEngineResult? decision,
+        RiskEvaluationResult? risk, bool hypotheticalEntry, bool killSwitchKnown,
+        bool killSwitchEnabled)
+    {
+        CausalMarketEvent causal = observation.CausalEvent;
+        string causalJson = JsonSerializer.Serialize(new
+        {
+            streamId = observation.StreamId,
+            eventId = causal.Payload.EventId,
+            instrumentId = causal.Payload.InstrumentId.Value,
+            eventTime = causal.Payload.EventTime.Value,
+            exchangeTime = causal.ExchangeTime?.Value,
+            receiveTime = causal.ReceiveTime.Value,
+            availabilityTime = causal.AvailabilityTime.Value,
+            stableSequence = causal.StableSequence,
+            payload = causal.Payload
+        }, JsonOptions);
+        string stateJson = JsonSerializer.Serialize(new
+        {
+            dataFresh = observation.DataFresh,
+            reconnectReady = observation.ReconnectReady,
+            recoveryComplete = observation.RecoveryComplete,
+            persistenceHealthy = _store.IsHealthy,
+            killSwitchKnown,
+            killSwitchEnabled,
+            canCreateHypotheticalEntry = gate.CanCreateHypotheticalEntry
+        }, JsonOptions);
+        string outcomeJson = JsonSerializer.Serialize(new
+        {
+            decision = decision is null ? null : CoreJsonSerializer.Serialize(decision.Decision),
+            risk = risk is null ? null : CoreJsonSerializer.Serialize(risk.RiskDecision),
+            hypotheticalEntry,
+            realOrderCount = 0L,
+            blockReasons = gate.BlockReasons.Select(static reason => reason.ToString()).ToArray()
+        }, JsonOptions);
+        string checkpointJson = JsonSerializer.Serialize(new
+        {
+            streamId = observation.StreamId,
+            stableSequence = causal.StableSequence,
+            eventId = causal.Payload.EventId,
+            outcome = hypotheticalEntry ? "hypothetical-entry" : "blocked-or-observed"
+        }, JsonOptions);
+        return new OperationalShadowJournalEntry(observation.StreamId, causal.Payload.EventId,
+            causal.StableSequence, causal.Payload.EventTime, causal.ReceiveTime,
+            causal.AvailabilityTime, causal.ExchangeTime, causalJson, stateJson, outcomeJson,
+            checkpointJson);
+    }
+
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+    private PersistedKillSwitchState ReadPersistedKillSwitch(string streamId)
+    {
+        if (!_store.IsHealthy)
+        {
+            return new PersistedKillSwitchState(false, false, false);
+        }
+
+        try
+        {
+            OperationalShadowCheckpoint? checkpoint = _store.ReadCheckpoint(streamId);
+            if (checkpoint is null)
+            {
+                return new PersistedKillSwitchState(true, false, true);
+            }
+
+            using JsonDocument document = JsonDocument.Parse(checkpoint.DerivedStateJson);
+            JsonElement root = document.RootElement;
+            if (!TryReadBoolean(root, "killSwitchKnown", out bool known)
+                || !TryReadBoolean(root, "killSwitchEnabled", out bool enabled))
+            {
+                return new PersistedKillSwitchState(false, false, false);
+            }
+
+            return new PersistedKillSwitchState(known, enabled, true);
+        }
+        catch (Exception exception) when (exception is JsonException or SqliteException
+            or IOException or InvalidDataException or ObjectDisposedException)
+        {
+            return new PersistedKillSwitchState(false, false, false);
+        }
+    }
+
+    private static bool TryReadBoolean(JsonElement root, string propertyName, out bool value)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement element)
+            || (element.ValueKind is not JsonValueKind.True and not JsonValueKind.False))
+        {
+            value = false;
+            return false;
+        }
+
+        value = element.GetBoolean();
+        return true;
+    }
+
+    private static bool IsRiskEvaluationUnavailable(string reason) => reason is
+        RiskReasonCodes.ConfigurationInvalid or
+        RiskReasonCodes.RiskMathVersionMismatch or
+        RiskReasonCodes.RiskMathInputMismatch or
+        RiskReasonCodes.RiskMathCalculationFailed or
+        RiskReasonCodes.RiskMathOverflow or
+        RiskReasonCodes.RiskMathUnavailable;
+
+    private void Publish(OperationalShadowCycleResult result)
+    {
+        try
+        {
+            CycleCompleted?.Invoke(result);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ObjectDisposedException or IOException)
+        {
+            // Observability subscribers cannot change shadow safety or stop the runtime.
+        }
+    }
+
+    private sealed record PersistedKillSwitchState(bool Known, bool Enabled, bool Valid);
+}
+

@@ -23,5 +23,14 @@ public static class Bootstrap
 
 internal static class Program
 {
-    public static int Main() => Bootstrap.Run();
+    public static int Main(string[]? args = null)
+    {
+        if (args is { Length: > 0 }
+            && StringComparer.OrdinalIgnoreCase.Equals(args[0], "shadow"))
+        {
+            return OperationalShadowCommand.RunAsync().GetAwaiter().GetResult();
+        }
+
+        return Bootstrap.Run();
+    }
 }

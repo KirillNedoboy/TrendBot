@@ -589,3 +589,27 @@ P12-M02-T003 adds no persistence schema or durable activation state. Its
 `ActivationSeparationEvidence` is immutable review provenance built from the
 sealed scripted harness and a fully passing profile; the evidence records no
 credentials, transport, endpoint, or real-money activation capability.
+
+## Isolated operational shadow store (P15-M01-T001)
+
+Operational shadow evidence is persisted in a separate file opened by
+`OperationalShadowStore`. The store owns `user_version = 1`, `shadow_entries`,
+and `shadow_checkpoints`; it never calls or alters the shared `SqliteDatabase.Initialize`
+or the shared schema/migration version. The file uses WAL and
+`synchronous=FULL`, with one serializable immediate transaction per append.
+
+`OperationalShadowJournalEntry` retains the causal event identity, event time,
+optional exchange time, receive time, availability time, stable sequence, and
+four bounded JSON documents: the causal payload, derived state, outcome, and
+checkpoint. The entry and its latest stream checkpoint are inserted/updated in
+one transaction. A repeated byte-identical stream/sequence entry returns an
+idempotent duplicate result; a conflicting identity, lower sequence, or event
+identity fails before mutation. Reopening the file reconstructs the entry list
+and checkpoint, so a restart or a retry after a process interruption does not
+create a second shadow outcome.
+
+Unknown, stale, disconnected, recovery-pending, persistence-unhealthy, and
+kill-switch states are retained as blocked derived outcomes. The store is an
+evidence journal only: it contains no order intent, reservation, private API,
+credential, or activation state. Database corruption or an unsupported
+`user_version` fails closed; no in-place migration is attempted in this task.
