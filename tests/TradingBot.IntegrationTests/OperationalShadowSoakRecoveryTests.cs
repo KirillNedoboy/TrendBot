@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -347,6 +347,8 @@ public sealed class OperationalShadowSoakRecoveryTests
         IOperationalShadowHealthSource
     {
         private IReadOnlyList<OperationalShadowFeedHealth> _feeds = [];
+
+        public IReadOnlyCollection<string> RequiredFeedStreams => ["trade", "depth"];
 
         public event Action? HealthChanged;
 

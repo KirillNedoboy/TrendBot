@@ -158,10 +158,14 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
     private readonly OperationalShadowMetrics _metrics;
     private readonly TimeProvider _timeProvider;
     private readonly object _healthLock = new();
+    private bool _healthEvidenceWriteHealthy = true;
+    private long _nextHealthSequence;
     private OperationalShadowMarketObservation? _lastObservation;
     private OperationalShadowCycleResult? _lastCycleResult;
     private OperationalShadowHealthSnapshot _healthSnapshot;
     private bool _disposed;
+
+    public string RunId { get; } = Guid.NewGuid().ToString("N");
 
     public OperationalShadowRuntime(IOperationalShadowMarketDataSource source,
         OperationalShadowStore store, OperationalShadowRuntimeOptions? options = null,
@@ -178,7 +182,7 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
             healthSource.HealthChanged += OnSourceHealthChanged;
         }
 
-        RefreshHealth();
+        RefreshHealth(causalCheckpointLink: null);
     }
 
     public OperationalShadowMetrics Metrics => _metrics;
@@ -205,7 +209,7 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
 
         PersistedKillSwitchState persistedKillSwitch = ReadPersistedKillSwitch(
             observation.StreamId);
-        bool persistenceHealthy = _store.IsHealthy;
+        bool persistenceHealthy = IsPersistenceHealthy();
         bool configurationValid = observation.ConfigurationValid
             && persistedKillSwitch.Valid && persistedKillSwitch.Known;
         bool killSwitchEnabled = observation.KillSwitchEnabled || persistedKillSwitch.Enabled;
@@ -214,17 +218,26 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
                 ? healthSource.GetHealth(_timeProvider.GetUtcNow(), _options.StaleAfter)
                 : Array.Empty<OperationalShadowFeedHealth>();
         bool hasHealthProvider = _source is IOperationalShadowHealthSource;
-        bool sourceFresh = !hasHealthProvider || (sourceFeeds.Count > 0
-            && sourceFeeds.All(static feed => feed.Fresh && !feed.GapDetected));
-        bool sourceConnected = !hasHealthProvider || (sourceFeeds.Count > 0
-            && sourceFeeds.All(static feed => feed.Connected && !feed.Reconnecting));
-        bool sourceRecovered = !hasHealthProvider || (sourceFeeds.Count > 0
-            && sourceFeeds.All(static feed => feed.RecoveryComplete));
+        CoverageSummary coverage = GetCoverage(sourceFeeds,
+            hasHealthProvider
+                ? ((IOperationalShadowHealthSource)_source).RequiredFeedStreams
+                : null,
+            hasHealthProvider);
+        bool sourceFresh = !hasHealthProvider || IsRequiredFeedState(sourceFeeds,
+            coverage.RequiredStreams, static feed => feed.Fresh && !feed.GapDetected);
+        bool sourceConnected = !hasHealthProvider || IsRequiredFeedState(sourceFeeds,
+            coverage.RequiredStreams, static feed => feed.Connected && !feed.Reconnecting);
+        bool sourceRecovered = !hasHealthProvider || IsRequiredFeedState(sourceFeeds,
+            coverage.RequiredStreams, static feed => feed.RecoveryComplete);
         OperationalShadowGateInput gateInput = new(configurationValid,
             observation.DataFresh && sourceFresh,
             observation.ReconnectReady && sourceConnected,
             observation.RecoveryComplete && sourceRecovered, persistenceHealthy,
-            killSwitchEnabled);
+            killSwitchEnabled)
+        {
+            CoverageKnown = !hasHealthProvider || coverage.Known,
+            CoverageComplete = !hasHealthProvider || coverage.Complete
+        };
         OperationalShadowGateResult gate = OperationalShadowGate.Evaluate(gateInput);
         DecisionEngineResult? decision = null;
         RiskEvaluationResult? risk = null;
@@ -486,11 +499,11 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         using PeriodicTimer timer = new(_options.HealthCheckInterval, _timeProvider);
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
-            RefreshHealth();
+            RefreshHealth(causalCheckpointLink: null);
         }
     }
 
-    private void OnSourceHealthChanged() => RefreshHealth();
+    private void OnSourceHealthChanged() => RefreshHealth(causalCheckpointLink: null);
 
     private void RecordHealth(OperationalShadowMarketObservation observation,
         OperationalShadowCycleResult result)
@@ -501,29 +514,42 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
             _lastCycleResult = result;
         }
 
-        RefreshHealth();
+        RefreshHealth(CreateCheckpointLink(observation));
     }
 
-    private void RefreshHealth()
+    private void RefreshHealth(string? causalCheckpointLink)
     {
         OperationalShadowHealthSnapshot snapshot;
         DateTimeOffset now = _timeProvider.GetUtcNow();
         lock (_healthLock)
         {
+            IOperationalShadowHealthSource? provider = _source as IOperationalShadowHealthSource;
             IReadOnlyList<OperationalShadowFeedHealth> feeds =
-                _source is IOperationalShadowHealthSource provider
+                provider is not null
                     ? provider.GetHealth(now, _options.StaleAfter)
                     : Array.Empty<OperationalShadowFeedHealth>();
-            bool hasProvider = feeds.Count > 0;
-            bool healthProviderWithoutFeeds = _source is IOperationalShadowHealthSource
-                && !hasProvider;
+            bool hasProvider = provider is not null;
+            bool healthProviderWithoutFeeds = hasProvider && feeds.Count == 0;
+            CoverageSummary coverage = GetCoverage(feeds, provider?.RequiredFeedStreams,
+                hasProvider);
             OperationalShadowMarketObservation? observation = _lastObservation;
             OperationalShadowCycleResult? result = _lastCycleResult;
-            bool feedStale = feeds.Any(static feed => !feed.Fresh || !feed.Connected);
-            bool feedGap = feeds.Any(static feed => feed.GapDetected);
-            bool feedReconnecting = feeds.Any(static feed => feed.Reconnecting
-                || !feed.Connected);
-            bool feedRecoveryComplete = feeds.All(static feed => feed.RecoveryComplete);
+            bool feedStale = hasProvider
+                ? !IsRequiredFeedState(feeds, coverage.RequiredStreams,
+                    static feed => feed.Fresh && feed.Connected)
+                : false;
+            bool feedGap = hasProvider
+                ? feeds.Any(feed => feed.GapDetected
+                    && (!coverage.Known || coverage.RequiredStreams.Contains(feed.Stream,
+                        StringComparer.Ordinal)))
+                : false;
+            bool feedReconnecting = hasProvider
+                ? !IsRequiredFeedState(feeds, coverage.RequiredStreams,
+                    static feed => feed.Connected && !feed.Reconnecting)
+                : false;
+            bool feedRecoveryComplete = hasProvider
+                && IsRequiredFeedState(feeds, coverage.RequiredStreams,
+                    static feed => feed.RecoveryComplete);
             bool stale = hasProvider ? feedStale : healthProviderWithoutFeeds
                 || observation is null || !observation.DataFresh;
             bool gap = feedGap;
@@ -541,7 +567,8 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
                     OperationalShadowBlockReason.KillSwitchEnabled) == true;
             bool allowed = result?.Gate.CanCreateHypotheticalEntry == true
                 && !stale && !gap && !reconnecting && recoveryComplete && persistenceHealthy
-                && killSwitchKnown && !killSwitchEnabled;
+                && killSwitchKnown && !killSwitchEnabled && coverage.Known
+                && coverage.Complete;
             List<string> reasons = [];
             if (observation is null) reasons.Add("health-unknown");
             if (healthProviderWithoutFeeds) reasons.Add("feed-health-unknown");
@@ -549,13 +576,24 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
             if (gap) reasons.Add("SequenceGap");
             if (reconnecting) reasons.Add(OperationalShadowBlockReason.ReconnectPending.ToString());
             if (!recoveryComplete) reasons.Add(OperationalShadowBlockReason.RecoveryPending.ToString());
+            if (!coverage.Known)
+            {
+                reasons.Add(OperationalShadowBlockReason.CoverageUnknown.ToString());
+            }
+            else if (!coverage.Complete)
+            {
+                reasons.Add(OperationalShadowBlockReason.CoverageIncomplete.ToString());
+                reasons.AddRange(coverage.MissingStreamReasons.Select(static missing =>
+                    $"missing-stream:{missing.Stream}:{missing.Reason}"));
+            }
             if (!persistenceHealthy) reasons.Add(OperationalShadowBlockReason.PersistenceUnavailable.ToString());
             if (!killSwitchKnown) reasons.Add(OperationalShadowBlockReason.ConfigurationUnknown.ToString());
             if (killSwitchEnabled) reasons.Add(OperationalShadowBlockReason.KillSwitchEnabled.ToString());
             if (result is not null) reasons.AddRange(result.Gate.BlockReasons.Select(static reason =>
                 reason.ToString()));
             reasons = reasons.Distinct(StringComparer.Ordinal).ToList();
-            OperationalShadowHealthStatus status = observation is null && !hasProvider
+            OperationalShadowHealthStatus status = observation is null
+                && (!hasProvider || healthProviderWithoutFeeds)
                 ? OperationalShadowHealthStatus.Unknown
                 : allowed ? OperationalShadowHealthStatus.Healthy
                 : OperationalShadowHealthStatus.Degraded;
@@ -563,7 +601,58 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
                 Array.AsReadOnly(feeds.ToArray()), stale, gap, reconnecting,
                 recoveryComplete, persistenceHealthy, killSwitchKnown,
                 killSwitchEnabled, allowed, reasons.AsReadOnly(),
-                OperationalShadowReconciliationStatus.NotApplicableInShadow, 0);
+                OperationalShadowReconciliationStatus.NotApplicableInShadow, 0)
+            {
+                ExpectedFeedCount = coverage.ExpectedFeedCount,
+                CoveredFeedCount = coverage.CoveredFeedCount,
+                CoverageRatio = coverage.CoverageRatio,
+                CoverageKnown = coverage.Known,
+                CoverageApplicable = hasProvider,
+                MissingStreamReasons = coverage.MissingStreamReasons,
+                RunId = RunId,
+                HealthSequence = _nextHealthSequence,
+                CausalCheckpointLink = causalCheckpointLink
+            };
+
+            long healthSequence = _nextHealthSequence++;
+            string healthJson = JsonSerializer.Serialize(new
+            {
+                formatVersion = OperationalShadowHealthEvidence.CurrentEvidenceVersion,
+                runId = RunId,
+                healthSequence,
+                checkedAt = snapshot.CheckedAt,
+                causalCheckpointLink,
+                snapshot
+            }, JsonOptions);
+            OperationalShadowHealthEvidence evidence = new(RunId, healthSequence,
+                new UtcTimestamp(snapshot.CheckedAt), healthJson, causalCheckpointLink);
+            try
+            {
+                _store.AppendHealthEvidence(evidence);
+                _healthEvidenceWriteHealthy = true;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException
+                or InvalidOperationException or ObjectDisposedException or SqliteException
+                or UnauthorizedAccessException)
+            {
+                _healthEvidenceWriteHealthy = false;
+                List<string> failedReasons = [.. snapshot.BlockReasons];
+                if (!failedReasons.Contains(
+                        OperationalShadowBlockReason.PersistenceUnavailable.ToString(),
+                        StringComparer.Ordinal))
+                {
+                    failedReasons.Add(OperationalShadowBlockReason.PersistenceUnavailable.ToString());
+                }
+
+                snapshot = snapshot with
+                {
+                    PersistenceHealthy = false,
+                    CanCreateHypotheticalEntry = false,
+                    Status = OperationalShadowHealthStatus.Degraded,
+                    BlockReasons = failedReasons.AsReadOnly()
+                };
+            }
+
             _healthSnapshot = snapshot;
         }
 
@@ -579,6 +668,94 @@ public sealed class OperationalShadowRuntime : IAsyncDisposable
         }
     }
 
+    private bool IsPersistenceHealthy()
+    {
+        lock (_healthLock)
+        {
+            return _healthEvidenceWriteHealthy && _store.IsHealthy;
+        }
+    }
+
+    private static string CreateCheckpointLink(OperationalShadowMarketObservation observation) =>
+        $"{observation.StreamId}/{observation.CausalEvent.StableSequence}/"
+        + observation.CausalEvent.Payload.EventId;
+
+    private static bool IsRequiredFeedState(
+        IReadOnlyList<OperationalShadowFeedHealth> feeds,
+        IReadOnlyList<string> requiredStreams,
+        Func<OperationalShadowFeedHealth, bool> predicate)
+    {
+        if (requiredStreams.Count == 0)
+        {
+            return false;
+        }
+
+        return requiredStreams.All(stream => feeds.Any(feed =>
+            StringComparer.Ordinal.Equals(feed.Stream, stream) && predicate(feed)));
+    }
+
+    private static CoverageSummary GetCoverage(
+        IReadOnlyList<OperationalShadowFeedHealth> feeds,
+        IReadOnlyCollection<string>? requiredFeedStreams,
+        bool hasProvider)
+    {
+        if (!hasProvider)
+        {
+            return new CoverageSummary(true, 0, 0, null, [], [], false);
+        }
+
+        if (requiredFeedStreams is null)
+        {
+            return new CoverageSummary(false, 0, 0, null, [], [], true);
+        }
+
+        string[] required = requiredFeedStreams
+            .Where(static stream => !string.IsNullOrWhiteSpace(stream))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static stream => stream, StringComparer.Ordinal)
+            .ToArray();
+        if (required.Length == 0)
+        {
+            return new CoverageSummary(true, 0, 0, null, required,
+                [new OperationalShadowMissingStreamReason("<none>",
+                    "required-stream-set-empty")], true);
+        }
+
+        List<OperationalShadowMissingStreamReason> missing = [];
+        int covered = 0;
+        foreach (string stream in required)
+        {
+            OperationalShadowFeedHealth[] rows = feeds.Where(feed =>
+                StringComparer.Ordinal.Equals(feed.Stream, stream)).ToArray();
+            bool receive = rows.Any(static feed => feed.LastReceiveTime is not null);
+            bool availability = rows.Any(static feed => feed.LastAvailabilityTime is not null);
+            if (receive && availability)
+            {
+                covered++;
+                continue;
+            }
+
+            string reason = rows.Length == 0
+                ? "stream-not-observed"
+                : !receive && !availability
+                    ? "receive-and-availability-missing"
+                    : !receive ? "receive-time-missing" : "availability-time-missing";
+            missing.Add(new OperationalShadowMissingStreamReason(stream, reason));
+        }
+
+        return new CoverageSummary(true, required.Length, covered,
+            (double)covered / required.Length, required, missing.AsReadOnly(), true);
+    }
+
     private sealed record PersistedKillSwitchState(bool Known, bool Enabled, bool Valid);
+
+    private sealed record CoverageSummary(bool Known, int ExpectedFeedCount,
+        int CoveredFeedCount, double? CoverageRatio, IReadOnlyList<string> RequiredStreams,
+        IReadOnlyList<OperationalShadowMissingStreamReason> MissingStreamReasons,
+        bool Applicable)
+    {
+        public bool Complete => Known && (!Applicable || (ExpectedFeedCount > 0
+            && CoveredFeedCount == ExpectedFeedCount));
+    }
 }
 

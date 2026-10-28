@@ -9,13 +9,22 @@ public enum OperationalShadowBlockReason
     DataStale,
     ReconnectPending,
     RecoveryPending,
+    CoverageUnknown,
+    CoverageIncomplete,
     PersistenceUnavailable,
-    KillSwitchEnabled
+    KillSwitchEnabled,
+    RequiredFeedCoverageUnknown = CoverageUnknown,
+    RequiredFeedCoverageIncomplete = CoverageIncomplete
 }
 
 public sealed record OperationalShadowGateInput(bool ConfigurationValid, bool DataFresh,
     bool ReconnectReady, bool RecoveryComplete, bool PersistenceHealthy,
-    bool KillSwitchEnabled);
+    bool KillSwitchEnabled)
+{
+    public bool CoverageKnown { get; init; } = true;
+
+    public bool CoverageComplete { get; init; } = true;
+}
 
 public sealed record OperationalShadowGateResult
 {
@@ -66,6 +75,15 @@ public static class OperationalShadowGate
         if (!input.RecoveryComplete)
         {
             reasons.Add(OperationalShadowBlockReason.RecoveryPending);
+        }
+
+        if (!input.CoverageKnown)
+        {
+            reasons.Add(OperationalShadowBlockReason.CoverageUnknown);
+        }
+        else if (!input.CoverageComplete)
+        {
+            reasons.Add(OperationalShadowBlockReason.CoverageIncomplete);
         }
 
         if (!input.PersistenceHealthy)

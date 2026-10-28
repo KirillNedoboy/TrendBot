@@ -11,7 +11,7 @@ namespace TradingBot.Infrastructure;
 /// </remarks>
 public sealed class OperationalShadowStore : IDisposable
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     private readonly string _databasePath;
     private readonly int _commandTimeoutSeconds;
@@ -113,6 +113,84 @@ public sealed class OperationalShadowStore : IDisposable
         return new OperationalShadowAppendResult(true, false, CreateCheckpoint(entry));
     }
 
+    /// <summary>Appends one durable health snapshot within a distinct runtime run.</summary>
+    public OperationalShadowHealthEvidenceAppendResult AppendHealthEvidence(
+        OperationalShadowHealthEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        ThrowIfDisposed();
+
+        using SqliteConnection connection = OpenConnection(_databasePath,
+            _commandTimeoutSeconds);
+        using SqliteTransaction transaction = connection.BeginTransaction(
+            IsolationLevel.Serializable, deferred: false);
+
+        PersistedHealthEvidence? existing = ReadHealthEvidenceRow(connection, transaction,
+            evidence.RunId, evidence.HealthSequence);
+        if (existing is not null)
+        {
+            OperationalShadowHealthEvidence stored = ToHealthEvidence(existing);
+            if (stored == evidence)
+            {
+                transaction.Commit();
+                return new OperationalShadowHealthEvidenceAppendResult(false, true);
+            }
+
+            throw new InvalidOperationException(
+                "The health run sequence already contains different evidence.");
+        }
+
+        long? maximumSequence = ReadMaximumHealthSequence(connection, transaction,
+            evidence.RunId);
+        if (maximumSequence is not null && evidence.HealthSequence <= maximumSequence.Value)
+        {
+            throw new InvalidOperationException(
+                "Health evidence sequence must increase within a run.");
+        }
+
+        InsertHealthEvidence(connection, transaction, evidence);
+        transaction.Commit();
+        return new OperationalShadowHealthEvidenceAppendResult(true, false);
+    }
+
+    public IReadOnlyList<OperationalShadowHealthEvidence> ReadHealthEvidence(string runId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ThrowIfDisposed();
+
+        using SqliteConnection connection = OpenConnection(_databasePath,
+            _commandTimeoutSeconds);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT run_id, health_sequence, checked_at_ticks, causal_checkpoint_link,
+                   evidence_version, health_json
+            FROM shadow_health_evidence
+            WHERE run_id = $run_id COLLATE BINARY
+            ORDER BY health_sequence ASC;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+        return ReadHealthEvidenceRows(command);
+    }
+
+    public IReadOnlyList<OperationalShadowHealthEvidence> ReadHealthEvidence() =>
+        ReadAllHealthEvidence();
+
+    public IReadOnlyList<OperationalShadowHealthEvidence> ReadAllHealthEvidence()
+    {
+        ThrowIfDisposed();
+
+        using SqliteConnection connection = OpenConnection(_databasePath,
+            _commandTimeoutSeconds);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT run_id, health_sequence, checked_at_ticks, causal_checkpoint_link,
+                   evidence_version, health_json
+            FROM shadow_health_evidence
+            ORDER BY run_id COLLATE BINARY, health_sequence ASC;
+            """;
+        return ReadHealthEvidenceRows(command);
+    }
+
     public IReadOnlyList<OperationalShadowJournalEntry> ReadAll(string streamId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
@@ -195,6 +273,14 @@ public sealed class OperationalShadowStore : IDisposable
             SetUserVersion(connection, transaction, CurrentSchemaVersion);
             transaction.Commit();
         }
+        else if (version == 1)
+        {
+            using SqliteTransaction transaction = connection.BeginTransaction(
+                IsolationLevel.Serializable, deferred: false);
+            MigrateV1ToV2(connection, transaction);
+            SetUserVersion(connection, transaction, CurrentSchemaVersion);
+            transaction.Commit();
+        }
         else if (version != CurrentSchemaVersion)
         {
             throw new InvalidDataException(
@@ -256,6 +342,33 @@ public sealed class OperationalShadowStore : IDisposable
                 outcome_json TEXT NOT NULL,
                 checkpoint_json TEXT NOT NULL
             ) WITHOUT ROWID;
+            CREATE TABLE shadow_health_evidence
+            (
+                run_id TEXT COLLATE BINARY NOT NULL,
+                health_sequence INTEGER NOT NULL,
+                checked_at_ticks INTEGER NOT NULL,
+                causal_checkpoint_link TEXT COLLATE BINARY,
+                evidence_version INTEGER NOT NULL,
+                health_json TEXT NOT NULL,
+                PRIMARY KEY (run_id, health_sequence)
+            ) WITHOUT ROWID;
+            """);
+    }
+
+    private static void MigrateV1ToV2(SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        ExecuteNonQuery(connection, transaction, """
+            CREATE TABLE IF NOT EXISTS shadow_health_evidence
+            (
+                run_id TEXT COLLATE BINARY NOT NULL,
+                health_sequence INTEGER NOT NULL,
+                checked_at_ticks INTEGER NOT NULL,
+                causal_checkpoint_link TEXT COLLATE BINARY,
+                evidence_version INTEGER NOT NULL,
+                health_json TEXT NOT NULL,
+                PRIMARY KEY (run_id, health_sequence)
+            ) WITHOUT ROWID;
             """);
     }
 
@@ -266,7 +379,8 @@ public sealed class OperationalShadowStore : IDisposable
             SELECT name
             FROM sqlite_master
             WHERE type = 'table'
-              AND name IN ('shadow_entries', 'shadow_checkpoints')
+            AND name IN ('shadow_entries', 'shadow_checkpoints',
+                         'shadow_health_evidence')
             ORDER BY name;
             """;
         List<string> names = [];
@@ -276,11 +390,12 @@ public sealed class OperationalShadowStore : IDisposable
             names.Add(reader.GetString(0));
         }
 
-        if (!names.SequenceEqual(["shadow_checkpoints", "shadow_entries"],
+        if (!names.SequenceEqual(["shadow_checkpoints", "shadow_entries",
+                                  "shadow_health_evidence"],
                 StringComparer.Ordinal))
         {
             throw new InvalidDataException(
-                "The operational shadow schema does not match version 1.");
+                "The operational shadow schema does not match version 2.");
         }
     }
 
@@ -329,6 +444,79 @@ public sealed class OperationalShadowStore : IDisposable
         command.Parameters.AddWithValue("$outcome_json", entry.OutcomeJson);
         command.Parameters.AddWithValue("$checkpoint_json", entry.CheckpointJson);
         command.ExecuteNonQuery();
+    }
+
+    private static void InsertHealthEvidence(SqliteConnection connection,
+        SqliteTransaction transaction, OperationalShadowHealthEvidence evidence)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO shadow_health_evidence
+                (run_id, health_sequence, checked_at_ticks, causal_checkpoint_link,
+                 evidence_version, health_json)
+            VALUES
+                ($run_id, $health_sequence, $checked_at_ticks, $causal_checkpoint_link,
+                 $evidence_version, $health_json);
+            """;
+        command.Parameters.AddWithValue("$run_id", evidence.RunId);
+        command.Parameters.AddWithValue("$health_sequence", evidence.HealthSequence);
+        command.Parameters.AddWithValue("$checked_at_ticks", ToTicks(evidence.CheckedAt));
+        command.Parameters.AddWithValue("$causal_checkpoint_link",
+            evidence.CausalCheckpointLink is null
+                ? DBNull.Value : evidence.CausalCheckpointLink);
+        command.Parameters.AddWithValue("$evidence_version", evidence.EvidenceVersion);
+        command.Parameters.AddWithValue("$health_json", evidence.HealthJson);
+        command.ExecuteNonQuery();
+    }
+
+    private static PersistedHealthEvidence? ReadHealthEvidenceRow(
+        SqliteConnection connection, SqliteTransaction transaction, string runId,
+        long healthSequence)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT run_id, health_sequence, checked_at_ticks, causal_checkpoint_link,
+                   evidence_version, health_json
+            FROM shadow_health_evidence
+            WHERE run_id = $run_id COLLATE BINARY
+              AND health_sequence = $health_sequence;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+        command.Parameters.AddWithValue("$health_sequence", healthSequence);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return reader.Read() ? ReadPersistedHealthEvidence(reader) : null;
+    }
+
+    private static long? ReadMaximumHealthSequence(SqliteConnection connection,
+        SqliteTransaction transaction, string runId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT MAX(health_sequence)
+            FROM shadow_health_evidence
+            WHERE run_id = $run_id COLLATE BINARY;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+        object? value = command.ExecuteScalar();
+        return value is null or DBNull ? null : Convert.ToInt64(value,
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowHealthEvidence>
+        ReadHealthEvidenceRows(
+        SqliteCommand command)
+    {
+        List<OperationalShadowHealthEvidence> evidence = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            evidence.Add(ToHealthEvidence(ReadPersistedHealthEvidence(reader)));
+        }
+
+        return evidence.AsReadOnly();
     }
 
     private static void AddParameters(SqliteCommand command, OperationalShadowJournalEntry entry)
@@ -406,11 +594,22 @@ public sealed class OperationalShadowStore : IDisposable
         reader.GetInt64(4), reader.GetInt64(5), reader.IsDBNull(6) ? null : reader.GetInt64(6),
         reader.GetString(7), reader.GetString(8), reader.GetString(9), reader.GetString(10));
 
+    private static PersistedHealthEvidence ReadPersistedHealthEvidence(
+        SqliteDataReader reader) => new(
+        reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2),
+        reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetInt32(4),
+        reader.GetString(5));
+
     private static OperationalShadowJournalEntry ToEntry(PersistedRow row) =>
         new(row.StreamId, row.EventId, row.StableSequence, FromTicks(row.EventTimeTicks),
             FromTicks(row.ReceiveTimeTicks), FromTicks(row.AvailabilityTimeTicks),
             row.ExchangeTimeTicks is null ? null : FromTicks(row.ExchangeTimeTicks.Value),
             row.CausalEventJson, row.DerivedStateJson, row.OutcomeJson, row.CheckpointJson);
+
+    private static OperationalShadowHealthEvidence ToHealthEvidence(
+        PersistedHealthEvidence row) => new(row.RunId, row.HealthSequence,
+            FromTicks(row.CheckedAtTicks), row.HealthJson, row.CausalCheckpointLink,
+            row.EvidenceVersion);
 
     private static long ReadUserVersion(SqliteConnection connection,
         SqliteTransaction? transaction = null)
@@ -474,6 +673,10 @@ public sealed class OperationalShadowStore : IDisposable
         long EventTimeTicks, long ReceiveTimeTicks, long AvailabilityTimeTicks,
         long? ExchangeTimeTicks, string CausalEventJson, string DerivedStateJson,
         string OutcomeJson, string CheckpointJson);
+
+    private sealed record PersistedHealthEvidence(string RunId, long HealthSequence,
+        long CheckedAtTicks, string? CausalCheckpointLink, int EvidenceVersion,
+        string HealthJson);
 }
 
 public sealed record OperationalShadowJournalEntry
@@ -542,3 +745,37 @@ public sealed record OperationalShadowAppendResult(
     bool Appended,
     bool Duplicate,
     OperationalShadowCheckpoint Checkpoint);
+
+public sealed record OperationalShadowHealthEvidence
+{
+    public const int CurrentEvidenceVersion = 1;
+
+    public string RunId { get; }
+    public long HealthSequence { get; }
+    public UtcTimestamp CheckedAt { get; }
+    public string HealthJson { get; }
+    public string? CausalCheckpointLink { get; }
+    public int EvidenceVersion { get; }
+
+    public OperationalShadowHealthEvidence(string runId, long healthSequence,
+        UtcTimestamp checkedAt, string healthJson, string? causalCheckpointLink = null,
+        int evidenceVersion = CurrentEvidenceVersion)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentOutOfRangeException.ThrowIfNegative(healthSequence);
+        ArgumentNullException.ThrowIfNull(checkedAt);
+        ArgumentException.ThrowIfNullOrWhiteSpace(healthJson);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(evidenceVersion);
+
+        RunId = runId;
+        HealthSequence = healthSequence;
+        CheckedAt = checkedAt;
+        HealthJson = healthJson;
+        CausalCheckpointLink = causalCheckpointLink;
+        EvidenceVersion = evidenceVersion;
+    }
+}
+
+public sealed record OperationalShadowHealthEvidenceAppendResult(
+    bool Appended,
+    bool Duplicate);

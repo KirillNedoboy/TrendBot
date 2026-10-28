@@ -1117,3 +1117,50 @@
   Linux/systemd operation, and a 24/7 soak remain unverified. No private
   network, credential, real order, activation, package, schema, or canonical
   source change was made. `P15-M02-T001` is next READY and was not started.
+
+## P15-M02-T001 evidence
+
+- Startup: `AGENTS.md`, the project specification, execution plan, task graph,
+  and prior handoff were read; the worktree was clean before the task. The
+  validator selected `P15-M02-T001` as the first READY task after
+  `P15-M01-T003`; the independent later tasks remained blocked by dependency.
+- TDD RED: the new focused IntegrationTests DLL discovered 4 quality tests and
+  failed at runtime on the missing coverage surface. The Infrastructure.Tests
+  DLL discovered 2 health-evidence tests and failed at runtime because the
+  evidence type was absent and schema version 2 had not been migrated. The RED
+  runs were not compile failures or zero-test selections.
+- GREEN: `IOperationalShadowHealthSource` now exposes a nullable required-feed
+  identity set. Coverage deduplicates required identities and covered rows,
+  requires receive plus availability evidence, ignores extra rows for the
+  denominator, reports expected/covered counts, nullable ratio, and missing
+  reasons, and blocks incomplete or unknown coverage. Existing stale-after,
+  gap/recovery, reconciliation NotApplicableInShadow, and zero-real-order
+  signals remain intact. Health JSON and BCL coverage gauges include run ID and
+  health sequence.
+- Durability: `OperationalShadowStore` is schema v2. New files create the
+  additive health-evidence table; v1 files migrate transactionally while
+  preserving market journal/checkpoint rows. Versioned JSON evidence records a
+  unique run, monotonic sequence, checked timestamp, and nullable causal
+  checkpoint link. Initial/source/timer/cycle health snapshots persist; timer
+  snapshots have no causal link, restart creates a distinct run, and a failed
+  health write marks persistence unhealthy and closes the gate.
+- Focused GREEN direct DLL results: `OperationalShadowHealthQualityTests` 7/7,
+  `OperationalShadowHealthEvidenceTests` 2/2,
+  `OperationalShadowObservabilityTests` 3/3,
+  `OperationalShadowRuntimeTests` 16/16,
+  `OperationalShadowCommandTests` 2/2,
+  `OperationalShadowSoakRecoveryTests` 4/4,
+  Binance `BinanceWebSocketClientTests` 8/8, `BinanceDepthAndOrderBookTests`
+  6/6, and `ArchitectureTests` 1/1, Replay `RiskMathParityTests` 2/2 and
+  `SimulatedRiskTests` 6/6, and integration multi-lane parity 3/3.
+- Final local checks: affected Release builds used
+  `C:\temp\dotnet10\dotnet.exe` SDK 10.0.401 with `--warnaserror` and passed
+  with zero warnings/errors; scoped `dotnet format --verify-no-changes` passed
+  for App, Infrastructure, IntegrationTests, and Infrastructure.Tests;
+  `pwsh -NoProfile -File tools/validate-docs.ps1` passed and selected
+  `P15-M02-T002` as next READY; `git diff --check` passed. No commit, push,
+  private network request, credential, real order, package/project-graph,
+  canonical-source, or `graft/` change was made.
+- Limits: evidence is synthetic/local. Real Binance connectivity,
+  Linux/systemd execution, and 24/7 soak remain unverified. `P15-M02-T002` is
+  now READY and this implementation stops at T001.

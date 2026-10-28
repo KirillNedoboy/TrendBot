@@ -313,7 +313,7 @@ public sealed class OperationalShadowRuntimeTests
                 connection.Open();
                 using SqliteCommand version = connection.CreateCommand();
                 version.CommandText = "PRAGMA user_version;";
-                Assert.Equal(1L, (long)(version.ExecuteScalar() ?? -1L));
+                Assert.Equal(2L, (long)(version.ExecuteScalar() ?? -1L));
                 using SqliteCommand tables = connection.CreateCommand();
                 tables.CommandText = "SELECT name FROM sqlite_master WHERE type='table' "
                     + "AND name NOT LIKE 'sqlite_%' ORDER BY name;";
@@ -324,7 +324,8 @@ public sealed class OperationalShadowRuntimeTests
                     names.Add(reader.GetString(0));
                 }
 
-                Assert.Equal(["shadow_checkpoints", "shadow_entries"], names);
+                Assert.Equal(["shadow_checkpoints", "shadow_entries",
+                    "shadow_health_evidence"], names);
             }
 
             store.Dispose();

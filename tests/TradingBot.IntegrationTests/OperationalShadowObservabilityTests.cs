@@ -148,6 +148,8 @@ public sealed class OperationalShadowObservabilityTests
     {
         private IReadOnlyList<OperationalShadowFeedHealth> _feeds = [];
 
+        public IReadOnlyCollection<string> RequiredFeedStreams => ["trade", "depth"];
+
         public event Action? HealthChanged;
 
         public IReadOnlyList<OperationalShadowFeedHealth> GetHealth(DateTimeOffset checkedAt,

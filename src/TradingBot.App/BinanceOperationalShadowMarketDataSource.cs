@@ -18,6 +18,7 @@ public sealed class BinanceOperationalShadowMarketDataSource :
     private readonly int _depthLimit;
     private readonly IReadOnlyList<BinanceSubscription> _marketSubscriptions;
     private readonly string[] _requiredMarketStreams;
+    private readonly string[] _requiredFeedStreams;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _staleAfter;
     private BinanceLocalOrderBookRecovery _orderBookRecovery;
@@ -63,7 +64,9 @@ public sealed class BinanceOperationalShadowMarketDataSource :
         _nextStableSequence = initialStableSequence;
         _marketSubscriptions = marketSubscriptions.ToArray();
         _requiredMarketStreams = _marketSubscriptions.Select(static item => item.StreamName)
+            .Distinct(StringComparer.Ordinal)
             .ToArray();
+        _requiredFeedStreams = [.. _requiredMarketStreams, "depth"];
         if (_marketSubscriptions.Any(static subscription =>
             subscription.Kind == BinanceWebSocketEventKind.Depth))
         {
@@ -82,6 +85,8 @@ public sealed class BinanceOperationalShadowMarketDataSource :
     }
 
     public event Action? HealthChanged;
+
+    public IReadOnlyCollection<string> RequiredFeedStreams => _requiredFeedStreams;
 
     public IReadOnlyList<OperationalShadowFeedHealth> GetHealth(DateTimeOffset checkedAt,
         TimeSpan staleAfter)

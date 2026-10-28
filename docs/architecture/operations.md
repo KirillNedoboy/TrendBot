@@ -81,3 +81,34 @@ at zero throughout. The fixture uses no private adapter or real network.
 
 These checks provide bounded local recovery evidence only. Real Binance
 connectivity, Linux/systemd execution, and a 24/7 soak are not yet verified.
+
+## P15-M02-T001 shadow data-quality health evidence
+
+`IOperationalShadowHealthSource.RequiredFeedStreams` is the explicit required
+public-stream identity contract. The runtime deduplicates the required set and
+counts a required stream as covered only when both receive and availability
+evidence exist. Duplicate required rows and extra source rows cannot increase
+the denominator or covered count. A null required set is unknown coverage,
+represented by a null ratio and a fail-closed `CoverageUnknown` gate reason;
+known partial coverage reports deterministic per-stream missing reasons and
+uses `CoverageIncomplete`. Existing stale-after, gap, reconnect, recovery,
+`NotApplicableInShadow`, and zero-real-order semantics remain unchanged.
+
+Coverage counts and reasons are present on `OperationalShadowHealthSnapshot`
+and `HealthChanged`, in compact JSON health lines, and in BCL gauges
+`shadow.coverage_known`, `shadow.required_feed_count`,
+`shadow.covered_feed_count`, and `shadow.coverage_ratio` (NaN when the ratio is
+unknown). Health JSON also carries the runtime run identity and health sequence.
+
+The isolated `OperationalShadowStore` now uses schema v2. New databases create
+the additive `shadow_health_evidence` table directly; v1 files are migrated in
+one transaction without altering `shadow_entries` or `shadow_checkpoints`.
+Each health row contains versioned JSON, a unique run ID, a strictly increasing
+health sequence within that run, checked-at time, and an optional causal
+checkpoint link. Runtime construction, source changes, cycles, and the health
+timer append evidence; timer-only rows have no causal link. Evidence-write
+failure marks persistence unhealthy, publishes the degraded snapshot, and
+closes subsequent hypothetical-entry gates. A new runtime instance gets a new
+run ID after restart. This is durable local evidence only; no private execution,
+audit export, real Binance connectivity, Linux/systemd execution, or long soak
+is claimed.

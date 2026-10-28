@@ -21,6 +21,10 @@ public sealed class OperationalShadowMetrics : IDisposable
     private readonly ObservableGauge<long> _gateOpenGauge;
     private readonly ObservableGauge<long> _killSwitchKnownGauge;
     private readonly ObservableGauge<long> _killSwitchEnabledGauge;
+    private readonly ObservableGauge<long> _coverageKnownGauge;
+    private readonly ObservableGauge<long> _expectedFeedGauge;
+    private readonly ObservableGauge<long> _coveredFeedGauge;
+    private readonly ObservableGauge<double> _coverageRatioGauge;
     private readonly ObservableGauge<long> _reconciliationApplicableGauge;
     private OperationalShadowHealthSnapshot? _healthSnapshot;
     private long _blockedCycleCount;
@@ -57,6 +61,16 @@ public sealed class OperationalShadowMetrics : IDisposable
             () => BoolValue(Volatile.Read(ref _healthSnapshot)?.KillSwitchKnown));
         _killSwitchEnabledGauge = _meter.CreateObservableGauge("shadow.kill_switch_enabled",
             () => BoolValue(Volatile.Read(ref _healthSnapshot)?.KillSwitchEnabled));
+        _coverageKnownGauge = _meter.CreateObservableGauge("shadow.coverage_known",
+            () => BoolValue(Volatile.Read(ref _healthSnapshot)?.CoverageKnown));
+        _expectedFeedGauge = _meter.CreateObservableGauge("shadow.required_feed_count",
+            () => Volatile.Read(ref _healthSnapshot)?.ExpectedFeedCount ?? 0L,
+            unit: "{feed}");
+        _coveredFeedGauge = _meter.CreateObservableGauge("shadow.covered_feed_count",
+            () => Volatile.Read(ref _healthSnapshot)?.CoveredFeedCount ?? 0L,
+            unit: "{feed}");
+        _coverageRatioGauge = _meter.CreateObservableGauge("shadow.coverage_ratio",
+            () => Volatile.Read(ref _healthSnapshot)?.CoverageRatio ?? double.NaN);
         _reconciliationApplicableGauge = _meter.CreateObservableGauge(
             "shadow.private_reconciliation_applicable", static () => 0L);
         _realOrderCount = 0;
@@ -105,7 +119,13 @@ public sealed class OperationalShadowMetrics : IDisposable
     }
 
     public OperationalShadowMetricsSnapshot Snapshot() => new(CycleCount,
-        BlockedCycleCount, HypotheticalEntryCount, RealOrderCount);
+        BlockedCycleCount, HypotheticalEntryCount, RealOrderCount)
+    {
+        ExpectedFeedCount = Volatile.Read(ref _healthSnapshot)?.ExpectedFeedCount ?? 0,
+        CoveredFeedCount = Volatile.Read(ref _healthSnapshot)?.CoveredFeedCount ?? 0,
+        CoverageRatio = Volatile.Read(ref _healthSnapshot)?.CoverageRatio,
+        CoverageKnown = Volatile.Read(ref _healthSnapshot)?.CoverageKnown ?? false
+    };
 
     public void Dispose()
     {
@@ -126,5 +146,14 @@ public sealed record OperationalShadowMetricsSnapshot(
     long CycleCount,
     long BlockedCycleCount,
     long HypotheticalEntryCount,
-    long RealOrderCount);
+    long RealOrderCount)
+{
+    public int ExpectedFeedCount { get; init; }
+
+    public int CoveredFeedCount { get; init; }
+
+    public double? CoverageRatio { get; init; }
+
+    public bool CoverageKnown { get; init; }
+}
 

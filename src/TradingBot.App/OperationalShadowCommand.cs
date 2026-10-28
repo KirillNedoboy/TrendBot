@@ -49,6 +49,8 @@ public static class OperationalShadowCommand
             {
                 mode = "shadow",
                 status = snapshot.Status.ToString().ToLowerInvariant(),
+                runId = runtime.RunId,
+                healthSequence = snapshot.HealthSequence,
                 checkedAt = snapshot.CheckedAt,
                 dataStale = snapshot.DataStale,
                 sequenceGap = snapshot.SequenceGap,
@@ -59,6 +61,13 @@ public static class OperationalShadowCommand
                 killSwitchEnabled = snapshot.KillSwitchEnabled,
                 gateOpen = snapshot.CanCreateHypotheticalEntry,
                 gateReasons = snapshot.BlockReasons,
+                coverageKnown = snapshot.CoverageKnown,
+                coverageApplicable = snapshot.CoverageApplicable,
+                expectedFeedCount = snapshot.ExpectedFeedCount,
+                coveredFeedCount = snapshot.CoveredFeedCount,
+                coverageRatio = snapshot.CoverageRatio,
+                missingStreamReasons = snapshot.MissingStreamReasons,
+                causalCheckpointLink = snapshot.CausalCheckpointLink,
                 reconciliationStatus = snapshot.ReconciliationStatus.ToString(),
                 feeds = snapshot.Feeds,
                 realOrderCount = snapshot.RealOrderCount
@@ -73,6 +82,7 @@ public static class OperationalShadowCommand
         {
             mode = "shadow",
             status = "started",
+            runId = runtime.RunId,
             realOrderCount = 0L
         }).ConfigureAwait(false);
         WriteHealth(runtime.HealthSnapshot);
@@ -84,6 +94,7 @@ public static class OperationalShadowCommand
             {
                 mode = "shadow",
                 status = "stopped",
+                runId = runtime.RunId,
                 realOrderCount = 0L
             }).ConfigureAwait(false);
             return 0;
@@ -94,6 +105,7 @@ public static class OperationalShadowCommand
             {
                 mode = "shadow",
                 status = "stopped",
+                runId = runtime.RunId,
                 realOrderCount = 0L
             }).ConfigureAwait(false);
             return 0;
@@ -105,6 +117,7 @@ public static class OperationalShadowCommand
                 mode = "shadow",
                 status = "faulted",
                 reason = "runtime-fault",
+                runId = runtime.RunId,
                 realOrderCount = 0L
             }).ConfigureAwait(false);
             return 1;
