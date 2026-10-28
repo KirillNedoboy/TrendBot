@@ -1,9 +1,9 @@
 # Current checkpoint
 
-- Phase: 15 — 24/7 Shadow VPS
-- Milestone: P15-M02 — Shadow data-quality and gate observability
-- Current task: P15-M02-T002 (DONE; auditable shadow gate export)
-- Next task: P16-M01-T001 (READY; local paper configuration)
+- Phase: 16 — Paper/Test Environment
+- Milestone: P16-M01 — Local paper simulation
+- Current task: P16-M01-T001 (DONE; local paper configuration)
+- Next task: P16-M01-T002 (READY; local paper executor)
 
 ## P14-M01-T001 evidence
 
@@ -1207,5 +1207,26 @@
 - Limits: the export contains only synthetic/local shadow evidence. Private
   reconciliation is explicitly not applicable in shadow; real Binance
   connectivity, Linux/systemd operation, and long-duration soak remain
-  unverified. After final validation, `P16-M01-T001` is the next READY task;
-  implementation stops here.
+  unverified. `P16-M01-T001` was the next READY task; see its completion
+  evidence below.
+
+## P16-M01-T001 evidence
+
+- Startup: required project documents, clean Git status, dependency `P15-M02-T002`
+  DONE, SDK 10.0.401, and `tools/validate-docs.ps1` were checked. The validator
+  selected `P16-M01-T001` as first READY; local `main` matched `origin/main`.
+- GREEN: App adds immutable `LocalPaperConfiguration` with format version,
+  configuration ID, fixed `local-paper` mode, explicit positive virtual equity,
+  risk fraction, shared risk-evaluation configuration, and separately versioned
+  fill assumptions. `Parse`, read-only `Load`, and `ToJson` reject unknown or duplicate properties, missing fields, unsupported versions/modes, and malformed
+  nested contracts. Errors do not echo JSON values. No credentials, endpoint,
+  environment override, storage, network, executor, or activation surface exists.
+- Focused verification: configuration tests passed 8/8, `CompositionTests` 1/1,
+  `ActivationSeparationEvidenceTests` 4/4, `RiskMathParityTests` 2/2, and
+  `FillSimulationIsolationTests` 3/3. Locked IntegrationTests restore and
+  IntegrationTests/Replay.Tests Release builds with `--warnaserror` passed with
+  zero warnings/errors. Scoped format verification, docs validation, and
+  `git diff --check` passed. Validator selected `P16-M01-T002` READY.
+- Limits: no executor, persistence, recovery, exchange connection, credentials,
+  real orders, activation, packages, canonical source, or `graft/` changes.
+  T002 remains the next task and was not started. Remote CI is unverified.

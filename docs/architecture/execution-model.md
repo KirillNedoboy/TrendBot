@@ -2,6 +2,26 @@
 
 Execution is deferred to Phase 12 and remains disabled during bootstrap, shadow, and initial research. The future state machine must handle accepted, rejected, partially filled, cancelled, unknown, timed-out, and reconciled orders with idempotent client identities and native protective orders where supported.
 
+## Local paper configuration (P16-M01-T001)
+
+`LocalPaperConfiguration` is an immutable App contract with format version,
+configuration identity, fixed `local-paper` mode, positive virtual initial
+equity, explicit risk fraction, existing shared `RiskEvaluationConfiguration`,
+and separately versioned `SimulatedFillAssumptions`. Unknown risk limits remain
+unknown; equity, risk fraction, fees, slippage, and assumption descriptions have
+no trading defaults.
+
+`Parse`, `Load`, and `ToJson` use strict, case-sensitive JSON. Unknown members,
+duplicate properties at any nesting level, missing required fields, unsupported
+versions, and any mode other than `local-paper` fail closed. Core's existing
+strict serializer validates nested monetary/risk contracts. Parser diagnostics
+do not include source JSON or values. `Load` only reads its explicit file path;
+it does not use environment overrides, create state, call a network, or compose
+simulation or execution services. This contract exposes no credentials,
+endpoints, activation field, order, or execution authority. T001 adds
+configuration only; paper execution and restart/reconciliation evidence remain
+T002/T003 work.
+
 Core defines passive OrderIntent and Position contracts in Phase 2. P03-M02-T001
 adds SqliteOrderIntentJournal in Infrastructure so a complete OrderIntent can be
 durably recorded and recovered before any future execution side effect. This
@@ -114,3 +134,22 @@ scripted dispatch count, while private transport, credentials, and real-money
 activation remain fixed closed facts. This is review provenance only: no
 activation command, signer, endpoint, or live dispatch is exposed, and a later
 explicit user command remains required by the real-money gate.
+# Local paper configuration (P16-M01-T001)
+
+`LocalPaperConfiguration` is an immutable App contract with format version,
+configuration identity, fixed `local-paper` mode, positive virtual initial
+equity, explicit risk fraction, existing shared `RiskEvaluationConfiguration`,
+and separately versioned `SimulatedFillAssumptions`. Unknown risk limits remain
+unknown; equity, risk fraction, fees, slippage, and assumption descriptions have
+no trading defaults.
+
+`Parse`, `Load`, and `ToJson` use strict, case-sensitive JSON. Unknown members,
+duplicate properties at any nesting level, missing required fields, unsupported
+versions, and any mode other than `local-paper` fail closed. Core's existing
+strict serializer validates nested monetary/risk contracts. Parser diagnostics
+do not include source JSON or values. `Load` only reads its explicit file path;
+it does not use environment overrides, create state, call a network, or compose
+simulation or execution services. This configuration contract exposes no
+credentials, endpoints, activation field, order, or execution authority. T001
+adds configuration only; paper execution and restart/reconciliation evidence
+remain T002/T003 work.
