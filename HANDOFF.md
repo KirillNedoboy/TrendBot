@@ -2,8 +2,8 @@
 
 - Phase: 15 — 24/7 Shadow VPS
 - Milestone: P15-M01 — Operational shadow runtime
-- Current task: P15-M01-T002 (DONE; health, metrics, and reconnect signals)
-- Next task: P15-M01-T003 (READY; shadow soak and recovery)
+- Current task: P15-M01-T003 (DONE; bounded local shadow soak and recovery)
+- Next task: P15-M02-T001 (READY; shadow data-quality health signals)
 
 ## P14-M01-T001 evidence
 
@@ -1093,3 +1093,27 @@
   execution, real Binance connectivity, and long-duration soak remain
   unverified; `P15-M01-T003` is the next READY task for bounded soak and
   restart/replay evidence.
+
+## P15-M01-T003 evidence
+
+- Startup: Git was clean before the prior executor added the T003 fixture;
+  `P15-M01-T002` was DONE and the docs validator selected `P15-M01-T003` as
+  first READY. The test file remained untracked after an initial `dotnet` PATH
+  failure. This session used SDK `10.0.401` by its installed absolute path.
+- GREEN: `OperationalShadowSoakRecoveryTests` passed 4/4. The bounded local
+  fixture processes 256 deterministic observations across four process
+  lifetimes, compares complete persisted rows with an uninterrupted run,
+  checks all four causal times and stable sequence, derived state, outcome and
+  checkpoint JSON, verifies sequence-255 recovery and duplicate idempotence,
+  exercises reconnect/gap gating and held SQLite writer recovery, and asserts
+  zero real orders in runtime and structured JSON evidence.
+- Acceptance: related shadow integration tests passed 25/25, Binance public
+  reconnect/depth/architecture tests 15/15, risk-math replay 2/2, and
+  multi-lane decision trace regression 3/3. The IntegrationTests Release build
+  and all transitive production projects passed with `--warnaserror`, zero
+  warnings and zero errors. Scoped format verification passed. The final docs
+  validator and staged diff checks are recorded by the completing run.
+- Limits: these are synthetic local fixtures. Real Binance connectivity,
+  Linux/systemd operation, and a 24/7 soak remain unverified. No private
+  network, credential, real order, activation, package, schema, or canonical
+  source change was made. `P15-M02-T001` is next READY and was not started.

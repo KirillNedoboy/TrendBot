@@ -35,8 +35,8 @@ it uses `Type=simple`, `Restart=on-failure`, a non-root `tradingbot` user,
 `StateDirectory`, and journald output; it performs no installation or deployment.
 
 Operational shadow runtime and service verification is Windows-only in these
-tasks. Linux/systemd execution and a 24/7 soak remain unverified and are
-deferred to P15-M01-T003 and later operational work.
+tasks. P15-M01-T003 covers a bounded local soak; Linux/systemd execution and
+a 24/7 soak remain unverified for later operational work.
 
 ## P15-M01-T002 health, metrics, and reconnect signals
 
@@ -64,3 +64,20 @@ journald. `OperationalShadowMetrics` uses BCL `System.Diagnostics.Metrics`
 gauges for health status, stale/gap, reconnect/recovery, persistence, gate,
 kill-switch, reconciliation applicability, and real-order count; no private
 dispatcher or real-order surface is introduced.
+
+## P15-M01-T003 bounded shadow soak and recovery
+
+The local acceptance fixture processes 256 deterministic public observations
+across four process lifetimes, reopening the isolated SQLite store between
+lifetimes. It compares the complete journal with an uninterrupted run: stream
+and event identities, event/exchange/receive/availability times, stable
+sequence, derived state, decision/risk outcome, and checkpoint JSON must match.
+The final persisted checkpoint is sequence 255, and retrying the preceding
+observation after each restart is idempotent. Reconnect and gap health close
+the hypothetical-entry gate until both feeds report fresh recovery. A held
+SQLite writer closes the gate without a partial append; retry after release
+persists once. Runtime and structured command records keep real order count
+at zero throughout. The fixture uses no private adapter or real network.
+
+These checks provide bounded local recovery evidence only. Real Binance
+connectivity, Linux/systemd execution, and a 24/7 soak are not yet verified.
