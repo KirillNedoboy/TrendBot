@@ -1,9 +1,9 @@
 # Current checkpoint
 
 - Phase: 15 — 24/7 Shadow VPS
-- Milestone: P15-M01 — Operational shadow runtime
-- Current task: P15-M01-T003 (DONE; bounded local shadow soak and recovery)
-- Next task: P15-M02-T001 (READY; shadow data-quality health signals)
+- Milestone: P15-M02 — Shadow data-quality and gate observability
+- Current task: P15-M02-T002 (DONE; auditable shadow gate export)
+- Next task: P16-M01-T001 (READY; local paper configuration)
 
 ## P14-M01-T001 evidence
 
@@ -1158,8 +1158,10 @@
   with zero warnings/errors; scoped `dotnet format --verify-no-changes` passed
   for App, Infrastructure, IntegrationTests, and Infrastructure.Tests;
   `pwsh -NoProfile -File tools/validate-docs.ps1` passed and selected
-  `P15-M02-T002` as next READY; `git diff --check` passed. No commit, push,
-  private network request, credential, real order, package/project-graph,
+  `P15-M02-T002` as next READY; `git diff --check` passed. At that task's
+  completion, no commit or push had yet been made. T001 was subsequently
+  committed and pushed as `eaf2b6d33b9cf0aa13840a5476648555a135aef4`.
+  No private network request, credential, real order, package/project-graph,
   canonical-source, or `graft/` change was made.
 - Limits: evidence is synthetic/local. Real Binance connectivity,
   Linux/systemd execution, and 24/7 soak remain unverified. `P15-M02-T002` is
@@ -1198,7 +1200,8 @@
 - Documentation/validation: `docs/architecture/operations.md`,
   `docs/architecture/persistence.md`, `docs/TASKS.md`, and this handoff record
   the audit boundary. `tools/validate-docs.ps1`, `git diff --check`, and the
-  final changed-file review must pass before commit/push. No schema, package,
+  final changed-file review passed before commit/push. T002 was committed and
+  pushed as `ce7612774868e2333b3e97a3fe3f107c4b66cd44`. No schema, package,
   project-graph, canonical source, `graft/`, credential, private network,
   real order, or production activation change was made.
 - Limits: the export contains only synthetic/local shadow evidence. Private
