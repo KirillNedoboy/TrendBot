@@ -1,4 +1,5 @@
 ﻿using System.Data;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using TradingBot.Core;
 
@@ -15,12 +16,15 @@ public sealed class OperationalShadowStore : IDisposable
 
     private readonly string _databasePath;
     private readonly int _commandTimeoutSeconds;
+    private readonly bool _readOnly;
     private bool _disposed;
 
-    private OperationalShadowStore(string databasePath, int commandTimeoutSeconds)
+    private OperationalShadowStore(string databasePath, int commandTimeoutSeconds,
+        bool readOnly = false)
     {
         _databasePath = databasePath;
         _commandTimeoutSeconds = commandTimeoutSeconds;
+        _readOnly = readOnly;
     }
 
     public static int SchemaVersion => CurrentSchemaVersion;
@@ -36,8 +40,9 @@ public sealed class OperationalShadowStore : IDisposable
 
             try
             {
-                using SqliteConnection connection = OpenConnection(_databasePath,
-                    _commandTimeoutSeconds);
+                using SqliteConnection connection = _readOnly
+                    ? OpenReadOnlyConnection(_databasePath, _commandTimeoutSeconds)
+                    : OpenConnection(_databasePath, _commandTimeoutSeconds);
                 return ReadUserVersion(connection) == CurrentSchemaVersion;
             }
             catch (Exception exception) when (exception is SqliteException
@@ -66,10 +71,37 @@ public sealed class OperationalShadowStore : IDisposable
         return store;
     }
 
+    /// <summary>
+    /// Opens an existing operational shadow database without creating, migrating,
+    /// or changing it. Callers that need an audit snapshot must use this path.
+    /// </summary>
+    public static OperationalShadowStore OpenReadOnly(string databasePath,
+        int commandTimeoutSeconds = 30)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        if (StringComparer.Ordinal.Equals(databasePath, ":memory:"))
+        {
+            throw new ArgumentException(
+                "Operational shadow persistence requires an isolated file-backed database.",
+                nameof(databasePath));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(commandTimeoutSeconds);
+        string fullPath = Path.GetFullPath(databasePath);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("The operational shadow database was not found.",
+                fullPath);
+        }
+
+        return new OperationalShadowStore(fullPath, commandTimeoutSeconds, readOnly: true);
+    }
+
     public OperationalShadowAppendResult Append(OperationalShadowJournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ThrowIfDisposed();
+        ThrowIfReadOnly();
 
         using SqliteConnection connection = OpenConnection(_databasePath,
             _commandTimeoutSeconds);
@@ -119,6 +151,7 @@ public sealed class OperationalShadowStore : IDisposable
     {
         ArgumentNullException.ThrowIfNull(evidence);
         ThrowIfDisposed();
+        ThrowIfReadOnly();
 
         using SqliteConnection connection = OpenConnection(_databasePath,
             _commandTimeoutSeconds);
@@ -189,6 +222,140 @@ public sealed class OperationalShadowStore : IDisposable
             ORDER BY run_id COLLATE BINARY, health_sequence ASC;
             """;
         return ReadHealthEvidenceRows(command);
+    }
+
+    public OperationalShadowAuditSnapshot ReadAuditSnapshot(string runId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ThrowIfDisposed();
+        using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+            DefaultTimeout = _commandTimeoutSeconds
+        }.ToString());
+        connection.Open();
+        using SqliteTransaction transaction = connection.BeginTransaction(
+            IsolationLevel.Serializable, deferred: true);
+        using SqliteCommand version = connection.CreateCommand();
+        version.Transaction = transaction;
+        version.CommandText = "PRAGMA user_version;";
+        if (Convert.ToInt32(version.ExecuteScalar(),
+                System.Globalization.CultureInfo.InvariantCulture) != CurrentSchemaVersion)
+            throw new InvalidDataException("Unsupported operational shadow schema version.");
+        System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowHealthEvidence> health =
+            ReadAuditHealth(connection, transaction, runId);
+        if (health.Count == 0)
+            throw new InvalidDataException("The requested shadow run has no health evidence.");
+        string[] references = health.Where(static item => item.CausalCheckpointLink is not null)
+            .Select(static item => item.CausalCheckpointLink!)
+            .ToArray();
+        System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowJournalEntry> entries =
+            ReadAuditEntries(connection, transaction,
+                references.ToHashSet(StringComparer.Ordinal));
+        transaction.Commit();
+        return new OperationalShadowAuditSnapshot(runId, health, entries);
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowHealthEvidence> ReadAuditHealth(
+        SqliteConnection connection, SqliteTransaction transaction, string runId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT run_id, health_sequence, checked_at_ticks, causal_checkpoint_link,
+                   evidence_version, health_json FROM shadow_health_evidence
+            WHERE run_id = $run_id COLLATE BINARY ORDER BY health_sequence ASC;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+        System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowHealthEvidence> rows =
+            ReadHealthEvidenceRows(command);
+        foreach (OperationalShadowHealthEvidence row in rows)
+        {
+            ValidateAuditHealthMetadata(row, runId);
+        }
+
+        return rows;
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<OperationalShadowJournalEntry> ReadAuditEntries(
+        SqliteConnection connection, SqliteTransaction transaction,
+        HashSet<string> references)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT stream_id, stable_sequence, event_id, event_time_ticks,
+                   receive_time_ticks, availability_time_ticks, exchange_time_ticks,
+                   causal_event_json, derived_state_json, outcome_json, checkpoint_json
+            FROM shadow_entries ORDER BY stream_id COLLATE BINARY, stable_sequence ASC;
+            """;
+        List<OperationalShadowJournalEntry> entries = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            OperationalShadowJournalEntry entry = ToEntry(ReadPersistedRow(reader));
+            if (references.Contains(CreateCheckpointLink(entry)))
+            {
+                entries.Add(entry);
+            }
+        }
+        return entries.AsReadOnly();
+    }
+
+    private static void ValidateAuditHealthMetadata(OperationalShadowHealthEvidence evidence,
+        string requestedRunId)
+    {
+        if (evidence.EvidenceVersion != OperationalShadowHealthEvidence.CurrentEvidenceVersion
+            || !StringComparer.Ordinal.Equals(evidence.RunId, requestedRunId))
+        {
+            throw new InvalidDataException("Unsupported or inconsistent shadow health metadata.");
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(evidence.HealthJson);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || root.GetProperty("formatVersion").GetInt32()
+                    != OperationalShadowHealthEvidence.CurrentEvidenceVersion
+                || !StringComparer.Ordinal.Equals(root.GetProperty("runId").GetString(),
+                    evidence.RunId)
+                || root.GetProperty("healthSequence").GetInt64() != evidence.HealthSequence
+                || !StringComparer.Ordinal.Equals(
+                    ReadNullableString(root, "causalCheckpointLink"),
+                    evidence.CausalCheckpointLink)
+                || !root.TryGetProperty("snapshot", out JsonElement snapshot)
+                || snapshot.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Shadow health metadata is inconsistent.");
+            }
+
+            DateTimeOffset checkedAt = root.GetProperty("checkedAt").GetDateTimeOffset();
+            if (checkedAt.UtcDateTime.Ticks != evidence.CheckedAt.Value.UtcDateTime.Ticks)
+            {
+                throw new InvalidDataException("Shadow health timestamp metadata is inconsistent.");
+            }
+        }
+        catch (KeyNotFoundException exception)
+        {
+            throw new InvalidDataException("Shadow health metadata is incomplete.", exception);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("Shadow health metadata is not valid JSON.", exception);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidDataException("Shadow health timestamp metadata is invalid.", exception);
+        }
+    }
+
+    private static string? ReadNullableString(JsonElement root, string propertyName)
+    {
+        JsonElement value = root.GetProperty(propertyName);
+        return value.ValueKind == JsonValueKind.Null ? null : value.GetString();
     }
 
     public IReadOnlyList<OperationalShadowJournalEntry> ReadAll(string streamId)
@@ -305,6 +472,29 @@ public sealed class OperationalShadowStore : IDisposable
             connection.Open();
             ExecuteNonQuery(connection, "PRAGMA journal_mode = WAL;");
             ExecuteNonQuery(connection, "PRAGMA synchronous = FULL;");
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    private static SqliteConnection OpenReadOnlyConnection(string databasePath,
+        int timeoutSeconds)
+    {
+        SqliteConnectionStringBuilder builder = new()
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+            DefaultTimeout = timeoutSeconds
+        };
+        SqliteConnection connection = new(builder.ConnectionString);
+        try
+        {
+            connection.Open();
             return connection;
         }
         catch
@@ -665,9 +855,20 @@ public sealed class OperationalShadowStore : IDisposable
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
+    private void ThrowIfReadOnly()
+    {
+        if (_readOnly)
+        {
+            throw new InvalidOperationException("The operational shadow store is read-only.");
+        }
+    }
+
     private static OperationalShadowCheckpoint CreateCheckpoint(
         OperationalShadowJournalEntry entry) => new(entry.StreamId, entry.StableSequence,
             entry.EventId, entry.DerivedStateJson, entry.OutcomeJson, entry.CheckpointJson);
+
+    private static string CreateCheckpointLink(OperationalShadowJournalEntry entry) =>
+        $"{entry.StreamId}/{entry.StableSequence}/{entry.EventId}";
 
     private sealed record PersistedRow(string StreamId, long StableSequence, string EventId,
         long EventTimeTicks, long ReceiveTimeTicks, long AvailabilityTimeTicks,
@@ -779,3 +980,8 @@ public sealed record OperationalShadowHealthEvidence
 public sealed record OperationalShadowHealthEvidenceAppendResult(
     bool Appended,
     bool Duplicate);
+
+public sealed record OperationalShadowAuditSnapshot(
+    string RunId,
+    IReadOnlyList<OperationalShadowHealthEvidence> HealthEvidence,
+    IReadOnlyList<OperationalShadowJournalEntry> JournalEntries);

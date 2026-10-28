@@ -31,6 +31,13 @@ internal static class Program
             return OperationalShadowCommand.RunAsync().GetAwaiter().GetResult();
         }
 
+        if (args is { Length: > 0 }
+            && StringComparer.OrdinalIgnoreCase.Equals(args[0],
+                OperationalShadowAuditCommand.CommandName))
+        {
+            return OperationalShadowAuditCommand.RunAsync(args).GetAwaiter().GetResult();
+        }
+
         return Bootstrap.Run();
     }
 }

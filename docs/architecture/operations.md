@@ -112,3 +112,30 @@ closes subsequent hypothetical-entry gates. A new runtime instance gets a new
 run ID after restart. This is durable local evidence only; no private execution,
 audit export, real Binance connectivity, Linux/systemd execution, or long soak
 is claimed.
+
+## P15-M02-T002 auditable shadow gate export
+
+`OperationalShadowStore.OpenReadOnly` opens an existing shadow file without
+creating or migrating it. `ReadAuditSnapshot(runId)` reads the schema version,
+all health rows for exactly that run, and only journal rows referenced by the
+health causal checkpoint links inside one deferred read-only SQLite transaction.
+Health row metadata, evidence versions, causal timestamps, and referenced
+checkpoint fields are validated before the snapshot is returned. A missing
+health sequence or an unresolved causal link is retained as an explicit audit
+blocker; malformed metadata, unsupported versions, and any nonzero real-order
+count fail closed.
+
+`OperationalShadowAuditEvidence` is immutable `operational-shadow-audit-v1`
+JSON. Its identity is SHA-256 over the canonical body, while the exported
+UTF-8 bytes are also content-addressed and written through a same-directory
+CreateNew temporary file followed by an atomic no-overwrite move. An identical
+retry is idempotent; a conflicting destination or SQLite/WAL/SHM path is
+rejected. The offline `shadow-audit-export --database <path> --run-id <id>
+--output <file>` command returns 0 for a completed export even when blockers
+are present, 1 for an export/refusal error, and 2 for bad arguments.
+
+The promotion adapter records the operational-shadow category, run and audit
+identity, provenance, blockers, and explicit exclusions. It grants no private
+or real-order execution authority. Export evidence remains synthetic/local;
+private reconciliation, real Binance connectivity, Linux/systemd operation,
+and long-duration soak remain outside this task.

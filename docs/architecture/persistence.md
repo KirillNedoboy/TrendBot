@@ -613,3 +613,24 @@ kill-switch states are retained as blocked derived outcomes. The store is an
 evidence journal only: it contains no order intent, reservation, private API,
 credential, or activation state. Database corruption or an unsupported
 `user_version` fails closed; no in-place migration is attempted in this task.
+
+## P15-M02-T002 read-only shadow audit snapshot
+
+The operational shadow schema remains at version 2; this task adds no tables,
+columns, or migrations. `OpenReadOnly` refuses a missing file and does not run
+the normal initializer or WAL-changing pragmas. A single deferred read-only
+transaction verifies `user_version`, validates every selected health row's
+format/version/run/sequence/timestamp/link metadata, and selects only the
+`shadow_entries` rows whose stream/sequence/event identity is referenced by
+that run's causal checkpoint links. Rows from another run are not exported
+merely because they share the SQLite file.
+
+The App audit builder retains the complete versioned health JSON plus typed
+freshness, gap, reconnect/recovery, persistence, kill-switch, coverage,
+quality, gate/reason, reconciliation, and zero-real-order fields. It also
+retains every referenced journal causal timestamp and bounded JSON document.
+Sequence gaps and missing/unresolved links become explicit blockers for paper
+review. Corrupt JSON/metadata, unsupported health evidence versions, or a
+nonzero real-order field refuse the export. The resulting canonical evidence
+is content-addressed and is not an order intent, reservation, private API
+request, or activation record.

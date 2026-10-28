@@ -1164,3 +1164,45 @@
 - Limits: evidence is synthetic/local. Real Binance connectivity,
   Linux/systemd execution, and 24/7 soak remain unverified. `P15-M02-T002` is
   now READY and this implementation stops at T001.
+
+## P15-M02-T002 evidence
+
+- Startup: the required project documents, current Git status, SDK path, and
+  `tools/validate-docs.ps1` were rechecked. `P15-M02-T001` was DONE and
+  `P15-M02-T002` was the first READY task; no future phase was started. The
+  prior uncommitted T002 store/App/test files were treated as partial work and
+  repaired within the owned scope.
+- TDD RED: after the focused audit tests were written, the Release profile
+  first failed on the existing CA1859 warning-as-error and then compiled to the
+  expected missing `OperationalShadowAuditCommand` surface. No RED relied on a
+  missing test assembly or zero-test discovery.
+- GREEN: `OperationalShadowStore.OpenReadOnly` and `ReadAuditSnapshot(runId)`
+  use one deferred read-only SQLite transaction, validate schema/evidence
+  metadata, retain every run health row, and select only journal rows named by
+  that run's causal checkpoint links. The App audit builder preserves quality,
+  coverage, gate/reasons, causal timestamps and JSON, reconciliation
+  `NotApplicableInShadow`, and zero-real-order fields. Health sequence gaps and
+  missing/unresolved causal links remain explicit blockers; corrupt metadata,
+  unsupported versions, malformed causal/checkpoint JSON, and nonzero real
+  orders refuse export. Canonical `operational-shadow-audit-v1` JSON is
+  content-addressed with SHA-256. Export is atomic UTF-8, no-overwrite,
+  idempotent for equal bytes, and rejects SQLite/WAL/SHM destinations. The
+  offline `shadow-audit-export` command returns 0 for successful export even
+  with blockers, 1 for export/refusal errors, and 2 for bad arguments.
+- Focused GREEN: `OperationalShadowAuditExportTests` passed 8/8, covering
+  deterministic restore/hash, run scoping, sequence/link blockers, unsupported
+  and corrupt metadata, nonzero real-order refusal, atomic/idempotent UTF-8
+  export, SQLite sidecar refusal, promotion evidence authority separation, and
+  CLI exit codes. Affected Release builds with `--warnaserror` and scoped
+  format verification passed with zero warnings/errors.
+- Documentation/validation: `docs/architecture/operations.md`,
+  `docs/architecture/persistence.md`, `docs/TASKS.md`, and this handoff record
+  the audit boundary. `tools/validate-docs.ps1`, `git diff --check`, and the
+  final changed-file review must pass before commit/push. No schema, package,
+  project-graph, canonical source, `graft/`, credential, private network,
+  real order, or production activation change was made.
+- Limits: the export contains only synthetic/local shadow evidence. Private
+  reconciliation is explicitly not applicable in shadow; real Binance
+  connectivity, Linux/systemd operation, and long-duration soak remain
+  unverified. After final validation, `P16-M01-T001` is the next READY task;
+  implementation stops here.
