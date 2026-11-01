@@ -1,1 +1,2 @@
 *.cs text eol=crlf
+docs/sources/FINAL_TECH_SPEC.md -text whitespace=cr-at-eol

@@ -37,6 +37,21 @@
   restore, scoped format, and staged/unstaged diff checks passed.
   Remote CI has not been rerun for this follow-up.
 
+## Canonical source CI follow-up
+
+- CI run 41339020087 reached Ubuntu tests successfully, then the docs fixture
+  reported the canonical source index/worktree line-ending mismatch: the LF
+  index content hashed FCBC50C58ACBBF94C314D76C23DE7456D1085BFDAC8BA635AF9DFBB473A87245
+  while the immutable working source hashes to
+  77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54.
+- The repository attributes now mark only docs/sources/FINAL_TECH_SPEC.md as
+  -text. The staged canonical bytes are 66089 bytes with the required
+  77E87... SHA-256; normalized content matches the prior LF blob byte-for-byte.
+  A fresh index materialization reproduced the required SHA and passed the
+  standalone documentation validator after the temporary Windows .gitignore
+  line endings were normalized. No semantic source edit was made.
+- Remote CI has not been rerun for this follow-up.
+
 ## P16-M02-T003 evidence
 
 - Startup: the required project documents, Git status, SDK, dependencies, and
