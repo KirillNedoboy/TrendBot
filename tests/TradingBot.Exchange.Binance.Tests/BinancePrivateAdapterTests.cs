@@ -16,6 +16,17 @@ public sealed class BinancePrivateAdapterTests
         new(2026, 10, 24, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void HmacSignerProducesLowercaseSha256WireSignature()
+    {
+        HmacSha256BinanceRequestSigner signer = new("fixture-secret");
+
+        string signature = signer.Sign("symbol=BTCUSDT&timestamp=1700000000000");
+
+        Assert.Equal("2cc88fc9e9b1998322f036b6bd1810306ca918f93b0bf5efede92e8782db1530",
+            signature);
+    }
+
+    [Fact]
     public async Task PlaceOrderSignsDocumentedRequestAndParsesResponseWithoutLoggingSecret()
     {
         RecordingSigner signer = new();
@@ -48,6 +59,26 @@ public sealed class BinancePrivateAdapterTests
         Assert.Contains("signature=fixture-signature", body, StringComparison.Ordinal);
         Assert.DoesNotContain("signature=fixture-signature", signer.LastPayload, StringComparison.Ordinal);
         Assert.DoesNotContain("private-secret", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SignedWirePayloadPlacesSignatureLast()
+    {
+        RecordingSigner signer = new();
+        FixtureHandler handler = new(_ => Json("""
+            {"orderId":123,"clientOrderId":"intent-1","symbol":"BTCUSDT","side":"BUY",
+             "positionSide":"BOTH","type":"MARKET","status":"NEW","origQty":"0.010",
+             "executedQty":"0","price":"0","avgPrice":"0","reduceOnly":false,
+             "closePosition":false,"updateTime":1700000000123,"time":1700000000111}
+            """));
+        BinancePrivateRestClient client = CreateClient(handler, signer);
+
+        await client.PlaceOrderAsync(new BinancePrivateOrderRequest("BTCUSDT", BinanceOrderSide.Buy,
+            BinanceOrderType.Market, new Quantity(0.010m), "intent-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.EndsWith("signature=fixture-signature", handler.Bodies[0],
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -170,6 +201,66 @@ public sealed class BinancePrivateAdapterTests
         Assert.Contains("unknown", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("reconciliation", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("private-secret", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(exception.ResponseBody);
+    }
+
+    [Fact]
+    public async Task ApiFailureDiagnosticsKeepConfiguredTestEndpoint()
+    {
+        RecordingSigner signer = new();
+        FixtureHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
+        {
+            Content = new StringContent("{\"code\":-1000,\"msg\":\"temporary\"}",
+                Encoding.UTF8, "application/json")
+        });
+        BinancePrivateRestClient client = CreateClient(handler, signer);
+
+        BinanceApiException exception = await Assert.ThrowsAsync<BinanceApiException>(() =>
+            client.QueryOrderAsync("BTCUSDT", 123L, null,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(BaseAddress.Host, exception.RequestUri!.Host);
+        Assert.Empty(exception.RequestUri.Query);
+    }
+
+    [Fact]
+    public async Task RedirectResponseFailsClosedBeforeAnyFallback()
+    {
+        RecordingSigner signer = new();
+        FixtureHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.Redirect)
+        {
+            Headers = { Location = new Uri("https://fapi.binance.com/fapi/v1/order") }
+        });
+        BinancePrivateRestClient client = CreateClient(handler, signer);
+
+        BinancePrivateProtocolException exception = await Assert.ThrowsAsync<
+            BinancePrivateProtocolException>(() => client.QueryOrderAsync("BTCUSDT", 123L, null,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("redirect", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests, "rate limited")]
+    [InlineData(HttpStatusCode.Unauthorized, "authentication failed")]
+    public async Task RateAndAuthenticationFailuresAreClassifiedWithoutEchoingBody(
+        HttpStatusCode statusCode, string expectedMessage)
+    {
+        RecordingSigner signer = new();
+        FixtureHandler handler = new(_ => new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent("{\"code\":-2015,\"msg\":\"private marker\"}",
+                Encoding.UTF8, "application/json")
+        });
+        BinancePrivateRestClient client = CreateClient(handler, signer);
+
+        BinanceApiException exception = await Assert.ThrowsAsync<BinanceApiException>(() =>
+            client.QueryOrderAsync("BTCUSDT", 123L, null,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains(expectedMessage, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private marker", exception.Message, StringComparison.Ordinal);
         Assert.Empty(exception.ResponseBody);
     }
 
@@ -326,6 +417,19 @@ public sealed class BinancePrivateAdapterTests
         Assert.Equal("wss://fixture.test/ws/fixture-listen-key", transport.ConnectedUri!.ToString());
         Assert.Equal(BinancePrivateStreamDiagnosticKind.Disconnect,
             Assert.Single(client.Diagnostics).Kind);
+    }
+
+    [Fact]
+    public void PrivateWebSocketDefaultsToTestRouteAndRejectsProductionRoute()
+    {
+        Assert.Equal("wss://demo-fstream.binance.com/private/ws/",
+            new BinancePrivateWebSocketOptions().BaseAddress.AbsoluteUri);
+
+        Assert.Throws<ArgumentException>(() => new BinancePrivateWebSocketClient(
+            new FakePrivateTransport([]), new BinancePrivateWebSocketOptions
+            {
+                BaseAddress = new Uri("wss://fstream.binance.com/private/ws/")
+            }, new FixedTimeProvider(Now)));
     }
 
     private static BinancePrivateRestClient CreateClient(FixtureHandler handler,

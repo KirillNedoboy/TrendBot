@@ -43,6 +43,17 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
         {
             throw new ArgumentOutOfRangeException(nameof(options));
         }
+
+        if (!_options.BaseAddress.IsAbsoluteUri
+            || !StringComparer.OrdinalIgnoreCase.Equals(_options.BaseAddress.Scheme, Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(_options.BaseAddress.UserInfo)
+            || !string.IsNullOrEmpty(_options.BaseAddress.Query)
+            || !string.IsNullOrEmpty(_options.BaseAddress.Fragment))
+        {
+            throw new ArgumentException(
+                "The private REST base address must be an absolute HTTPS origin without credentials or query data.",
+                nameof(options));
+        }
     }
 
     public Task<BinancePrivateOrder> PlaceOrderAsync(BinancePrivateOrderRequest request,
@@ -303,7 +314,9 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
         string signature = _signer.Sign(canonical);
         ArgumentException.ThrowIfNullOrWhiteSpace(signature);
         withCommon["signature"] = signature;
-        return await SendAsync(method, path, withCommon, signed: true, cancellationToken)
+        return await SendAsync(method, path, withCommon, signed: true,
+            encodedOverride: Encode(withCommon, signatureLast: true),
+            cancellationToken: cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -323,7 +336,7 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
     {
         return await SendAsync(method, path, parameters
             ?? new Dictionary<string, string?>(StringComparer.Ordinal), signed: false,
-            cancellationToken).ConfigureAwait(false);
+            encodedOverride: null, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private async Task SendApiKeyAsync(HttpMethod method, string path,
@@ -339,9 +352,9 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
 
     private async Task<JsonDocument> SendAsync(HttpMethod method, string path,
         IReadOnlyDictionary<string, string?> parameters, bool signed,
-        CancellationToken cancellationToken)
+        string? encodedOverride, CancellationToken cancellationToken)
     {
-        string encoded = Encode(parameters);
+        string encoded = encodedOverride ?? Encode(parameters);
         Uri requestUri = BuildUri(path, method == HttpMethod.Get ? encoded : null);
         using HttpRequestMessage request = new(method, requestUri);
         request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", _options.ApiKey);
@@ -356,6 +369,19 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
         timeout.CancelAfter(_options.RequestTimeout);
         using HttpResponseMessage response = await _httpClient.SendAsync(request,
             HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        if (response.RequestMessage?.RequestUri is { } responseUri
+            && !SameOrigin(_options.BaseAddress, responseUri))
+        {
+            throw new BinancePrivateProtocolException(
+                "The private REST transport returned a response from a different origin.");
+        }
+
+        if ((int)response.StatusCode is >= 300 and <= 399)
+        {
+            throw new BinancePrivateProtocolException(
+                "The private REST transport returned a redirect; redirects are disabled.");
+        }
+
         string body = await ReadBodyAsync(response, timeout.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
@@ -397,7 +423,7 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private static BinanceApiException CreateApiException(HttpResponseMessage response,
+    private BinanceApiException CreateApiException(HttpResponseMessage response,
         string path, string body, bool signed)
     {
         int? code = null;
@@ -440,6 +466,18 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
             // Keep the private response out of the exception to avoid echoing credentials.
         }
 
+        if (response.StatusCode == HttpStatusCode.TooManyRequests
+            || (int)response.StatusCode == 418)
+        {
+            message = "Binance private request was rate limited; retry only after the documented backoff.";
+        }
+        else if (response.StatusCode is HttpStatusCode.Unauthorized
+            or HttpStatusCode.Forbidden
+            || code is -1022 or -2015)
+        {
+            message = "Binance private request authentication failed.";
+        }
+
         if (response.StatusCode == HttpStatusCode.ServiceUnavailable
             && (message.Contains("unknown outcome", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("unknown error", StringComparison.OrdinalIgnoreCase)))
@@ -449,7 +487,7 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
 
         _ = signed;
         return new BinanceApiException(response.StatusCode, code, message, string.Empty,
-            new Uri(new Uri("https://fapi.binance.com"), path), response.Headers.RetryAfter?.Delta);
+            new Uri(_options.BaseAddress, path), response.Headers.RetryAfter?.Delta);
     }
 
     private Dictionary<string, string?> AddCommon(IReadOnlyDictionary<string, string?> parameters)
@@ -471,12 +509,28 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
         return builder.Uri;
     }
 
-    private static string Encode(IReadOnlyDictionary<string, string?> values)
+    private static string Encode(IReadOnlyDictionary<string, string?> values,
+        bool signatureLast = false)
     {
-        return string.Join('&', values.Where(static pair => pair.Value is not null)
+        IEnumerable<KeyValuePair<string, string?>> ordered = values
+            .Where(static pair => pair.Value is not null)
+            .Where(static pair => !StringComparer.Ordinal.Equals(pair.Key, "signature"))
             .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
-            .Select(static pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value!)}"));
+            .ToArray();
+        if (signatureLast && values.TryGetValue("signature", out string? signature)
+            && signature is not null)
+        {
+            ordered = ordered.Append(new KeyValuePair<string, string?>("signature", signature));
+        }
+
+        return string.Join('&', ordered.Select(static pair =>
+            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value!)}"));
     }
+
+    private static bool SameOrigin(Uri expected, Uri actual) =>
+        StringComparer.OrdinalIgnoreCase.Equals(expected.Scheme, actual.Scheme)
+        && StringComparer.OrdinalIgnoreCase.Equals(expected.Host, actual.Host)
+        && expected.Port == actual.Port;
 
     private static BinancePrivateOrder ParseOrder(JsonElement root)
     {
@@ -616,7 +670,8 @@ public sealed class BinancePrivateRestClient : IBinancePrivateRestClient
 
     private static readonly HashSet<string> KnownAlgoStatuses = new(StringComparer.Ordinal)
     {
-        "NEW", "WORKING", "TRIGGERED", "CANCELED", "EXPIRED"
+        "NEW", "WORKING", "TRIGGERING", "TRIGGERED", "FINISHED", "REJECTED",
+        "CANCELED", "EXPIRED"
     };
 
     private static BinanceOrderSide ParseSide(string value) => value switch

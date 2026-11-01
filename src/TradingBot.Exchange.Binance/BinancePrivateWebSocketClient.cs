@@ -8,7 +8,7 @@ namespace TradingBot.Exchange.Binance;
 
 public sealed record BinancePrivateWebSocketOptions
 {
-    public Uri BaseAddress { get; init; } = new("wss://fstream.binance.com/ws/");
+    public Uri BaseAddress { get; init; } = new("wss://demo-fstream.binance.com/private/ws/");
 
     public TimeSpan ReceiveTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -79,8 +79,17 @@ public sealed class BinancePrivateWebSocketClient : IDisposable
 
     public event Action<BinancePrivateStreamDiagnostic>? Diagnostic;
 
+    public IAsyncEnumerable<BinancePrivateStreamEnvelope> ReadAsync(string listenKey,
+        CancellationToken cancellationToken = default) => ReadAsync(listenKey, null,
+            cancellationToken);
+
+    /// <summary>
+    /// Opens the private connection and invokes <paramref name="connected"/> only after
+    /// the test-environment socket is established. The first receive remains pending,
+    /// allowing callers to submit an order without a post-submit subscription race.
+    /// </summary>
     public async IAsyncEnumerable<BinancePrivateStreamEnvelope> ReadAsync(string listenKey,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        Action? connected, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(listenKey);
@@ -99,6 +108,7 @@ public sealed class BinancePrivateWebSocketClient : IDisposable
             _activeTransport = _transportFactory.Create();
             Uri endpoint = new(_options.BaseAddress, listenKey);
             await _activeTransport.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+            connected?.Invoke();
             while (!cancellationToken.IsCancellationRequested)
             {
                 if (_options.SessionLifetime != Timeout.InfiniteTimeSpan
@@ -226,6 +236,17 @@ public sealed class BinancePrivateWebSocketClient : IDisposable
         if (!options.BaseAddress.IsAbsoluteUri || options.BaseAddress.Scheme is not ("ws" or "wss"))
         {
             throw new ArgumentException("The private WebSocket base address must be absolute ws/wss.",
+                nameof(options));
+        }
+
+        if (!string.IsNullOrEmpty(options.BaseAddress.UserInfo)
+            || !string.IsNullOrEmpty(options.BaseAddress.Query)
+            || !string.IsNullOrEmpty(options.BaseAddress.Fragment)
+            || StringComparer.OrdinalIgnoreCase.Equals(options.BaseAddress.Host,
+                "fstream.binance.com"))
+        {
+            throw new ArgumentException(
+                "The private WebSocket endpoint must be a credential-free, non-production origin.",
                 nameof(options));
         }
 

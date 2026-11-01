@@ -22,6 +22,120 @@ endpoints, activation field, order, or execution authority. T001 adds
 configuration only; paper execution and restart/reconciliation evidence remain
 T002/T003 work.
 
+## Exchange test configuration (P16-M02-T001)
+
+`ExchangeTestConfiguration` is an immutable, strict App contract for the
+dedicated Binance USD-M test environment. It accepts only format 1,
+`exchange-test`, and `binance-usdm-test`, with the documented test REST base
+`https://demo-fapi.binance.com/` and private stream base
+`wss://demo-fstream.binance.com/private/ws/`. Host, scheme, path, query,
+fragment, and user-info validation reject production, arbitrary, and unsafe
+endpoints. Configuration identities use safe metadata identifier characters and
+cannot carry URLs, whitespace, or credential-like separators.
+
+Credential fields are metadata references only. The provider is either
+`environment` or `external-secret-store`, the scope must be
+`binance-usdm-test`, and no secret value is resolved, stored, logged, or sent by
+`Parse`, `Load`, or `ToJson`. Environment references do not carry a store
+identity; external references require one. Strict case-sensitive JSON rejects
+unknown or duplicate properties, unsupported versions, inline credential fields,
+activation fields, and enabled production/network fixture policies. Operational
+policy identifiers describe exchange rate limits, caller-owned freshness,
+reconciliation-before-retry, reduce-only partial-fill protection, and
+fail-closed unknown/manual state without adding numeric trading defaults.
+
+T001 is configuration evidence only. It performs no network call, secret-store
+lookup, order submission, or activation. T002 owns runtime credential resolution,
+test transport, and private lifecycle behavior.
+
+## Exchange test executor (P16-M02-T002)
+
+The exchange-test runtime composes only `ExchangeTestConfiguration` with the
+documented Binance USD-M test REST origin `https://demo-fapi.binance.com/` and
+private stream origin `wss://demo-fstream.binance.com/private/ws/`. Credential
+references are resolved at runtime by an environment or injected external
+secret-store provider; values are held in-process only and are never represented
+in configuration JSON, fixtures, diagnostics, SQLite receipts, or Git. The runtime
+HTTP handler disables redirects, the REST adapter rejects a changed response
+origin, and no production fallback or activation path exists.
+
+`HmacSha256BinanceRequestSigner` signs the exact encoded payload with the runtime
+secret. `BinancePrivateRestClient` appends `signature` as the final wire field,
+retains the API-key header, applies caller-owned timestamp/freshness policy, and
+maps rate-limit, authentication, and 503 unknown responses to redacted fail-closed
+diagnostics. The private WebSocket default is the dedicated test `/private/ws/`
+route; the reader retains event/transaction/receive/availability times, session
+identity, and stable sequence. `ALGO_UPDATE` nested fields remain opaque and require
+REST reconciliation.
+
+`ExchangeTestRuntime.CreateTransport` and `CreateExecutor` compose the concrete
+test-only `BinanceExchangeTestTransport` with the validated REST and private
+WebSocket clients; the executor is not left dependent on a fixture-only fake.
+Durable client order IDs are mapped unchanged into REST requests and matched back
+to a fresh `ORDER_TRADE_UPDATE` before a submit result is accepted. The private
+socket is connected before the REST order side effect, so an immediate update
+cannot be lost by a post-submit subscription race. Reconciliation queries the
+same client identity through private REST, checks one-way position mode and
+current positions, requires bounded trade/order identities and a fresh matching
+private event, and treats manual/unknown/mismatched state as non-retryable.
+Stale, disconnected, expired, or mismatched stream evidence remains unknown and
+fail-closed. `ALGO_UPDATE` remains opaque and blocks until dedicated Algo REST
+reconciliation; no nested status is guessed.
+
+`ExchangeTestExecutor` exposes asynchronous submit, reconciliation, and normalized
+private-event recording over that transport. It revalidates approved risk, uses the
+existing immediate SQLite reservation and single-use dispatch claim transactions,
+and calls the transport only for a fresh durable claim. Duplicate or stale claims
+are blocked. Timeout, cancellation, rate/auth, 503, redirect, and unknown transport
+outcomes become durable reconciliation-required observations; absence from bounded
+history never authorizes a retry. A partial entry fill creates a known snapshot
+for the actual filled quantity and must place and REST-confirm a reduce-only
+`STOP_MARKET` Algo order at the observed fill price before the result is safe;
+failure becomes unknown state. Disconnected or stale private streams and
+manual/unknown positions block new entries.
+
+`SqliteExchangeTestStore` is intentionally separate from local-paper storage. Each
+run is bound to one configuration/environment identity and persists only normalized
+private-event receipts, causal timestamps, stable sequence, lifecycle, fill quantity,
+and an integrity fingerprint. Raw frames, listen keys, signatures, credentials, and
+credential-bearing response payloads have no storage representation. For an
+exchange-test dispatch the exchange tables and portfolio operational tables must be
+in the same isolated SQLite file: `ApplyExchangeTestObservation` uses one immediate
+transaction for receipts, execution lifecycle, fills, position projections, and the
+reconciliation checkpoint. A projection failure rolls back the complete batch, and
+restart reads the committed batch idempotently; different database paths fail
+closed before dispatch. Promotion/evidence projection is a later T003 concern and
+this test lane does not authorize real-money execution. External Binance
+connectivity remains unverified by the local T002 profile.
+
+## Exchange-test evidence (P16-M02-T003)
+
+`ExchangeTestEvidence` is a read-only, format-versioned projection of one
+consistent persisted exchange-test snapshot. The snapshot reader uses one
+serializable SQLite read transaction across run metadata, normalized private
+receipts, lifecycle/attempt/receipt rows, fills, reservations, positions,
+checkpoints, and protective links; a changed run identity or corrupt canonical
+row fails closed. Evidence preserves run/configuration/environment identities,
+causal event/exchange/receive/availability timestamps, stable sequence, fill
+and reservation identities, restart/reconciliation/idempotency claims, and
+explicit blockers/unknowns.
+
+The canonical JSON is compact, strict, versioned, and content-addressed with
+an uppercase SHA-256 identity. Deserialization recomputes both the identity and
+canonical bytes and rejects tampering, unknown members, wrong environment, and
+credential-bearing provenance metadata. The atomic exporter uses a flushed
+exclusive temporary file and no-overwrite move; identical retries are
+idempotent and conflicting destinations fail closed. Raw private frames,
+listen keys, signatures, credentials, and credential-bearing payloads are not
+part of the evidence model or export.
+
+Synthetic-fixture, verified-test-environment, and unknown provenance remain
+explicit. Local-paper evidence is never merged into this report. The promotion
+projection is exclusively `ExchangeTest` and adds execution-authority and
+real-money-activation blockers; it cannot authorize real orders. The local T003
+profiles are synthetic persistence/fixture runs only, so external Binance
+connectivity and verified test-environment evidence remain unprovided.
+
 Core defines passive OrderIntent and Position contracts in Phase 2. P03-M02-T001
 adds SqliteOrderIntentJournal in Infrastructure so a complete OrderIntent can be
 durably recorded and recovered before any future execution side effect. This

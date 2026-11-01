@@ -33,6 +33,9 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         return new SqlitePortfolioOperationalStore(fullPath, commandTimeoutSeconds);
     }
 
+    /// <summary>Gets the normalized file path shared by the operational tables.</summary>
+    public string DatabasePath => _databasePath;
+
     public bool Register(PortfolioLimits limits) => _reservationStore.Register(limits);
 
     public PortfolioLimits? FindLimits(PortfolioId portfolioId) =>
@@ -513,6 +516,75 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
     }
 
     /// <summary>
+    /// Atomically applies a normalized exchange-test receipt batch together
+    /// with execution lifecycle state and, when supplied, fill, position, and
+    /// reconciliation-checkpoint projections. The exchange-test and portfolio
+    /// stores must point at the same SQLite file; otherwise the operation fails
+    /// closed instead of degrading to two independent commits.
+    /// </summary>
+    public ExecutionTransitionResult ApplyExchangeTestObservation(
+        SqliteExchangeTestStore exchangeStore, PortfolioId portfolioId,
+        ExecutionObservation observation, long expectedReconciliationRevision,
+        IReadOnlyList<ExchangeTestEventReceipt> privateEvents,
+        Fill? fill = null,
+        IReadOnlyList<PortfolioPositionSnapshot>? positionSnapshots = null,
+        ReconciliationCheckpoint? checkpoint = null)
+    {
+        ArgumentNullException.ThrowIfNull(exchangeStore);
+        ArgumentNullException.ThrowIfNull(portfolioId);
+        ArgumentNullException.ThrowIfNull(observation);
+        ArgumentNullException.ThrowIfNull(privateEvents);
+        positionSnapshots ??= Array.Empty<PortfolioPositionSnapshot>();
+        if ((fill is not null || positionSnapshots.Count > 0) && checkpoint is null)
+        {
+            throw new ArgumentException(
+                "A fill or position projection requires its reconciliation checkpoint.",
+                nameof(checkpoint));
+        }
+
+        if (privateEvents.Any(receipt => !StringComparer.Ordinal.Equals(receipt.IntentId,
+                observation.IntentId)))
+        {
+            throw new InvalidOperationException(
+                "Every exchange-test receipt must target the observed durable intent.");
+        }
+
+        if (fill is not null && !StringComparer.Ordinal.Equals(fill.IntentId,
+                observation.IntentId))
+        {
+            throw new InvalidOperationException(
+                "The exchange-test fill must target the observed durable intent.");
+        }
+
+        if (checkpoint is not null && checkpoint.PortfolioId != portfolioId)
+        {
+            throw new InvalidOperationException(
+                "The exchange-test checkpoint must target the supplied portfolio.");
+        }
+
+        if (!StringComparer.OrdinalIgnoreCase.Equals(_databasePath,
+                exchangeStore.DatabasePath))
+        {
+            throw new InvalidOperationException(
+                "Exchange-test receipts and portfolio lifecycle must share one SQLite database.");
+        }
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        exchangeStore.AppendPrivateEventsInTransaction(connection, transaction, privateEvents);
+        ExecutionTransitionResult transition = ApplyExecutionObservationInTransaction(connection,
+            transaction, portfolioId, observation, expectedReconciliationRevision);
+        if (checkpoint is not null)
+        {
+            SqlitePortfolioReservationStore.RecordObservationInTransaction(connection, transaction, fill,
+                positionSnapshots, checkpoint);
+        }
+
+        transaction.Commit();
+        return transition;
+    }
+
+    /// <summary>
     /// Binds reconciliation-required state to the current explicitly
     /// acknowledged revision before applying fresh adapter observations.
     /// </summary>
@@ -587,6 +659,21 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         ValidateRevision(expectedReconciliationRevision);
         using SqliteConnection connection = OpenConnection();
         using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        ExecutionTransitionResult transition = ApplyExecutionObservationInTransaction(connection,
+            transaction, portfolioId, observation, expectedReconciliationRevision);
+        transaction.Commit();
+        return transition;
+    }
+
+    /// <summary>Applies one lifecycle observation without committing the caller's transaction.</summary>
+    internal static ExecutionTransitionResult ApplyExecutionObservationInTransaction(
+        SqliteConnection connection, SqliteTransaction transaction, PortfolioId? portfolioId,
+        ExecutionObservation observation, long expectedReconciliationRevision)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(observation);
+        ValidateRevision(expectedReconciliationRevision);
         OrderIntent intent = ReadIntent(connection, transaction, observation.IntentId);
         _ = ResolveCheckpoint(connection, transaction, intent, portfolioId,
             expectedReconciliationRevision);
@@ -600,7 +687,6 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
         if (transition.Disposition == ExecutionApplyDisposition.AlreadyApplied
             || transition.Disposition == ExecutionApplyDisposition.Blocked)
         {
-            transaction.Commit();
             return transition;
         }
 
@@ -620,7 +706,6 @@ public sealed class SqlitePortfolioOperationalStore : IDisposable
             InsertReceipt(connection, transaction, observation);
         }
 
-        transaction.Commit();
         return transition;
     }
 

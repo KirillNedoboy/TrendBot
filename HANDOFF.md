@@ -1,9 +1,73 @@
 # Current checkpoint
 
 - Phase: 16 — Paper/Test Environment
-- Milestone: P16-M01 — Local paper simulation
-- Current task: P16-M01-T003 (DONE; local paper evidence and recovery proof)
-- Next task: P16-M02-T001 (READY; exchange-test configuration; not started)
+- Milestone: P16-M02 — Exchange test environment
+- Current task: P16-M02-T003 (DONE; separate exchange-test evidence GREEN)
+- Next task: P17-M01-T001 remains BLOCKED by the explicit no-P17 instruction; do
+  not start the next phase.
+
+## P16-M02-T003 evidence
+
+- Startup: the required project documents, Git status, SDK, dependencies, and
+  documentation validator were reread. T002 was DONE and the validator selected
+  T003 READY. The canonical source hash and ignored `graft/` were preserved.
+- TDD RED: the initial evidence fixture compile caught strict JSON/test-fixture
+  construction errors. After compilation was corrected, the behavioral runtime
+  RED discovered 6 `ExchangeTestEvidenceTests` and failed 1 because
+  credential-bearing provenance metadata was accepted.
+- GREEN: `ExchangeTestEvidence` now reads one serializable persisted snapshot,
+  retains lifecycle/fill/reservation/checkpoint/restart/reconciliation/
+  idempotency and causal identities, rejects credential-bearing provenance and
+  mismatched event run identities, and accepts only the Binance USD-M test
+  environment. Format-v1 canonical JSON is strict and SHA-256 content-addressed;
+  deserialization rejects tampering, unknown members, and wrong environments.
+  Export is UTF-8, flushed, atomic, no-overwrite, and idempotent for identical
+  bytes. Raw frames, credentials, signatures, listen keys, and credential-
+  bearing payloads have no evidence representation. Promotion is only the
+  `ExchangeTest` category and always carries execution-authority and real-money
+  activation blockers; local-paper evidence is separate.
+- Profiles: `ExchangeTestEvidenceTests` 6/6, atomic persistence 2/2, runtime
+  9/9, executor 4/4, Binance adapter 61/61, Infrastructure 114/114, and full
+  IntegrationTests 162/162. Locked restore, affected Release builds with
+  `--warnaserror`, scoped format, docs validation, `git diff --check`, canonical
+  hash, graft-ignore, and count-only secret scan passed.
+- Limits: all profiles use synthetic local fixtures/persistence. External
+  Binance connectivity and verified test-environment evidence were not run; no
+  credentials were read, no real order/live activation occurred, and no
+  remote-CI, commit, or push claim is made. P17 remains untouched.
+
+## P16-M02-T002 continuation GREEN
+
+- Startup: the required project documents, Git status, SDK, official Binance
+  REST/private-stream documentation, and dependency validator were rechecked.
+  T001 was DONE; this continuation reopened T002 and kept T003 blocked until
+  the focused runtime profile was green. The validator now selects
+  `P16-M02-T003` READY.
+- TDD RED: after the requested runtime behavior was added, the affected Release
+  build first exposed 11 missing helper errors. The discovered focused
+  `ExchangeTestRuntimeTests` profile then failed 5/9: the private stream was
+  subscribed after order submission, partial entry fills had no actual
+  reduce-only protection, protection failure was treated as safe, and
+  reconciliation discarded manual/position identities.
+- GREEN: `BinanceExchangeTestTransport` connects the private test stream before
+  the order side effect; it maps durable client IDs, requires fresh matching
+  `ORDER_TRADE_UPDATE`, places and REST-confirms a reduce-only `STOP_MARKET`
+  Algo order for an actual partial fill, retains the normalized protective
+  receipt and position snapshot, and fails closed on Algo/stream uncertainty.
+  Reconciliation checks one-way mode, current positions, bounded order history,
+  private trade IDs, and order/position identity parity; missing history never
+  authorizes a retry. The runtime handler rejects non-test REST origins and
+  redirects. `ALGO_UPDATE` remains opaque and explicitly blocks until dedicated
+  Algo REST reconciliation is available.
+- GREEN profiles: `ExchangeTestRuntimeTests` 9/9,
+  `ExchangeTestExecutorTests` 4/4, Binance adapter 61/61, Infrastructure
+  114/114, and full IntegrationTests 156/156. Affected Release builds with
+  `--warnaserror`, locked restore, scoped format, docs validation, and
+  `git diff --check` passed. Canonical source SHA and ignored `graft/` were
+  unchanged. No credentials, network orders, live activation, commit, push, or
+  remote-CI claim was made; external Binance connectivity remains unverified.
+- Scope: T003 is now READY. Do not start P17, merge this evidence with
+  local-paper evidence, or treat the local profiles as real-money authorization.
 
 ## P14-M01-T001 evidence
 
@@ -1317,3 +1381,159 @@
   private network, credentials, orders, activation, P16-M02, package/project
   graph, canonical source, `graft/`, commit, or push change was made. T003 is
   READY but was not started; remote CI remains unverified.
+
+## P16-M02-T001 evidence
+
+- Startup: the required project documents, clean `main` status, SDK `10.0.401`,
+  dependency graph, and `tools/validate-docs.ps1` were reread. The validator
+  selected `P16-M02-T001` as the first READY task after `P16-M01-T003`.
+- TDD RED: the focused IntegrationTests Release build discovered the new
+  configuration profile but failed to compile because
+  `ExchangeTestConfiguration` was absent. A subsequent behavioral runtime RED
+  discovered 17 tests and failed 3/17 because URL-like, spaced, and
+  colon-containing configuration identities were accepted. These were real
+  contract failures, not a zero-discovery or manufactured shell run.
+- GREEN: App adds immutable `ExchangeTestConfiguration`,
+  `ExchangeCredentialReferences`, and `ExchangeTestOperationalPolicies`.
+  Strict format-1, case-sensitive JSON round-trips only
+  `exchange-test`/`binance-usdm-test` metadata and the documented
+  `demo-fapi.binance.com` REST and `demo-fstream.binance.com/private/ws/`
+  private stream endpoints. Credential fields are test-scoped references for
+  environment variables or an external secret store; no secret value is
+  resolved, persisted, logged, or sent. Unknown/duplicate fields, unsupported
+  versions, unsafe or production endpoints, inline credential/activation
+  fields, and enabled production/network policies fail closed. Policy labels
+  carry no numeric trading defaults.
+- Acceptance: `ExchangeTestConfigurationTests` passed 17/17. The affected
+  IntegrationTests Release build with `--warnaserror`, scoped
+  `dotnet format --verify-no-changes`, `tools/validate-docs.ps1`, and
+  `git diff --check` passed. No package, schema, network call, credential,
+  order, activation, canonical source, `graft/`, commit, or push changed.
+- Limits: T001 proves configuration metadata and rejection behavior only.
+  Runtime credential resolution, test transport, private lifecycle,
+  reconciliation, and external Binance connectivity belong to T002/T003 and
+  remain unverified. The validator selects `P16-M02-T002` READY; P17 remains
+  blocked.
+
+## P16-M02-T002 evidence
+
+- Startup: required project documents, `git status`, SDK `10.0.401`, dependency
+  state, and `tools/validate-docs.ps1` were reread on `main`; T001 was DONE and
+  the validator selected T002 READY. The current official Binance General Info,
+  Trade API, User Data Streams, and USDⓈ-M schema pages were rechecked directly
+  on 2026-11-01 before runtime changes. No Binance endpoint was called and no
+  credential value was read by the agent.
+- TDD RED: the focused Binance profile first discovered the existing adapter and
+  failed 2/2 at runtime because signed payloads did not end in `signature` and
+  failure diagnostics pointed to `fapi.binance.com` instead of the configured
+  origin. Compile REDs then covered the missing HMAC signer, isolated receipt
+  store, executor transport surface, and runtime credential provider. These were
+  real missing/incorrect behaviors, not manufactured no-op tests.
+- GREEN implementation: the private REST adapter now appends the HMAC-SHA256
+  signature as the final encoded field, rejects changed-origin responses and
+  redirects, maps 429/418 and authentication failures to redacted diagnostics,
+  and reports a query-free configured test-origin request URI. The private WebSocket default
+  is the dedicated `demo-fstream.binance.com/private/ws/` route and rejects the
+  production stream host. Runtime composition resolves environment or injected
+  external-secret-store references only inside the process, uses the documented
+  demo REST/WS origins, disables redirects, and has no production fallback or
+  activation path.
+- GREEN executor: `ExchangeTestExecutor` revalidates approved risk, uses the
+  existing atomic reservation and single-use durable claim boundary, and invokes
+  the concrete test-only transport composed by `ExchangeTestRuntime` (the
+  interface remains injectable for isolated fixtures). Duplicate/stale claims,
+  timeout/cancellation/unknown transport outcomes, conflicting receipts,
+  missing reduce-only protection for partial fills, stale/disconnected private
+  streams, ALGO_UPDATE, and manual/unknown positions remain fail-closed and
+  require reconciliation. `SqliteExchangeTestStore` isolates run/configuration/
+  environment metadata and stores normalized private causal receipts only;
+  raw frames, listen keys, signatures, credentials, and credential-bearing
+  payloads have no storage representation.
+- Focused GREEN: `BinancePrivateAdapterTests` passed 61/61; the new
+  `ExchangeTestExecutorTests` passed 4/4; `ExchangeTestRuntimeTests` passed 4/4;
+  `ExchangeTestAtomicPersistenceTests` passed 2/2; and
+  `SqliteExchangeTestStoreTests` passed 2/2. Adjacent Release profiles also
+  passed IntegrationTests 151/151 and Infrastructure.Tests 114/114. The local
+  profile does not establish external Binance connectivity or real-money
+  execution permission.
+- Scope: no T003 evidence export, P17 work, canonical source, `graft/`, commit,
+  or push was performed. The next validator-selected task is T003 READY; remote
+  CI remains unverified until a real run exists for a later commit.
+
+## P16-M02-T002 continuation audit
+
+- A completion review found that the initial T002 GREEN profile exercised an
+  injected fake `IExchangeTestTransport`; `ExchangeTestRuntime` exposed REST/WS
+  clients but did not compose a test-only transport that could submit and
+  reconcile through those clients. It also found that normalized private
+  receipts and execution observations were persisted by separate SQLite
+  transactions rather than one receipt/fill/lifecycle/checkpoint boundary.
+- T002 is therefore `IN_PROGRESS` and T003 is `BLOCKED` pending a discovered
+  RED for integrated runtime composition and atomic interruption/restart
+  persistence, followed by focused GREEN and the required acceptance checks.
+- No exchange credentials, network calls, production endpoint, live activation,
+  T003 evidence export, P17 work, commit, or push was performed during this
+  continuation audit.
+
+## P16-M02-T002 completion evidence
+
+- The continuation RED was runtime-discovered with the Release IntegrationTests
+  DLL: 148 tests were discovered, and the two new contract checks failed because
+  `ExchangeTestRuntime` did not compose an executor transport and the operational
+  store had no atomic exchange-observation boundary. This was followed by the
+  implementation and focused GREEN, not a placeholder or `NotImplementedException`.
+- `ExchangeTestRuntime.CreateTransport`/`CreateExecutor` now constructs the
+  internal `BinanceExchangeTestTransport` over the immutable Binance USD-M test
+  configuration. It maps the durable client order ID through signed test REST,
+  requires a fresh matching private-stream event, checks `/private/ws/<listenKey>`
+  freshness and expiry, reconciles through private REST plus stream/position
+  checks, and never permits production fallback. The integrated synthetic profile
+  verifies test REST/WS hosts, final `signature` field, and durable identity.
+- `SqlitePortfolioOperationalStore.ApplyExchangeTestObservation` and the shared
+  `SqliteExchangeTestStore` transaction seam require one SQLite database for the
+  exchange-test run. Receipts, lifecycle state, fills, position projections, and
+  reconciliation checkpoints commit together; invalid projection input rolls the
+  whole batch back, and a reopened store reads the committed batch idempotently.
+  Different database paths fail closed before dispatch.
+- Final focused GREEN: Binance adapter 61/61, exchange executor 4/4, runtime 4/4,
+  atomic persistence 2/2, and isolated exchange receipt store 2/2. Adjacent
+  IntegrationTests 151/151 and Infrastructure.Tests 114/114 passed. The full
+  affected Release solution build with `--warnaserror` had zero warnings/errors;
+  scoped format verification passed. `tools/validate-docs.ps1` selects
+  `P16-M02-T003` READY. External Binance connectivity remains unverified and no
+  real credentials, order, activation, T003 evidence export, P17 work, commit,
+  or push was performed.
+
+## P16-M02-T002 continuation audit 2
+
+- A further review found that the composed transport opened the private stream
+  only after submitting the order, so an immediate `ORDER_TRADE_UPDATE` could be
+  lost. Partial entry fills were also marked unknown because no actual
+  reduce-only protective order was submitted. Reconciliation discarded the
+  queried position/mode facts, and `ALGO_UPDATE` was normalized without an Algo
+  REST reconciliation path.
+- T002 is `IN_PROGRESS`; T003 is `BLOCKED` pending runtime RED/GREEN covering
+  stream-before-submit ordering, durable reduce-only protection and restart
+  recovery, complete REST/stream/position reconciliation, and explicit
+  fail-closed Algo handling. No credentials, production endpoint, live
+  activation, T003 evidence export, P17 work, commit, or push was performed.
+
+## P16-M02-T002 continuation audit 2 GREEN
+
+- The required RED was then reproduced with the focused runtime profile: 9
+  tests were discovered and 5 failed for the exact stream race, missing actual
+  protection, unsafe protection-failure result, and incomplete reconciliation
+  identities. The implementation now connects the private socket before REST
+  submission, places and queries a reduce-only `STOP_MARKET` Algo order for
+  the observed partial quantity, persists the protective receipt/position
+  projection through the shared transaction boundary, and returns explicit
+  fail-closed evidence for opaque `ALGO_UPDATE`, stale streams, bounded-history
+  absence, and manual/unknown positions.
+- GREEN: `ExchangeTestRuntimeTests` 9/9, `ExchangeTestExecutorTests` 4/4,
+  Binance adapter 61/61, Infrastructure 114/114, and full IntegrationTests
+  156/156. Locked restore, affected Release `--warnaserror` builds, scoped
+  format, docs validation (`ready=P16-M02-T003`), `git diff --check`,
+  canonical source SHA, and graft-ignore checks passed. External Binance
+  connectivity, credentials, real orders, live activation, remote CI, commit,
+  and push remain unverified/not performed. T002 is DONE; T003 is READY and
+  P17 remains untouched.

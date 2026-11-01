@@ -1,8 +1,9 @@
 # Binance USDⓈ-M private protocol catalogue
 
-Status: evidence catalogue and diagnostic matrix for `P04-M02-T001` and `P04-M02-T003`.
+Status: evidence catalogue and diagnostic matrix for `P04-M02-T001`, `P04-M02-T003`,
+and the P16-M02 exchange-test runtime boundary.
 
-Checked: **2026-10-24**. The review used only the current official Binance Developer
+Checked: **2026-11-01**. The review used only the current official Binance Developer
 Documentation. No Binance API endpoint was called, no credentials were used, and no
 order was submitted.
 
@@ -30,6 +31,70 @@ The focused synthetic-fixture evidence is 12/12 adapter tests and 50/50 Exchange
 tests. No numeric freshness TTL is invented: stream freshness remains a caller-owned
 policy, and the order-history retention limits documented below mean absence from a
 bounded history is not proof of absence.
+
+## P16-M02-T002 exchange-test runtime boundary
+
+The official documentation was rechecked on 2026-11-01 immediately before the
+T002 runtime work:
+[USDⓈ-M General Info](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info),
+[Trade API](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade),
+[User Data Streams](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams),
+and the current [USDⓈ-M WebSocket schemas](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/~schemas).
+The dedicated test REST origin is `https://demo-fapi.binance.com/`; the private
+stream origin is `wss://demo-fstream.binance.com/private/ws/`. Runtime composition
+accepts only the immutable T001 configuration, disables HTTP redirects, resolves
+credential references inside the process, and never supplies a production endpoint
+or an activation path. The external Binance network remains unverified by this
+local profile.
+
+Signed requests use the documented `X-MBX-APIKEY`, millisecond `timestamp`, optional
+`recvWindow` (maximum 60000 ms), and HMAC-SHA256 over the exact encoded query/form
+payload. The final wire field is `signature`; the signer receives the payload before
+that field is appended. Diagnostics retain only status/code/request URI metadata and
+never echo response bodies, keys, or signatures. HTTP 429 and 418 are rate-limit
+failures; authentication failures remain fail-closed. A 503 unknown outcome is not
+resent: the durable client identity must be reconciled first. A 503 service-unavailable
+or internal-error result is also not treated as proof that no order exists.
+
+The private stream uses the dedicated `/private/ws/<listenKey>` route. Binance documents
+a 60-minute listen-key lifetime (extended by keepalive) and a 24-hour WebSocket
+connection lifetime. The runtime preserves event time `E`, transaction time `T`, local
+receive/availability time, session identity, and stable processing sequence. `ALGO_UPDATE`
+statuses (`NEW`, `CANCELED`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `REJECTED`, and
+`EXPIRED`) remain opaque nested fields until REST reconciliation; no unconfirmed
+status or nested payload is promoted into an order operation.
+
+`ExchangeTestRuntime.CreateTransport`/`CreateExecutor` composes the concrete
+test-only transport with the validated REST and private WebSocket clients. The
+private socket is connected before the REST order side effect, then the durable
+client order identity is sent unchanged to REST and must be matched by a fresh
+private `ORDER_TRADE_UPDATE`. Reconciliation queries that same identity via
+private REST, checks one-way position mode and current positions, verifies
+bounded order/trade/position identities, and requires a fresh stream event. A
+duplicate or stale claim is blocked. Timeout, cancellation, transport, rate,
+auth, and unknown-response paths persist a reconciliation-required
+`Timeout`/`Unknown` observation and never blind-retry. Partial fills create a
+known snapshot for the actual filled quantity and require placing and
+REST-confirming a reduce-only `STOP_MARKET` Algo order at the observed fill
+price; missing or conflicting protection is converted to unknown state.
+Stale/disconnected private streams and manual/unknown positions block new entries
+while protective/reconciliation state remains fail-closed. Fresh complete
+order/position/reservation evidence is required before a retry. An `ALGO_UPDATE`
+with opaque/unconfirmed nested fields fails closed until the dedicated Algo REST
+state is reconciled.
+
+`SqliteExchangeTestStore` is a separate run-scoped table set linking run,
+configuration, and environment identities; it is isolated from local-paper storage
+but shares the exchange-test portfolio SQLite file when a dispatch is composed.
+It stores normalized private-event receipts, causal timestamps, stable sequence,
+lifecycle, fill quantity, and a fingerprint only; raw frames, listen keys,
+credentials, signatures, and response payloads have no storage representation.
+`ApplyExchangeTestObservation` commits receipts, lifecycle, fills, position
+projections, and checkpoint in one immediate transaction and rejects different
+database paths. An injected projection failure rolls back both receipt and
+lifecycle, while a restart reopens the committed batch without duplication.
+Exchange-test evidence is not local-paper evidence and does not authorize real-money
+execution; canonical evidence export is deferred to T003.
 
 ## Scope and evidence rules
 

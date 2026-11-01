@@ -18,15 +18,35 @@ public sealed partial class SqlitePortfolioReservationStore
     {
         ArgumentNullException.ThrowIfNull(positionSnapshots);
         ArgumentNullException.ThrowIfNull(checkpoint);
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        PortfolioObservationResult result = RecordObservationInTransaction(connection,
+            transaction, fill, positionSnapshots, checkpoint);
+        transaction.Commit();
+        return result;
+    }
+
+    /// <summary>
+    /// Applies a portfolio observation using a caller-owned transaction. This
+    /// is the shared boundary used by exchange-test receipts so a fill,
+    /// position/checkpoint projection, and execution lifecycle cannot commit
+    /// independently.
+    /// </summary>
+    internal static PortfolioObservationResult RecordObservationInTransaction(
+        SqliteConnection connection, SqliteTransaction transaction, Fill? fill,
+        IReadOnlyList<PortfolioPositionSnapshot> positionSnapshots,
+        ReconciliationCheckpoint checkpoint)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(positionSnapshots);
+        ArgumentNullException.ThrowIfNull(checkpoint);
         List<PortfolioPositionSnapshot> snapshots = positionSnapshots.ToList();
         ValidateSnapshotArguments(snapshots, checkpoint.PortfolioId);
 
         string? fillJson = fill is null ? null : CoreJsonSerializer.Serialize(fill);
-        string checkpointJson = CoreJsonSerializer.Serialize(
-            Unreconciled(checkpoint));
-
-        using SqliteConnection connection = OpenConnection();
-        using SqliteTransaction transaction = BeginImmediateTransaction(connection);
+        string checkpointJson = CoreJsonSerializer.Serialize(Unreconciled(checkpoint));
         CheckpointRow? currentRow = FindCheckpoint(connection, transaction,
             checkpoint.PortfolioId.Value);
         ReconciliationCheckpoint? current = currentRow is null
@@ -39,7 +59,6 @@ public sealed partial class SqlitePortfolioReservationStore
             if (MatchesRecordedObservation(connection, transaction, fill, snapshots,
                 Unreconciled(checkpoint), current))
             {
-                transaction.Commit();
                 return PortfolioObservationResult.AlreadyRecorded;
             }
 
@@ -113,7 +132,6 @@ public sealed partial class SqlitePortfolioReservationStore
             UpdateCheckpoint(connection, transaction, Unreconciled(checkpoint), checkpointJson);
         }
 
-        transaction.Commit();
         return PortfolioObservationResult.Recorded;
     }
 
