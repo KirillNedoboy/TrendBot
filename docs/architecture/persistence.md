@@ -634,3 +634,67 @@ review. Corrupt JSON/metadata, unsupported health evidence versions, or a
 nonzero real-order field refuse the export. The resulting canonical evidence
 is content-addressed and is not an order intent, reservation, private API
 request, or activation record.
+
+## Local paper journal and virtual ledger (P16-M01-T002)
+
+`LocalPaperStore` owns schema version 2 in the local-paper database. An empty
+file creates the retained legacy `paper_entries`/`paper_checkpoints` tables
+and the executor tables in one transaction. An exact schema-version-zero
+legacy file receives the same transactional extension; its old rows and
+checkpoint remain readable, while `paper_metadata.legacy_blocked = 1` makes
+executor recovery fail closed. Unsupported versions, non-empty unknown
+schemas, invalid JSON, invalid decimals/directions/currencies, and checkpoint
+state that does not match the journal are refused without repair.
+
+The executor tables are `paper_streams`, `paper_observations`,
+`paper_reservations`, `paper_fills`, and `paper_checkpoints_v2`. Stream metadata
+pins initial equity, currency, canonical configuration identity, and explicit
+risk/notional/slot limits. Observation rows retain the canonical ReplayEnvelope,
+optional risk/plan application, content identities, causal event identity,
+status, and result. A `Prepare` transaction writes the durable observation
+intent and, for an application, the capacity reservation before simulation.
+`Commit` uses the expected stream revision and one immediate transaction to
+insert primitive fills, release or retain the reservation, mark the result
+complete, derive the virtual ledger, and advance the checkpoint. A continuation
+may replay already durable fills from the causal prefix; equal fill evidence is
+idempotently ignored regardless of its new observation sequence/ordinal, while
+changed fill evidence, a competing revision, an identity mismatch, or a result
+conflict refuses the write atomically.
+
+The virtual ledger is recomputed from durable fills and active reservations on
+every read/reopen. It retains realized P/L, fees, slippage, equity, weighted
+positions, reserved risk/notional/slots, the last causal sequence/event, and a
+recovery-block marker. Decimal values remain invariant-culture text; no SQLite
+REAL conversion is used. EndOfData/open positions remain represented by their
+fills and active reservation, so a later observation can append only newly
+observed exit fills and release that original reservation atomically. Exact
+result and fill retries are idempotent, while changed content, overfills,
+unsupported partial fills, and pending blocked observations cannot silently
+consume or release capacity. Legacy append/read APIs remain available for their
+original rows but never authorize executor recovery.
+
+## Local paper evidence audit (P16-M01-T003)
+
+`LocalPaperStore.ReadAuditSnapshot(streamId)` is the read-only audit surface
+for one local run. It reads observations, primitive fills, and the ledger
+recomputed from the virtual journal; the checkpoint is validated before the
+snapshot is returned. Durable pre-simulation reservations refresh the existing
+checkpoint state without advancing its optimistic revision, so a process
+interruption after intent remains restartable and still fails closed.
+
+`LocalPaperEvidence` serializes that snapshot as
+`local-paper-evidence-v1`. Its canonical SHA-256 body includes the source,
+configuration, model and plan identities, each persisted decision/risk/fill
+assumption/result document, causal event/exchange/receive/availability times
+and stable sequence, fills, virtual P/L, fees, slippage, reservations,
+blockers, unknowns, and synthetic provenance. Reopening verifies the identity
+and exact canonical JSON. Corrupt checkpoints, envelopes, result JSON, or
+missing streams produce a blocked/unknown report and never an inferred ledger.
+
+The report projects into the existing `PromotionEvidenceCategory.LocalPaper`
+snapshot with causal fields and explicit exclusions for real orders, private
+execution, activation, network, and credentials. `RealOrderCount` is fixed at
+zero and the report has no execution-authority field or activation transition.
+Uninterrupted, repeated, restarted, partial-take-profit, and four persistence
+interruption profiles verify deterministic rows and exactly-once durable fills;
+configuration/model identity changes remain blocked before recovery simulation.

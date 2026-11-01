@@ -2,8 +2,8 @@
 
 - Phase: 16 — Paper/Test Environment
 - Milestone: P16-M01 — Local paper simulation
-- Current task: P16-M01-T001 (DONE; local paper configuration)
-- Next task: P16-M01-T002 (READY; local paper executor)
+- Current task: P16-M01-T003 (DONE; local paper evidence and recovery proof)
+- Next task: P16-M02-T001 (READY; exchange-test configuration; not started)
 
 ## P14-M01-T001 evidence
 
@@ -1230,3 +1230,90 @@
 - Limits: no executor, persistence, recovery, exchange connection, credentials,
   real orders, activation, packages, canonical source, or `graft/` changes.
   T002 remains the next task and was not started. Remote CI is unverified.
+
+## P16-M01-T003 evidence
+
+- Startup: the required project documents, Git status, dependency graph, and
+  validator were reread. T002 was DONE and the validator selected T003 READY;
+  no exchange-test or later-phase task was started. No commit or push was
+  performed.
+- TDD RED: the focused IntegrationTests profile compiled, discovered one
+  `LocalPaperEvidenceTests` case, and failed at runtime with
+  `NotImplementedException`. This was a behavior RED, not a compile-only or
+  zero-discovery result.
+- GREEN: App adds immutable `LocalPaperEvidence` and a builder that reads the
+  persisted run-scoped observation/fill journal plus recomputed virtual ledger.
+  Canonical versioned SHA-256 evidence retains source/configuration/model/plan
+  identities, decision/risk/plan/fill assumptions, causal event/exchange/
+  receive/availability timestamps and stable sequences, fills, P/L, fees,
+  slippage, reservations, blockers, unknowns, and synthetic provenance.
+  `ToPromotionEvidenceSnapshot` emits the existing `LocalPaper` category with
+  explicit no-real-orders and no-execution-authority exclusions. A bounded
+  interruption seam covers before-intent, after-intent, before-commit, and
+  after-commit-before-response restart points; pending intents recover and
+  committed fills remain exactly once. The store refreshes checkpoint state for
+  durable pre-simulation reservations so an interrupted reservation is
+  recoverable without changing its optimistic revision.
+- Acceptance: the focused T003 profile passed `LocalPaperEvidenceTests` and
+  `LocalPaperDeterminismRecoveryTests` 10/10. It covers canonical round-trip
+  and tamper rejection, uninterrupted/repeated/restarted trace equality,
+  partial take-profit/open-position evidence, corruption fail-closed capture,
+  configuration/model-change refusal, and all four interruption points. App
+  and IntegrationTests Release builds with `--warnaserror` passed with zero
+  warnings/errors; locked IntegrationTests restore, scoped format, docs
+  validation, and `git diff --check` passed. The validator now selects
+  `P16-M02-T001` READY.
+- Limits: all paper inputs and fills remain synthetic/local. The evidence is
+  read-only and does not authorize private execution, exchange-test orders,
+  real orders, activation, network access, credentials, or numeric promotion
+  thresholds. Remote CI remains unverified.
+
+## P16-M01-T002 evidence
+
+- Startup: required project documents, `git status`, dependency state, and the
+  bundled docs validator were reread. T001 was DONE; the validator selected
+  T002 as the first READY task. No commit or push was performed.
+- TDD RED: the focused IntegrationTests Release DLL first discovered three
+  store cases; the legacy-migration case failed at runtime (`user_version` was
+  0 instead of 2) and the executor-surface case failed because the App executor
+  was absent. After the continuation tests were added, the same focused profile
+  discovered 10 tests and failed 2/10 at runtime because EndOfData residual
+  quantity was incorrectly blocked. A follow-up equity profile then discovered
+  one test and failed at runtime because a second application accepted stale
+  initial equity after realized P/L. All RED runs were runtime failures, not
+  compile-only or zero-discovery results.
+- GREEN: Infrastructure adds schema-2 `LocalPaperStore` migration, durable
+  observation intents/reservations, atomic fills and virtual ledger
+  checkpoints, optimistic revisions, restart recovery, idempotent exact
+  retries, conflict refusal, corruption/legacy fail-closed behavior, and the
+  retained append/reopen API. App adds immutable `LocalPaperObservation`,
+  application/result contracts, and `LocalPaperExecutor` using
+  `RiskEvaluationEngine`, shared `IRiskMathCalculator`, and injected
+  `IFillSimulator` through the existing `SimulatedRiskSimulator`.
+- Focused GREEN: `LocalPaperStoreTests` passed 2/2 and
+  `LocalPaperExecutorTests` passed 9/9. The tests cover legacy transactional
+  migration, intent-before-simulation reservation, atomic fills/ledger,
+  restart/idempotence, dynamic current-ledger equity with stale-equity refusal,
+  EndOfData continuation without a new entry application,
+  partial take-profit retention/release, equal-prefix-fill deduplication,
+  changed-fill conflict refusal, missing protective evidence, unsupported
+  partial fill, legacy recovery blocking, and configuration/model identity
+  conflict. Persisted plan recovery uses the strict Core contract fields and
+  keeps compatibility aliases from weakening validation.
+- Adjacent checks: locked IntegrationTests restore passed; affected
+  IntegrationTests, Replay.Tests, and Infrastructure.Tests Release builds with
+  `--warnaserror` passed with zero warnings/errors. LocalPaperConfiguration
+  passed 8/8; focused RiskMathParity, SimulatedRisk, FillSimulationIsolation,
+  and Replay architecture checks passed 12/12; Infrastructure architecture
+  passed 1/1. Owned-file scoped `dotnet format --verify-no-changes` passed.
+  A whole-project IntegrationTests format invocation also reported existing
+  line-ending/charset violations in non-owned `LocalPaperConfigurationTests.cs`;
+  that unrelated file was preserved. `tools/validate-docs.ps1` output was
+  `docs validation passed: phases=19; milestones=41; tasks=119;
+  ready=P16-M01-T003`; `git diff --check` exited 0. The canonical source
+  SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+  The validator selects T003 READY after this transition.
+- Limits: all inputs and fills are synthetic/local and deterministic. No
+  private network, credentials, orders, activation, P16-M02, package/project
+  graph, canonical source, `graft/`, commit, or push change was made. T003 is
+  READY but was not started; remote CI remains unverified.

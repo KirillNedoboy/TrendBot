@@ -153,3 +153,72 @@ simulation or execution services. This configuration contract exposes no
 credentials, endpoints, activation field, order, or execution authority. T001
 adds configuration only; paper execution and restart/reconciliation evidence
 remain T002/T003 work.
+
+## Local paper executor (P16-M01-T002)
+
+`LocalPaperObservation` is an immutable App boundary over one persisted
+`ReplayEnvelope`. An optional `LocalPaperApplication` carries the complete Core
+`RiskEvaluationInput` and an independent Backtesting `SimulatedRiskPlan`.
+Observations are bounded causal events; the executor never fetches missing
+market data, consults a private transport, or emits an order. The result keeps
+the shared `RiskEvaluationResult` separate from the injected fill simulation
+result and has explicit Recorded, Applied, AlreadyProcessed, and Blocked
+statuses.
+
+`LocalPaperExecutor.Process` canonicalizes configuration, risk input, plan,
+fill assumptions, model version, and every causal timestamp (event, exchange
+when available, receive, availability, and stable sequence) into content
+identities. It rejects mismatched decision/risk/plan links, future or
+unavailable risk evidence, missing risk math or limits, configuration/model
+changes, and unsupported fill assumptions before any simulation side effect.
+For an approved application it calls `RiskEvaluationEngine` with the shared
+`IRiskMathCalculator`, then durably prepares the observation intent and virtual
+portfolio reservation. Only after that transaction commits does it run the
+existing `SimulatedRiskSimulator` with the injected `IFillSimulator`.
+
+The executor accepts complete supported fills and may retain a deterministic
+EndOfData position. A protective partial fill, overfill, changed fill model,
+corrupt replay evidence, or failed simulation remains blocked; an
+already-prepared reservation is retained so capacity cannot be silently
+released. When EndOfData leaves quantity open, the next bounded observation
+replays the same persisted plan over the extended causal prefix without a new
+entry application, commits only new fill identities, and retains the original
+reservation until a stop, target, or time exit closes the position. Completion
+is one store transaction for primitive fills, reservation release/retention,
+derived virtual ledger, result, and optimistic revision checkpoint. Exact
+retries are idempotent; changed identities or fill evidence are refused. The
+virtual ledger derives equity, realized P/L, fees, slippage, positions, and
+reserved capacity from the durable journal, and reopens deterministically after
+a process restart. Legacy string-only paper rows remain readable but block
+executor recovery, keeping local paper separate from private execution and
+real-money activation.
+
+## Local paper evidence and recovery (P16-M01-T003)
+
+`LocalPaperEvidence` is a read-only App report over one run-scoped
+`LocalPaperStore` stream. It reads the persisted observation and primitive-fill
+journal together with the ledger recomputed from those fills and reservations;
+it does not simulate, submit, or authorize an order. The immutable report keeps
+the source identity, configuration identity, per-observation model and plan
+identities, decision/risk/plan/fill-assumption JSON, all causal event/exchange/
+receive/availability timestamps and stable sequences, fills, realized P/L,
+fees, slippage, reservations, blockers, and unknowns. Open virtual positions
+remain explicit unknowns rather than being treated as a completed result.
+
+The report is format-versioned and content-addressed with SHA-256 over a
+canonical body. Deserialization verifies both identity and canonical bytes;
+tampering, a corrupt checkpoint, an invalid envelope, or an unavailable stream
+returns a blocked/unknown report without an optimistic ledger. The
+`ToPromotionEvidenceSnapshot` adapter uses the existing `LocalPaper` category,
+retains causal fields and synthetic provenance, and always records
+`execution-authority-not-granted`, real-order exclusion, and private/network/
+credential exclusions. It does not make a promotion decision.
+
+Restart proof compares uninterrupted, repeated, and process-restarted traces.
+Interruption injection is limited to the durable boundaries before intent,
+after intent, before commit, and after commit before response. Pending intent
+and reservation recovery remains fail-closed and deterministic; a committed
+fill/ledger/checkpoint is returned idempotently after a response interruption.
+Partial take-profit and EndOfData positions retain their original reservation
+until a later bounded observation closes them. Configuration or fill-model
+identity changes are refused before recovery simulation.
