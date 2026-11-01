@@ -25,12 +25,6 @@ function New-Fixture([string]$name) {
         $parent = Split-Path -Parent $destination
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         Copy-Item -LiteralPath $source -Destination $destination -Force
-        if ($relative -eq '.gitignore') {
-            $ignore = [System.IO.File]::ReadAllText($destination)
-            $ignore = $ignore.Replace("`r`n", "`n").Replace("`r", "`n")
-            [System.IO.File]::WriteAllText($destination, $ignore,
-                [System.Text.UTF8Encoding]::new($false))
-        }
     }
     return $root
 }
@@ -84,6 +78,14 @@ try {
 
     $baseline = New-Fixture 'baseline'
     Invoke-Case 'baseline' $baseline $true 'docs validation passed: phases=19; milestones=41; tasks=119; ready=none \(explicit unresolved blocker\)'
+
+    $crlfIgnore = New-Fixture 'crlf-gitignore'
+    $ignorePath = Join-Path $crlfIgnore '.gitignore'
+    $ignore = [System.IO.File]::ReadAllText($ignorePath)
+    $ignore = $ignore.Replace("`r`n", "`n").Replace("`r", "`n").Replace("`n", "`r`n")
+    [System.IO.File]::WriteAllText($ignorePath, $ignore,
+        [System.Text.UTF8Encoding]::new($false))
+    Invoke-Case 'CRLF .gitignore' $crlfIgnore $true 'docs validation passed: phases=19; milestones=41; tasks=119; ready=none \(explicit unresolved blocker\)'
 
     $duplicate = New-Fixture 'duplicate-ids'
     $duplicateTasks = Join-Path $duplicate 'docs/TASKS.md'

@@ -261,7 +261,7 @@ if ($solution -notmatch 'TradingBot\.Exchange\.Binance' -or
 }
 
 $gitIgnore = Get-Content -LiteralPath (Join-Path $repo '.gitignore') -Raw
-if ($gitIgnore -notmatch '(?m)^graft/$') { throw 'graft/ is not ignored.' }
+if ($gitIgnore -notmatch '(?m)^graft/\r?$') { throw 'graft/ is not ignored.' }
 
 $readyIds = @($ready | ForEach-Object Id)
 $readyText = if ($readyIds.Count -eq 0) { 'none (explicit unresolved blocker)' } else { $readyIds -join ',' }
