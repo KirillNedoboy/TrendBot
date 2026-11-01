@@ -25,6 +25,12 @@ function New-Fixture([string]$name) {
         $parent = Split-Path -Parent $destination
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         Copy-Item -LiteralPath $source -Destination $destination -Force
+        if ($relative -eq '.gitignore') {
+            $ignore = [System.IO.File]::ReadAllText($destination)
+            $ignore = $ignore.Replace("`r`n", "`n").Replace("`r", "`n")
+            [System.IO.File]::WriteAllText($destination, $ignore,
+                [System.Text.UTF8Encoding]::new($false))
+        }
     }
     return $root
 }

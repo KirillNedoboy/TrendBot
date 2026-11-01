@@ -274,7 +274,9 @@ public sealed class CoreFixtureVectorTests
                 string include = (string?)element.Attribute("Include")
                     ?? throw new InvalidDataException(
                         $"Project reference in '{relativeProjectPath}' has no Include attribute.");
-                string targetPath = Path.GetFullPath(Path.Combine(projectDirectory, include));
+                string normalizedInclude = include.Replace('\\', Path.DirectorySeparatorChar);
+                string targetPath = Path.GetFullPath(Path.Combine(projectDirectory,
+                    normalizedInclude));
                 if (!File.Exists(targetPath))
                 {
                     throw new FileNotFoundException(

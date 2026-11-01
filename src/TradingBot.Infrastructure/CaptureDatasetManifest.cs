@@ -916,7 +916,8 @@ public static class CaptureManifestMetadataGuard
     public static string ValidateSource(string source)
     {
         string value = ValidateSafeText(source, nameof(source));
-        if (Path.IsPathFullyQualified(value) || value.StartsWith("file:",
+        if (Path.IsPathFullyQualified(value) || IsWindowsAbsolutePath(value)
+            || value.StartsWith("file:",
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
@@ -953,6 +954,12 @@ public static class CaptureManifestMetadataGuard
 
         return value;
     }
+
+    private static bool IsWindowsAbsolutePath(string value) =>
+        (value.Length >= 3 && char.IsLetter(value[0]) && value[1] == ':'
+            && value[2] is '\\' or '/')
+        || value.StartsWith(@"\\", StringComparison.Ordinal)
+        || value.StartsWith("//", StringComparison.Ordinal);
 
     public static string ValidateSafeText(string value, string parameterName)
     {

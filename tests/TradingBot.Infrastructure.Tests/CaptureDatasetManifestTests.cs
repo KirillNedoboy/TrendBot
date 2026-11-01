@@ -89,6 +89,13 @@ public sealed class CaptureDatasetManifestTests
     }
 
     [Fact]
+    public void RejectsWindowsAbsoluteSourceMetadataRegardlessOfHostPlatform()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            CaptureManifestMetadataGuard.ValidateSource(@"C:\capture\absolute\source"));
+    }
+
+    [Fact]
     public async Task PersistsAndReopensOnlyAtTheFixedDurableCheckpoint()
     {
         using TemporaryCaptureStore fixture = new();

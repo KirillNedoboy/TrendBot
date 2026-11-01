@@ -20,6 +20,23 @@
   READY/transition cases from the current P17 tail graph and all nine cases
   pass, including multiple READY and explainable zero READY coverage.
 
+## CI portability follow-up
+
+- CI run 41338371376 passed format/build on both operating systems, then
+  exposed three platform assumptions: Windows fixture .gitignore line endings
+  hid the graft/ ignore, the project-graph test treated Windows separators as
+  POSIX filenames, and Linux did not recognize a Windows drive-qualified source
+  path as absolute.
+- The fixture now normalizes only its copied .gitignore to LF while preserving
+  the graft/ rule. Project-reference inspection normalizes separator syntax,
+  and manifest source validation rejects Windows drive and UNC absolute paths on
+  every host. A direct cross-platform Windows-path guard test was added.
+- Local Core fixture tests passed 10/10, Infrastructure manifest tests 8/8;
+  full Core.Tests passed 302/302 and Infrastructure.Tests 115/115. All nine
+  documentation fixtures passed, the standalone validator passed, locked
+  restore, scoped format, and staged/unstaged diff checks passed.
+  Remote CI has not been rerun for this follow-up.
+
 ## P16-M02-T003 evidence
 
 - Startup: the required project documents, Git status, SDK, dependencies, and
