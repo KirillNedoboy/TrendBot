@@ -6,6 +6,20 @@
 - Next task: P17-M01-T001 remains BLOCKED by the explicit no-P17 instruction; do
   not start the next phase.
 
+## CI formatting follow-up
+
+- CI run `41337135367` failed at Verify formatting because the repository index
+  stores C# as LF while `.editorconfig` requires UTF-8 BOM/CRLF. `.gitattributes`
+  now pins `*.cs` to CRLF across checkout platforms, and the four tracked C# files
+  missing the BOM were normalized without logic changes.
+- Local locked restore, full `dotnet format TradingBot.slnx --verify-no-changes`,
+  staged/unstaged diff checks, and the documentation validator pass. Remote CI
+  has not been rerun, so it remains unverified for this change.
+- The standalone validator intentionally reports `ready=none (explicit
+  unresolved blocker)` while P17 is held. The fixture harness now builds its
+  READY/transition cases from the current P17 tail graph and all nine cases
+  pass, including multiple READY and explainable zero READY coverage.
+
 ## P16-M02-T003 evidence
 
 - Startup: the required project documents, Git status, SDK, dependencies, and

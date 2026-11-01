@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using TradingBot.App;
 using TradingBot.Backtesting;
 using TradingBot.Core;
