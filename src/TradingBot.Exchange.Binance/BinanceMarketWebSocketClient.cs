@@ -379,14 +379,15 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
         string interval = ReadString(kline, "i");
         long openTime = ReadInt64(kline, "t");
         long closeTime = ReadInt64(kline, "T");
+        string klineStreamName = streamName
+            ?? new BinanceSubscription(symbol, BinanceWebSocketEventKind.Kline, interval)
+                .StreamName;
         BinanceKline value = new(openTime, ReadDecimal(kline, "o"), ReadDecimal(kline, "h"),
             ReadDecimal(kline, "l"), ReadDecimal(kline, "c"), ReadDecimal(kline, "v"),
             closeTime, ReadDecimal(kline, "q"), ReadInt64(kline, "n"),
             ReadDecimal(kline, "V"), ReadDecimal(kline, "Q"), ReadString(kline, "B"),
-            ReadBoolean(kline, "x"));
-        return new BinanceKlineEvent(symbol, eventTime, value,
-            streamName ?? new BinanceSubscription(symbol, BinanceWebSocketEventKind.Kline, interval)
-                .StreamName);
+            interval, ReadBoolean(kline, "x"));
+        return new BinanceKlineEvent(symbol, eventTime, value, klineStreamName);
     }
 
     private static BinanceTickerEvent ParseTicker(JsonElement root, string? streamName,

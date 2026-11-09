@@ -49,8 +49,10 @@ public interface IBinancePublicRestClient
     Task<BinanceDepthSnapshot> GetDepthSnapshotAsync(string symbol, int? limit = null,
         CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<Bar>> GetClosedBarsAsync(string symbol, string interval,
-        int? limit = null, DateTimeOffset? startTime = null, DateTimeOffset? endTime = null,
+    Task<IReadOnlyList<BinanceKlineIngestionResult>> GetKlineIngestionResultsAsync(
+        string symbol, string interval, int? limit = null, DateTimeOffset? startTime = null,
+        DateTimeOffset? endTime = null,
+        IReadOnlyDictionary<BinanceKlineIdentity, BinanceKlineAcceptedRevision>? acceptedRevisions = null,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Trade>> GetRecentTradeEventsAsync(string symbol,
@@ -173,7 +175,7 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinance
         DateTimeOffset now = _timeProvider.GetUtcNow();
         foreach (JsonElement row in document.RootElement.EnumerateArray())
         {
-            result.Add(ParseKline(row, now));
+            result.Add(ParseKline(row, interval, now));
         }
 
         return result;
@@ -302,15 +304,44 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinance
         return GetDepthSnapshotAsync(symbol, limit, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Bar>> GetClosedBarsAsync(string symbol, string interval,
-        int? limit = null, DateTimeOffset? startTime = null, DateTimeOffset? endTime = null,
+    public async Task<IReadOnlyList<BinanceKlineIngestionResult>> GetKlineIngestionResultsAsync(
+        string symbol, string interval, int? limit = null, DateTimeOffset? startTime = null,
+        DateTimeOffset? endTime = null,
+        IReadOnlyDictionary<BinanceKlineIdentity, BinanceKlineAcceptedRevision>? acceptedRevisions = null,
         CancellationToken cancellationToken = default)
     {
         IReadOnlyList<BinanceKline> klines = await GetKlinesAsync(symbol, interval, limit,
             startTime, endTime, cancellationToken).ConfigureAwait(false);
-        InstrumentId instrumentId = new(symbol);
-        return klines.Where(static kline => kline.IsClosed)
-            .Select(kline => kline.ToCoreBar(instrumentId)).ToArray();
+        DateTimeOffset observedAt = _timeProvider.GetUtcNow();
+        UtcTimestamp observedTime = new(observedAt);
+        BinanceKlineSourceMetadata sourceMetadata = new(BinanceKlineSourceKind.Rest,
+            "GET /fapi/v1/klines", null, observedTime, observedTime, null);
+        List<BinanceKlineIngestionResult> results = new(klines.Count);
+        Dictionary<BinanceKlineIdentity, BinanceKlineAcceptedRevision> batchAcceptedRevisions = [];
+
+        foreach (BinanceKline kline in klines)
+        {
+            BinanceKlineIdentity identity = BinanceKlineIdentity.Create(symbol, kline.Timeframe,
+                kline.OpenTimeMilliseconds);
+            if (!batchAcceptedRevisions.TryGetValue(identity,
+                    out BinanceKlineAcceptedRevision? existingRevision))
+            {
+                acceptedRevisions?.TryGetValue(identity, out existingRevision);
+            }
+
+            BinanceKlineIngestionResult result = BinanceKlineIngestionBoundary.Evaluate(symbol,
+                kline, sourceMetadata, existingRevision);
+            if ((result.Status is BinanceKlineIngestionStatus.Accepted
+                    or BinanceKlineIngestionStatus.Duplicate)
+                && result.AcceptedRevision is { } acceptedRevision)
+            {
+                batchAcceptedRevisions[identity] = acceptedRevision;
+            }
+
+            results.Add(result);
+        }
+
+        return results;
     }
 
     public async Task<IReadOnlyList<Trade>> GetRecentTradeEventsAsync(string symbol,
@@ -490,20 +521,19 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinance
         return builder.Uri;
     }
 
-    private static BinanceKline ParseKline(JsonElement row, DateTimeOffset now)
+    private static BinanceKline ParseKline(JsonElement row, string interval, DateTimeOffset now)
     {
         if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 12)
         {
             throw new JsonException("A Binance kline row must contain at least twelve values.");
         }
 
-        JsonElement[] values = row.EnumerateArray().ToArray();
-        long openTime = ReadInt64(values[0]);
-        long closeTime = ReadInt64(values[6]);
-        return new BinanceKline(openTime, ReadDecimal(values[1]), ReadDecimal(values[2]),
-            ReadDecimal(values[3]), ReadDecimal(values[4]), ReadDecimal(values[5]), closeTime,
-            ReadDecimal(values[7]), ReadInt64(values[8]), ReadDecimal(values[9]),
-            ReadDecimal(values[10]), ReadString(values[11]),
+        long openTime = ReadInt64(row[0]);
+        long closeTime = ReadInt64(row[6]);
+        return new BinanceKline(openTime, ReadDecimal(row[1]), ReadDecimal(row[2]),
+            ReadDecimal(row[3]), ReadDecimal(row[4]), ReadDecimal(row[5]), closeTime,
+            ReadDecimal(row[7]), ReadInt64(row[8]), ReadDecimal(row[9]),
+            ReadDecimal(row[10]), ReadString(row[11]), interval,
             closeTime <= now.ToUnixTimeMilliseconds());
     }
 

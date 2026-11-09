@@ -38,6 +38,44 @@ and current open interest to `OIUpdate`. A kline whose close time has not passed
 the injected `TimeProvider` remains a wire DTO and cannot become a Core `Bar`.
 The adapter has no strategy, retry, rate-limit policy, or private API behavior.
 
+## Timeframe-aware UTC klines (P15-M03-T005 / SR-02.2)
+
+The Binance USD-M REST kline endpoint returns twelve positional fields:
+`[0]` open time, `[1..5]` OHLC and base volume, `[6]` close time, `[7]` quote
+volume, `[8]` trade count, `[9..10]` taker-buy volumes, and `[11]` `Ignore`.
+The current official [machine-readable catalog](https://developers.binance.com/en/docs/llms-full.txt) lists `GET /fapi/v1/klines` and says rows are uniquely identified by open time. The directly linked current [REST schema](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data) rendered only the documentation shell on 2026-11-09, so response positions and request fields below were cross-checked against Binance's official legacy [USD-M REST schema](https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data). It documents `symbol`, `interval`, `startTime`, `endTime`, and `limit` (no `timeZone`) with the twelve-field row. The official legacy [USD-M WebSocket schema](https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/websocket-market-streams/Kline-Candlestick-Streams) confirms `i`, `t`, inclusive `T`, `E`, and `x`; the example's `T` is the last included millisecond.
+
+`BinanceKlineIdentity` format 2 identifies `BINANCE`, `USD-M-PERPETUAL`,
+canonical symbol, native timeframe, and open Unix milliseconds. Its v2 event
+ID is timeframe-aware, so 15m and 1h bars at the same symbol/open are separate.
+Previously persisted v1 event IDs are not rewritten or migrated; only newly
+ingested bars use the versioned v2 identity.
+
+Core-ready ingestion currently accepts the approved native `15m` and `1h`
+intervals only. REST interval timestamps are UTC (the endpoint has no
+`timeZone` request field); `open` must be non-negative, representable, and
+aligned to the Unix-epoch UTC grid (`open % duration == 0`). Durations are
+900,000 ms and 3,600,000 ms. The raw Binance `T` is retained as
+`InclusiveCloseTime` and must equal `open + duration - 1`; normalized
+`EndExclusiveTime` is `open + duration`. Core `Bar.EventTime` and `Bar.CloseTime`
+use the normalized end-exclusive boundary, not raw `T`. An open WebSocket bar
+or an invalid timeframe, grid, open, or close-duration produces an explicit
+ingestion diagnostic and no Core `Bar`.
+
+Each closed valid input has an accepted-revision record with identity, the
+versioned `binance-usdm-kline-revision-v1` SHA-256, inclusive and end-exclusive
+times, the Core bar, and source metadata. The hash covers open and inclusive
+close times, exact-decimal OHLC/base volume/quote volume/taker-buy volumes, and
+trade count; it excludes the Binance `Ignore` field and transport-specific
+event/source metadata. Equal identity plus equal hash is the sole REST/WS
+duplicate rule: return `Duplicate`, no second Core bar, and retain both source
+records. Equal identity with a different hash is `RevisionConflict`; the
+previous accepted revision remains authoritative and the conflicting payload
+does not become Core input. Callers bridge REST and WebSocket views by supplying
+the prior accepted-revision set to REST ingestion or the matching accepted
+revision to WebSocket ingestion. This boundary is in-memory and does not add a
+durable revision ledger; persistence and restart recovery remain later work.
+
 ## Exchange eligibility metadata (P05-M01-T001)
 
 The metadata source is only `GET https://fapi.binance.com/fapi/v1/exchangeInfo`.

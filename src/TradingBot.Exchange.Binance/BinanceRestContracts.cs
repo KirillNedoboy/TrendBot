@@ -478,12 +478,9 @@ public sealed record BinanceKline
     public BinanceKline(long openTimeMilliseconds, decimal open, decimal high,
         decimal low, decimal close, decimal volume, long closeTimeMilliseconds,
         decimal quoteAssetVolume, long tradeCount, decimal takerBuyBaseVolume,
-        decimal takerBuyQuoteVolume, string ignore, bool isClosed)
+        decimal takerBuyQuoteVolume, string ignore, string timeframe, bool isClosed)
     {
-        if (openTimeMilliseconds < 0 || closeTimeMilliseconds < openTimeMilliseconds)
-        {
-            throw new ArgumentOutOfRangeException(nameof(openTimeMilliseconds));
-        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(timeframe);
 
         OpenTimeMilliseconds = openTimeMilliseconds;
         Open = open;
@@ -497,6 +494,7 @@ public sealed record BinanceKline
         TakerBuyBaseVolume = takerBuyBaseVolume;
         TakerBuyQuoteVolume = takerBuyQuoteVolume;
         Ignore = ignore;
+        Timeframe = timeframe;
         IsClosed = isClosed;
     }
 
@@ -512,6 +510,7 @@ public sealed record BinanceKline
 
     public decimal Volume { get; }
 
+    /// <summary>Raw Binance inclusive close timestamp T in Unix milliseconds.</summary>
     public long CloseTimeMilliseconds { get; }
 
     public decimal QuoteAssetVolume { get; }
@@ -524,29 +523,16 @@ public sealed record BinanceKline
 
     public string Ignore { get; }
 
+    public string Timeframe { get; }
+
     public bool IsClosed { get; }
 
     public bool IsClosedAt(DateTimeOffset utcNow)
     {
         return CloseTimeMilliseconds <= utcNow.ToUnixTimeMilliseconds();
     }
-
-    public Bar ToCoreBar(InstrumentId instrumentId)
-    {
-        ArgumentNullException.ThrowIfNull(instrumentId);
-        if (!IsClosed)
-        {
-            throw new InvalidOperationException("An open kline cannot become a Core Bar.");
-        }
-
-        return new Bar($"bar:{instrumentId.Value}:{OpenTimeMilliseconds}", instrumentId,
-            new UtcTimestamp(BinanceTimestamp.ToUtc(CloseTimeMilliseconds)),
-            new UtcTimestamp(BinanceTimestamp.ToUtc(OpenTimeMilliseconds)),
-            new UtcTimestamp(BinanceTimestamp.ToUtc(CloseTimeMilliseconds)),
-            new Price(Open), new Price(High),
-            new Price(Low), new Price(Close), new Quantity(Volume));
-    }
 }
+
 
 public sealed record BinanceRecentTrade
 {

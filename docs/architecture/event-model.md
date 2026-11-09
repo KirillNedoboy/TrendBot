@@ -71,3 +71,14 @@ Bar close boundary, so unavailable events and not-yet-closed bars cannot enter.
 Receive time and optional exchange time remain metadata on delivered envelopes.
 A handler exception leaves that step uncommitted and prevents later deliveries;
 the runner returns diagnostics and no execution or authorization state.
+
+## Binance kline close boundary (P15-M03-T005)
+
+Binance USD-M klines preserve the wire inclusive close timestamp separately
+from their normalized interval boundary. For a valid native UTC interval,
+`EndExclusiveTime = OpenTime + duration`; the raw Binance inclusive `T` is
+`EndExclusiveTime - 1`. The adapter stamps both Core `Bar.EventTime` and
+`Bar.CloseTime` with `EndExclusiveTime`, so replay's existing inclusive
+`Bar.CloseTime` visibility check admits the finalized bar at that boundary,
+never at the prior millisecond. Venue-specific inclusive `T` is not substituted
+for the Core close boundary.

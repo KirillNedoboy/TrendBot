@@ -151,32 +151,87 @@ public sealed class BinanceRestClientTests
     }
 
     [Fact]
-    public async Task KlinesRetainRawTimesAndOnlyClosedKlinesBecomeCoreBars()
+    public async Task KlinesRetainRawTimesAndOnlyValidClosedKlinesBecomeCoreInputs()
     {
         FixtureHandler handler = new(_ => Json("""
             [
-              [1700000000000,"100.00000000000000000001","110","90","105.12345678901234567890","12.5",1700000059999,"1300",4,"6.25","650", "0"],
-              [1700000060000,"105","106","104","105.5","1",1700000119999,"105.5",1,"0.5","52.75", "0"]
+              [1700000100000,"100.00000000000000000001","110","90","105.12345678901234567890","12.5",1700000999999,"1300",4,"6.25","650", "0"],
+              [1700001000000,"105","106","104","105.5","1",1700001899999,"105.5",1,"0.5","52.75", "0"]
             ]
             """));
         BinancePublicRestClient client = CreateClient(handler,
-            new FixedTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(1700000100000)));
+            new FixedTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(1700001500000)));
 
-        IReadOnlyList<BinanceKline> klines = await client.GetKlinesAsync("BTCUSDT", "1m",
+        IReadOnlyList<BinanceKline> klines = await client.GetKlinesAsync("BTCUSDT", "15m",
             cancellationToken: TestContext.Current.CancellationToken);
-        IReadOnlyList<Bar> bars = await client.GetClosedBarsAsync("BTCUSDT", "1m",
-            cancellationToken: TestContext.Current.CancellationToken);
+        IReadOnlyList<BinanceKlineIngestionResult> results =
+            await client.GetKlineIngestionResultsAsync("BTCUSDT", "15m",
+                cancellationToken: TestContext.Current.CancellationToken);
+        BinanceKlineIngestionResult accepted = Assert.Single(results,
+            result => result.Status == BinanceKlineIngestionStatus.Accepted);
 
-        Assert.Equal(1700000000000L, klines[0].OpenTimeMilliseconds);
-        Assert.Equal(1700000059999L, klines[0].CloseTimeMilliseconds);
+        Assert.Equal(1700000100000L, klines[0].OpenTimeMilliseconds);
+        Assert.Equal(1700000999999L, klines[0].CloseTimeMilliseconds);
+        Assert.Equal("15m", klines[0].Timeframe);
         Assert.Equal(2, klines.Count);
         Assert.True(klines[0].IsClosed);
         Assert.False(klines[1].IsClosed);
-        Assert.Single(bars);
-        Assert.Equal(105.12345678901234567890m, bars[0].Close.Value);
-        Assert.Equal(new DateTimeOffset(2023, 11, 14, 22, 14, 19, 999, TimeSpan.Zero),
-            bars[0].CloseTime.Value);
+        Assert.Equal("15m", accepted.Identity.Timeframe);
+        Assert.Equal(105.12345678901234567890m, accepted.CoreBar!.Close.Value);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1700001000000),
+            accepted.EndExclusiveTime!.Value);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1700001000000),
+            accepted.CoreBar.CloseTime.Value);
+        Assert.Equal(BinanceKlineSourceKind.Rest,
+            Assert.Single(accepted.AcceptedRevision!.SourceMetadata).Kind);
+        Assert.Equal("GET /fapi/v1/klines",
+            accepted.AcceptedRevision.SourceMetadata[0].SourceId);
+        Assert.Contains(results, result => result.Diagnostic?.Code == "bar-not-closed");
     }
+    [Fact]
+    public async Task RestViewOfAcceptedWebSocketRevisionIsDeduplicatedAtIngestionBoundary()
+    {
+        const long openTime = 1700000100000;
+        const long inclusiveCloseTime = 1700000999999;
+        FixtureHandler handler = new(_ => Json("""
+            [[1700000100000,"100","110","90","105","12.5",1700000999999,"1300",4,"6.25","650","0"]]
+            """));
+        BinancePublicRestClient client = CreateClient(handler,
+            new FixedTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(1700001500000)));
+        BinanceKline websocketKline = new(openTime, 100m, 110m, 90m, 105m, 12.5m,
+            inclusiveCloseTime, 1300m, 4, 6.25m, 650m, "0", "15m", true);
+        BinanceKlineEvent websocketEvent = new("BTCUSDT", 1700000100123, websocketKline,
+            "btcusdt@kline_15m");
+        UtcTimestamp receiveTime = new(DateTimeOffset.FromUnixTimeMilliseconds(1700001000001));
+        UtcTimestamp availabilityTime =
+            new(DateTimeOffset.FromUnixTimeMilliseconds(1700001000002));
+        BinanceStreamEnvelope websocketEnvelope = new("fixture-session", 9, websocketEvent,
+            receiveTime, availabilityTime,
+            new UtcTimestamp(DateTimeOffset.FromUnixTimeMilliseconds(inclusiveCloseTime)), "{}");
+        BinanceKlineIngestionResult websocketAccepted =
+            websocketEnvelope.ToKlineIngestionResult()!;
+
+        IReadOnlyDictionary<BinanceKlineIdentity, BinanceKlineAcceptedRevision> acceptedRevisions =
+            new Dictionary<BinanceKlineIdentity, BinanceKlineAcceptedRevision>
+            {
+                [websocketAccepted.Identity] = websocketAccepted.AcceptedRevision!
+            };
+        IReadOnlyList<BinanceKlineIngestionResult> restResults =
+            await client.GetKlineIngestionResultsAsync("BTCUSDT", "15m",
+                acceptedRevisions: acceptedRevisions,
+                cancellationToken: TestContext.Current.CancellationToken);
+        BinanceKlineIngestionResult restDuplicate = Assert.Single(restResults);
+
+        Assert.Equal(BinanceKlineIngestionStatus.Duplicate, restDuplicate.Status);
+        Assert.Equal(websocketAccepted.RevisionHash, restDuplicate.RevisionHash);
+        Assert.Null(restDuplicate.CoreBar);
+        Assert.Equal(2, restDuplicate.AcceptedRevision!.SourceMetadata.Count);
+        Assert.Contains(restDuplicate.AcceptedRevision.SourceMetadata,
+            source => source.Kind == BinanceKlineSourceKind.Rest);
+        Assert.Contains(restDuplicate.AcceptedRevision.SourceMetadata,
+            source => source.Kind == BinanceKlineSourceKind.WebSocket);
+    }
+
 
     [Fact]
     public async Task RecentAndAggregateTradesMapBuyerMakerToSellAndPreservePrecision()

@@ -286,10 +286,9 @@ public sealed record BinanceKlineEvent : BinanceWebSocketEvent
 {
     public BinanceKlineEvent(string symbol, long eventTimeMilliseconds, BinanceKline kline,
         string streamName)
-        : base(BinanceWebSocketEventKind.Kline, $"kline:{symbol}:{kline.OpenTimeMilliseconds}",
-            symbol, eventTimeMilliseconds, streamName, kline.CloseTimeMilliseconds)
+        : base(BinanceWebSocketEventKind.Kline, BuildEventId(symbol, kline), symbol,
+            eventTimeMilliseconds, streamName, kline.CloseTimeMilliseconds)
     {
-        ArgumentNullException.ThrowIfNull(kline);
         Kline = kline;
     }
 
@@ -297,9 +296,23 @@ public sealed record BinanceKlineEvent : BinanceWebSocketEvent
 
     public bool IsClosed => Kline.IsClosed;
 
-    public override Bar? ToCoreEvent()
+    public BinanceKlineIngestionResult ToIngestionResult(
+        BinanceKlineSourceMetadata? sourceMetadata = null,
+        BinanceKlineAcceptedRevision? acceptedRevision = null)
     {
-        return IsClosed ? Kline.ToCoreBar(new InstrumentId(Symbol)) : null;
+        sourceMetadata ??= new BinanceKlineSourceMetadata(BinanceKlineSourceKind.WebSocket,
+            StreamName, EventTimeMilliseconds, null, null, null);
+        return BinanceKlineIngestionBoundary.Evaluate(Symbol, Kline, sourceMetadata,
+            acceptedRevision);
+    }
+
+    public override Bar? ToCoreEvent() => IsClosed ? ToIngestionResult().CoreBar : null;
+
+    private static string BuildEventId(string symbol, BinanceKline kline)
+    {
+        ArgumentNullException.ThrowIfNull(kline);
+        return BinanceKlineIdentity.Create(symbol, kline.Timeframe,
+            kline.OpenTimeMilliseconds).EventId;
     }
 }
 
@@ -538,6 +551,20 @@ public sealed record BinanceStreamEnvelope
     public string RawJson { get; }
 
     public MarketEvent? ToCoreEvent() => Payload.ToCoreEvent();
+    public BinanceKlineIngestionResult? ToKlineIngestionResult(
+        BinanceKlineAcceptedRevision? acceptedRevision = null)
+    {
+        if (Payload is not BinanceKlineEvent klineEvent)
+        {
+            return null;
+        }
+
+        BinanceKlineSourceMetadata sourceMetadata = new(BinanceKlineSourceKind.WebSocket,
+            klineEvent.StreamName, klineEvent.EventTimeMilliseconds, ReceiveTime,
+            AvailabilityTime, StableSequence);
+        return klineEvent.ToIngestionResult(sourceMetadata, acceptedRevision);
+    }
+
 
     public CausalMarketEvent? ToCoreCausalEvent()
     {

@@ -68,11 +68,12 @@ public sealed class BinanceWebSocketClientTests
     [Fact]
     public async Task KlineUpdatesShareIdentityWithoutConflictAndOnlyClosedUpdateMapsToBar()
     {
+        const long openTime = 1700000100000;
         FakeTransport transport = new(
             [
-                Text(Kline(1700000000000, "100", "101", "99", "100.5", false, 1700000000123)),
-                Text(Kline(1700000000000, "100", "102", "98", "101.5", false, 1700000000223)),
-                Text(Kline(1700000000000, "100", "102", "98", "101.5", true, 1700000000323)),
+                Text(Kline(openTime, "100", "101", "99", "100.5", false, 1700000100123)),
+                Text(Kline(openTime, "100", "102", "98", "101.5", false, 1700000100223)),
+                Text(Kline(openTime, "100", "102", "98", "101.5", true, 1700000100323)),
                 Close()
             ]);
         BinanceMarketWebSocketClient client = CreateClient(transport,
@@ -85,7 +86,7 @@ public sealed class BinanceWebSocketClientTests
             });
 
         List<BinanceStreamEnvelope> events = await ReadAsync(client,
-            [BinanceSubscription.Kline("BTCUSDT", "1m")]);
+            [BinanceSubscription.Kline("BTCUSDT", "15m")]);
 
         Assert.Equal(3, events.Count);
         Assert.DoesNotContain(client.Diagnostics,
@@ -94,6 +95,52 @@ public sealed class BinanceWebSocketClientTests
         Assert.Null(events[1].ToCoreEvent());
         Bar closed = Assert.IsType<Bar>(events[2].ToCoreEvent());
         Assert.Equal(101.5m, closed.Close.Value);
+    }
+
+    [Fact]
+    public async Task SameOpenInDifferentKlineStreamsRemainsDistinctWithSourceMetadata()
+    {
+        const long openTime = 0;
+        const long exchangeEventTime = 1700000100123;
+        FakeTransport transport = new(
+            [
+                Text(Kline(openTime, "100", "101", "99", "100.5", true,
+                    exchangeEventTime, "15m")),
+                Text(Kline(openTime, "100", "102", "98", "101.5", true,
+                    exchangeEventTime, "1h")),
+                Close()
+            ]);
+        BinanceMarketWebSocketClient client = CreateClient(transport,
+            new BinanceWebSocketOptions
+            {
+                AutoReconnect = false,
+                ReceiveTimeout = Timeout.InfiniteTimeSpan,
+                HeartbeatInterval = Timeout.InfiniteTimeSpan,
+                SessionLifetime = Timeout.InfiniteTimeSpan
+            });
+
+        List<BinanceStreamEnvelope> events = await ReadAsync(client,
+            [BinanceSubscription.Kline("BTCUSDT", "15m"),
+                BinanceSubscription.Kline("BTCUSDT", "1h")]);
+        BinanceKlineIngestionResult fifteenMinute =
+            events[0].ToKlineIngestionResult()!;
+        BinanceKlineIngestionResult oneHour = events[1].ToKlineIngestionResult()!;
+
+        Assert.Equal(2, events.Count);
+        Assert.DoesNotContain(client.Diagnostics,
+            diagnostic => diagnostic.Kind is BinanceStreamDiagnosticKind.Duplicate
+                or BinanceStreamDiagnosticKind.IdentityConflict);
+        Assert.Equal(BinanceKlineIngestionStatus.Accepted, fifteenMinute.Status);
+        Assert.Equal(BinanceKlineIngestionStatus.Accepted, oneHour.Status);
+        Assert.NotEqual(fifteenMinute.Identity, oneHour.Identity);
+        Assert.NotEqual(fifteenMinute.CoreBar!.EventId, oneHour.CoreBar!.EventId);
+        Assert.Equal("15m", fifteenMinute.Identity.Timeframe);
+        Assert.Equal("1h", oneHour.Identity.Timeframe);
+        Assert.Equal(BinanceKlineSourceKind.WebSocket, fifteenMinute.SourceMetadata.Kind);
+        Assert.Equal("btcusdt@kline_15m", fifteenMinute.SourceMetadata.SourceId);
+        Assert.Equal(exchangeEventTime, fifteenMinute.SourceMetadata.ExchangeEventTimeMilliseconds);
+        Assert.Equal(events[0].ReceiveTime, fifteenMinute.SourceMetadata.ReceiveTime);
+        Assert.Equal(events[0].StableSequence, fifteenMinute.SourceMetadata.StableSequence);
     }
 
     [Fact]
@@ -286,10 +333,16 @@ public sealed class BinanceWebSocketClientTests
     }
 
     private static string Kline(long openTime, string open, string high, string low,
-        string close, bool isClosed, long eventTime)
+        string close, bool isClosed, long eventTime, string interval = "15m")
     {
-        long closeTime = openTime + 59999;
-        return $"{{\"e\":\"kline\",\"E\":{eventTime},\"s\":\"BTCUSDT\",\"k\":{{\"t\":{openTime},\"T\":{closeTime},\"s\":\"BTCUSDT\",\"i\":\"1m\",\"f\":1,\"L\":2,\"o\":\"{open}\",\"c\":\"{close}\",\"h\":\"{high}\",\"l\":\"{low}\",\"v\":\"1\",\"n\":2,\"x\":{isClosed.ToString().ToLowerInvariant()},\"q\":\"100\",\"V\":\"0.5\",\"Q\":\"50\",\"B\":\"0\"}}}}";
+        long durationMilliseconds = interval switch
+        {
+            "15m" => 900_000,
+            "1h" => 3_600_000,
+            _ => throw new ArgumentOutOfRangeException(nameof(interval), interval, null)
+        };
+        long closeTime = checked(openTime + durationMilliseconds - 1);
+        return $"{{\"e\":\"kline\",\"E\":{eventTime},\"s\":\"BTCUSDT\",\"k\":{{\"t\":{openTime},\"T\":{closeTime},\"s\":\"BTCUSDT\",\"i\":\"{interval}\",\"f\":1,\"L\":2,\"o\":\"{open}\",\"c\":\"{close}\",\"h\":\"{high}\",\"l\":\"{low}\",\"v\":\"1\",\"n\":2,\"x\":{isClosed.ToString().ToLowerInvariant()},\"q\":\"100\",\"V\":\"0.5\",\"Q\":\"50\",\"B\":\"0\"}}}}";
     }
 
     private sealed class FakeTransport : IBinanceWebSocketTransport
