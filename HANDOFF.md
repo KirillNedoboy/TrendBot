@@ -1,10 +1,279 @@
 # Current checkpoint
 
-- Phase: 16 — Paper/Test Environment
-- Milestone: P16-M02 — Exchange test environment
-- Current task: P16-M02-T003 (DONE; separate exchange-test evidence GREEN)
-- Next task: P17-M01-T001 remains BLOCKED by the explicit no-P17 instruction; do
-  not start the next phase.
+## P15-M03-T002 (SR-01.2) — DONE (2026-11-09)
+
+- **Scope/authorization:** P15-M03-T001 is DONE. User explicitly authorized only P15-M03-T002; P15-M03-T003 and all other tasks were not started. T003 remains BLOCKED pending separate SR-01.3 implementation authorization.
+- **Deliverable:** Added immutable BCL-only public signal contracts in `src/TradingBot.Core/SignalContracts.cs`: logical `SignalId` excludes mutable evidence/card content; evidence provenance has public 15m/1h inputs, payload hashes, event/availability times, stable sequence, and decision/HTF cuts; evidence and signal records have independent content hashes; a delivery receipt binds to exact `SignalId`/`SignalRecordHash`; an outcome additionally binds `EvidenceRecordHash`. Unknown evidence needs reasons; `ConfirmedOnClosedBar` requires complete evidence and does not mean validation or order authority. Optional probability/calibration remain both null; strict schema rejects unknown fields. No I/O, secrets, persistence, or trading effects.
+- **Design:** [versioned signal contracts](docs/architecture/signal-contracts.md); plan: [SR-01.2](docs/EXECUTION_PLAN.md#sr-01-contracts-and-public-only-profile).
+- **Tests/build:** `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~SignalContractsTests'` — PASS, 6/6. `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore'` — PASS, 321/321. `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" build src/TradingBot.Core/TradingBot.Core.csproj -c Release --no-restore --warnaserror'` — PASS, 0 warnings/errors. `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" format src/TradingBot.Core/TradingBot.Core.csproj whitespace --include src/TradingBot.Core/SignalContracts.cs --verify-no-changes --no-restore; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "$env:USERPROFILE\.dotnet\dotnet.exe" format tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj whitespace --include tests/TradingBot.Core.Tests/SignalContractsTests.cs --verify-no-changes --no-restore'` — PASS.
+- **PowerShell smoke:** `pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'` → `7.6.9`. Command:
+
+```powershell
+pwsh -NoProfile -Command '$ErrorActionPreference = "Stop"; Add-Type -Path "src/TradingBot.Core/bin/Release/net10.0/TradingBot.Core.dll"; $open = [TradingBot.Core.UtcTimestamp]::new([DateTimeOffset]::Parse("2026-11-09T00:00:00Z")); $close = [TradingBot.Core.UtcTimestamp]::new([DateTimeOffset]::Parse("2026-11-09T00:15:00Z")); $htfClose = $open; $identity = [TradingBot.Core.SignalIdentity]::Create([TradingBot.Core.InstrumentId]::new("BTCUSDT"), "BINANCE_USDM", "15m", [TradingBot.Core.Direction]::Long, [TradingBot.Core.SetupType]::BoundaryRejection, "profile-v1", "boundary-rejection-v1", "setup-event"); $setupRef = [TradingBot.Core.SignalInputReference]::new("binance-public", "native-kline-v1", "setup-event", ("c" * 64), [TradingBot.Core.SignalInputRole]::Setup, "15m", $close, $close, 20); $contextRef = [TradingBot.Core.SignalInputReference]::new("binance-public", "native-kline-v1", "context-event", ("d" * 64), [TradingBot.Core.SignalInputRole]::HigherTimeframe, "1h", $htfClose, $htfClose, 10); $decisionCut = [TradingBot.Core.CausalEventCursor]::new($close, 20); $htfCut = [TradingBot.Core.CausalEventCursor]::new($htfClose, 10); $provenance = [TradingBot.Core.SignalProvenance]::Create("profile-v1", ("a" * 64), $decisionCut, $htfCut, [TradingBot.Core.SignalInputReference[]]@($setupRef, $contextRef)); $evidence = [TradingBot.Core.SignalEvidenceRecord]::Create($identity, $provenance, [TradingBot.Core.SignalEvidenceState]::Complete, [string[]]@("quality-reviewed")); $interval = [TradingBot.Core.SignalBarInterval]::new($open, $close); $reference = [TradingBot.Core.SignalReferencePrice]::new("binance-public", "native-kline-v1", "setup-event", $close, [TradingBot.Core.Price]::new([decimal]100)); $signal = [TradingBot.Core.SignalRecord]::Create($identity, $evidence, [TradingBot.Core.SignalAssessmentState]::ConfirmedOnClosedBar, $interval, $close, $reference); $json = [TradingBot.Core.CoreJsonSerializer]::Serialize[TradingBot.Core.SignalRecord]($signal); $restored = [TradingBot.Core.CoreJsonSerializer]::Deserialize[TradingBot.Core.SignalRecord]($json); if ($restored.RecordHash -cne $signal.RecordHash -or $restored.Identity.SignalId -cne $identity.SignalId -or $restored.Probability -ne $null) { throw "signal smoke round-trip mismatch" }; $restored.ValidateEvidence($evidence); Write-Output ("smoke=PASS;assessment={0};signalId={1};recordHash={2};probability={3}" -f $restored.AssessmentState, $restored.Identity.SignalId, $restored.RecordHash, $restored.Probability)'
+```
+
+- **Smoke result:** `smoke=PASS;assessment=ConfirmedOnClosedBar;signalId=af42f525ee15a1bdab8c357897f5a3e25132e109d174d7ec4ff867d4ddb3256c;recordHash=c46e664585e061f636a1102e9d32dea55a261f4c7c4861592750b1cdbcab333e;probability=`.
+- **Docs/hash:** `pwsh -NoProfile -File tools/validate-docs.ps1` — PASS: `phases=19; milestones=43; tasks=152; ready=none (explicit unresolved blocker)`. `pwsh -NoProfile -Command '(Get-FileHash docs/sources/FINAL_TECH_SPEC.md -Algorithm SHA256).Hash'` → `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`; canonical source unchanged. The final validator run occurred after task-status and blocker updates.
+- **Scope:** No runtime/trading/P17/canonical-source changes. P15-M03-T002 is DONE; P15-M03-T003 remains BLOCKED with its explicit separate-authorization blocker. No other task statuses changed.
+- **Next:** Separately authorize P15-M03-T003 (SR-01.3). No T003 implementation started.
+
+
+## Previous checkpoint: P15-M03-T001 (SR-01.1) — DONE (2026-11-09)
+
+- **Scope/authorization:** P01-M03-T002 and P07-M02-T002 were DONE. User explicitly authorized only P15-M03-T001. It is DONE; P15-M03-T002 remains BLOCKED and was not started.
+- **Deliverable:** Added a BCL-only, immutable, format-1 Core configuration for public native Binance USD-M 15m setup and 1h context. Source, profile/formula versions, history/seed/warmup/freshness, indicator periods/methods/units, and point-in-time universe bounds are explicit. Unset strategy values remain null and produce stable `UnknownConfiguration` reasons; no parameter values or defaults were invented. `CoreJsonSerializer` rejects unsupported timeframes/units and unknown fields, including private/activation/quantity/leverage/portfolio fields, without reading secrets.
+- **Design:** [public profile contract](docs/architecture/public-signal-profile.md); SR-01.1 plan record in [EXECUTION_PLAN](docs/EXECUTION_PLAN.md#sr-01-contracts-and-public-only-profile). Format version `1` is a schema version only. No complete profile is declared; configuration readiness is not runtime, statistical, or trading readiness.
+- **Tests/build:** `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore'` — PASS, 315/315. `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" build src/TradingBot.Core/TradingBot.Core.csproj -c Release --no-restore --warnaserror'` — PASS, 0 warnings/errors. Scoped `dotnet format ... whitespace --verify-no-changes --no-restore` passed for the new Core and Core.Tests files; the exact commands are recorded below.
+- **Smoke:** `pwsh -NoProfile -Command 'Add-Type -Path "src/TradingBot.Core/bin/Release/net10.0/TradingBot.Core.dll"; $p = [TradingBot.Core.PublicSignalProfileConfiguration]::Missing; Write-Output ("state={0};ready={1};profileUnknown={2}" -f $p.State.ToString(), $p.IsReady, (@($p.UnknownReasons) -contains "profile-version-unknown"))'` → `state=UnknownConfiguration;ready=False;profileUnknown=True`.
+- **Docs/hash:** `pwsh -NoProfile -File tools/validate-docs.ps1` — PASS: `phases=19; milestones=43; tasks=152; ready=none (explicit unresolved blocker)`. `Get-FileHash docs/sources/FINAL_TECH_SPEC.md -Algorithm SHA256` → `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`; canonical source unchanged.
+- **Graph correction:** After P15-M03-T001 became DONE, the validator correctly rejected P15-M03-T002 as BLOCKED only by its completed dependency. Kept P15-M03-T002 status BLOCKED and changed only its blocker text to require separate SR-01.2 authorization; no SR-01.2 work or other task-status changes. Re-running the validator passed.
+- **Next at that checkpoint:** Separately authorize P15-M03-T002 (SR-01.2); this was fulfilled by the subsequent user request recorded above. No trading, runtime integration, P17 changes, or canonical-source edits.
+
+### Exact scoped format checks
+
+- `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" format src/TradingBot.Core/TradingBot.Core.csproj whitespace --include src/TradingBot.Core/PublicSignalProfileContracts.cs --verify-no-changes --no-restore'` — PASS.
+- `pwsh -NoProfile -Command '& "$env:USERPROFILE\.dotnet\dotnet.exe" format tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj whitespace --include tests/TradingBot.Core.Tests/PublicSignalProfileConfigurationTests.cs --verify-no-changes --no-restore'` — PASS.
+
+## Previous checkpoint: GOV-01.1 / GOV-01.2 — docs gate and formal registration (2026-11-09)
+
+**На предыдущем GOV checkpoint результат: GOV-01 закрыта; формальная регистрация завершена, implementation/activation approval ещё не выдана.** Для GOV-задач изменены fixture harness и planning docs: `tools/tests/validate-docs.Tests.ps1`, `docs/PROJECT_SPEC.md`, `docs/EXECUTION_PLAN.md`, `docs/TASKS.md`, `docs/research/SIGNAL_ONLY_IMPLEMENTATION_ROADMAP.md`, `HANDOFF.md`. Runtime, canonical source, торговое поведение, прежние task rows/evidence/statuses и P17 blockers не менялись.
+
+
+- Startup selector: `ready=none (explicit unresolved blocker)`. GOV-01.1 and GOV-01.2 are formal DONE tasks; the registered signal branch has no READY task because SR-01.1 remains explicitly BLOCKED pending separate implementation authorization.
+- Acquired official `Microsoft.PowerShell` 7.6.9.0 with `winget`; package hash verification succeeded (`da75c8aa23edda52e888fb586a46b923ab37a7c243719c2e8914b00130c5917a`). `pwsh --version` and `$PSVersionTable.PSVersion` both report `7.6.9`.
+- Native fixture command `pwsh -NoProfile -File tools/tests/validate-docs.Tests.ps1`: PASS, all 11 cases; final output: `All validator fixture cases passed.`
+- Native validator command `pwsh -NoProfile -File tools/validate-docs.ps1`: exit 0, `docs validation passed: phases=19; milestones=43; tasks=152; ready=none (explicit unresolved blocker)`. Canonical source hash passed.
+- At the GOV checkpoint, GOV-01.1 and GOV-01.2 passed on the registered graph. Mapping audit: 33 unique work IDs → 33 unique formal IDs. The 119 pre-existing rows remained alongside two DONE GOV tasks and 31 BLOCKED SR tasks; no Phase 19 or implementation READY was added. The next step then was separate implementation authorization for P15-M03-T001 (SR-01.1). No SR implementation or trading started under GOV authorization.
+
+
+## Detailed signal-only planning follow-up at the prior GOV checkpoint
+
+
+### Where to read the plan
+
+- [EXECUTION_PLAN: brainstorming, quality gates и 33 полные карточки](docs/EXECUTION_PLAN.md#signal-only-detailed-work-plan): у каждой задачи есть результат, acceptance, конкретные проверки/smoke и ссылки на A/B/P, repo architecture/code и применимые primary API sources.
+- [TASKS: formal backlog and one-to-one mapping](docs/TASKS.md#signal-only-work-item-mapping): 33 work IDs map exactly once; formal rows are the only status/dependency/evidence source.
+- [A: research plan, §§1–7](additional-strategy-research-plan.md#L5-L122) фиксирует public 15m/closed 1h baseline; [B: S1–S6/TF/timing/future architecture](%D0%BC%D0%BE%D0%B8%20%D0%BF%D1%80%D0%B5%D0%B4%D0%BB%D0%BE%D0%B6%D0%B5%D0%BD%D0%B8%D1%8F..txt#L13-L210) — hypotheses; [P: Prizrak ZIP](Prizrak_v2.1.zip) и [Pine audit](docs/research/PRIZRAK_V21_ALGORITHM_AUDIT.md) — изучаемый алгоритм, не инструкция торговли. Литература A §9 используется как ранее проверенный source register, не новое заявление о полном чтении книг.
+
+### Selected work sequence
+
+Выбран разрез по проверяемому результату/границе отказа, а не восемь мегазадач или module-first framework. Девять групп, включая governance; SR-08 стоит перед optional SR-07 в каталоге. Зависимости отдельных work items указаны в TASKS; одно завершённое отрицательное исследование не требует прибыльного результата для перехода к следующей гипотезе.
+
+| Группа / work IDs | Осязаемый выход / подробности |
+|---|---|
+| GOV-01.1–01.2 | [Behavioral docs fixtures, native PowerShell 7, formal registration](docs/EXECUTION_PLAN.md#gov-01-tooling-and-registration) — completed and verified. |
+| SR-01.1–01.3 | [Public profile, signal schema, scenario/expiry/rearm](docs/EXECUTION_PLAN.md#sr-01-contracts-and-public-only-profile); unknown не Ready. |
+| SR-02.1–02.5 | [Replay close-bound fix, TF identity, feed, intake/recovery, real coverage](docs/EXECUTION_PLAN.md#sr-02-causal-public-data-and-coverage). |
+| SR-03.1–03.3 | [Reuse existing setups, atomic signal store, отдельный CLI/root](docs/EXECUTION_PLAN.md#sr-03-existing-setups-and-durable-signals), без risk/order path. |
+| SR-04.1–04.3 | [JSON/console, durable Telegram outbox, actual delivery proof](docs/EXECUTION_PLAN.md#sr-04-local-output-and-telegram-delivery). |
+| SR-05.1–05.3 | [Frozen signal-study manifest, independent outcomes, opportunity report](docs/EXECUTION_PLAN.md#sr-05-frozen-signal-evaluation-and-outcomes), независимо от SR-04 после SR-03. |
+| SR-06.1–06.2 | [Declared bounded run и actual prospective/restart/replay evidence](docs/EXECUTION_PLAN.md#sr-06-bounded-prospective-runtime), после SR-04/SR-05. |
+| SR-08.1–08.2 | [Baseline E2E/checks и operator runbook/handoff](docs/EXECUTION_PLAN.md#sr-08-final-baseline-acceptance), без зависимости от SR-07. |
+| SR-07.1–07.10 | [Optional controls/R1/R2/three Flow waves/timing/TF/OB-POC/B-C/S6/ML studies](docs/EXECUTION_PLAN.md#sr-07-optional-registered-research), каждая с собственным manifest/H0/reject criteria. |
+
+### Governance and next action
+
+- At the prior GOV checkpoint, the graph had 19 phases, 43 milestones, and 152 tasks; 110 DONE, 42 BLOCKED, 0 READY. The original 119 task IDs/statuses/evidence remained alongside two DONE GOV tasks and 31 BLOCKED SR tasks. The selector result was `ready=none (explicit unresolved blocker)`; P17 was not selected or altered.
+- **At that checkpoint:** startup selected no task. P15-M03-T001 was BLOCKED pending separate implementation authorization; it is now DONE as recorded above. Unknown profile values remain unknown; no parameters or thresholds were inferred, and no SR implementation or trading began under GOV authorization.
+- The formal task rows are the sole authoritative status/dependency/evidence source; the planning index only maps work IDs to formal IDs. SR-08 rows P15-M03-T020/T021 precede optional SR-07 rows P15-M03-T022–T031; SR-07 is not a baseline dependency.
+- Остающиеся prerequisite decisions: полный required signal profile до Ready/public run; test destination/provisioning до external Telegram proof; PIT dataset/labels/estimand/precision/cost-latency до statistical study; bounded duration/resources/health до SR-06. Ничего из этого не заполнять оптимальными числами без evidence. Секреты сейчас не запрашиваются.
+- Не нужны для baseline: private credentials/reconciliation, risk/portfolio authorization, paper/demo/testnet orders, 30m/1h setup studies, Flow/OB/POC/Lane B/C/ML. Не делать shadow gate cutover, clone S1/S4 evaluator или automatic V1 refactor. Canonical 5m source сохраняется; approved 15m amendment имеет оговорённый scope.
+- Earlier missing-PowerShell/stale-fixture observations are historical and superseded by the native PowerShell 7 checks above. No .NET, signal-runtime, Telegram-send, or trading study was run for GOV-01.2; runtime and trading behavior remain unchanged.
+
+### Verification of registered planning graph
+
+- **PASS:** `pwsh -NoProfile -File tools/tests/validate-docs.Tests.ps1` exited 0 and passed all 11 cases: baseline, CRLF `.gitignore`, duplicate IDs, unknown requirement reference, uncovered requirement, dependency cycle, invalid status, multiple READY, explainable zero READY, unexplained zero READY, next-task transition.
+- **PASS:** `pwsh -NoProfile -File tools/validate-docs.ps1` exited 0 with `phases=19; milestones=43; tasks=152; ready=none (explicit unresolved blocker)`. This validates the existing 00–18 phase graph, task references, status/dependency/cycle rules, and requirement coverage.
+- **PASS:** 33 unique work IDs map to 33 unique formal IDs; 152 formal rows comprise 110 DONE and 42 BLOCKED. The original 119 task IDs/statuses/evidence and Phase 17 blockers remain unchanged. SR-08 precedes SR-07; no optional SR-07 dependency enters baseline SR-08.
+- **PASS:** canonical `docs/sources/FINAL_TECH_SPEC.md` SHA-256 is `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`, matching the validator's immutable-source check. Runtime/trading were not changed.
+
+## Architecture/research audit — 2026-11-09
+
+- Scope: read-only code/research audit and planning documents only. Preserve the
+  approved 15m primary / initial 1h public signal profile, canonical source,
+  all existing task rows/statuses, P17 hold, runtime preparation, and `graft/`.
+  No trading, private transport, Telegram send, deployment, commit, or push.
+- Deliverables: [architecture review](docs/research/TRENDBOT_FINAL_ARCHITECTURE_REVIEW.md),
+  [Pine audit](docs/research/PRIZRAK_V21_ALGORITHM_AUDIT.md),
+  [research decisions](docs/research/STRATEGY_RESEARCH_DECISIONS.md), and
+  [signal-only roadmap](docs/research/SIGNAL_ONLY_IMPLEMENTATION_ROADMAP.md).
+  All three available materials were read completely; the research plan and ZIP
+  have unsuffixed local names, so identity to the requested numbered filenames
+  is not assumed. Source hashes and read-only Pine extraction are recorded there.
+- Git preflight: local HEAD, origin/main, and public main matched
+  `76ea2bac6a8f1baf25783fe9a0923fd47af03179`; dirty planning edits and untracked
+  C# preparation predated this audit. The current graph has 108 DONE, 11 BLOCKED,
+  and no READY tasks. No existing task transition was made.
+- Verification: installed SDK 10.0.401 matches global.json; locked restore and
+  full Release warnings-as-errors build passed (zero warnings/errors); all five
+  existing test assemblies passed, 710/710 with no skips. Actual default App
+  and DataTool invocations printed their scaffold status.
+- Separate throwaway public/local smoke reproduced pre-close Bar leakage in
+  both replay prefixes and colliding Core IDs for 15m/1h bars with the same
+  opening time. Unknown passive configuration stayed UnknownConfiguration;
+  SQLite event-journal reopen/retry preserved one identical envelope. Native
+  public REST returned three closed grid-valid bars for each TF; this is not
+  prospective runtime, Telegram delivery, a frozen dataset, or edge evidence.
+- Pre-existing failures remain: full format verification reports LF/charset in
+  untracked LaneASignalEvaluator.cs. `pwsh` is unavailable; the unchanged docs
+  validator body passed through an explicitly labelled UTF-8 Windows PowerShell
+  5.1 invocation, while compatibility fixture execution passed seven cases and
+  then failed on the stale P17-M01-T002 evidence marker. Native PowerShell 7
+  fixture validation is not claimed. Repository tooling scripts were not edited.
+- Registration: the roadmap supplies a complete, non-applied requirement/task
+  diff and independent signal branch. The fixture harness also hardcodes the
+  old task/milestone counts. Repair it in a separately authorized tooling task;
+  do not rewrite P17 blockers to satisfy wording tests, weaken trade gates, or
+  start SR implementation in this audit. 30m/1h setup TF, three Flow waves,
+  R1/R2, OB/POC, Lane B/C, routing and ML remain separate candidate studies.
+- Final audit evidence: current standalone validator passed again via the labelled
+  PS5 invocation; the final compatibility fixture run still stopped after seven
+  PASS cases on the pre-existing marker. Both native `pwsh` commands are unavailable.
+  `git diff --check` found no whitespace errors (only LF-to-CRLF warnings);
+  separate new-file checks found no report whitespace errors. Local report links
+  and table column counts passed. All 119 historical task rows are identical;
+  all 285 captured runtime/tooling hashes, canonical SHA-256, original attachments,
+  and the pre-existing execution-model edits remain unchanged.
+- The non-applied registration diff passed `git apply --check`; the unchanged
+  standalone validator body on a temporary proposal returned 19 phases,
+  43 milestones, 128 tasks, and no READY. This is not a fixture-suite success or
+  an applied task transition. Audit-owned temporary smoke/graph-fixture trees
+  were removed; the read-only Pine extraction and original attachments remain.
+- Next: authorize documentation-validator fixture maintenance, obtain a usable
+  PowerShell 7 invocation, then revalidate and register the independent signal
+  branch through the normal startup protocol. Do not resume P17.
+
+## Current user direction — 2026-11-06
+
+- The current request revises planning: **15-minute primary signals, without
+  opening orders**. It does not authorize continuation or activation of Phase 17,
+  nor code changes or a service run in this pass. The Phase 17 checkpoint below
+  remains historical/current blocker evidence, not the next action for this request.
+- Updated [additional-strategy-research-plan.md](additional-strategy-research-plan.md):
+  public closed 15-minute bars, initial 1-hour context, SETUP-01/02, durable
+  explainable signals, JSON/console and output-only Telegram, separate observed
+  outcomes, and independent software-quality/OOS conclusions. Optional Lane B/C,
+  MA baseline, and new setup families cannot delay the baseline signal product.
+- Signal-only implementation must have its own registered task branch before
+  code changes. Proposed SR-01–SR-08 do not change existing task IDs/statuses or
+  waive gates. Private reconciliation, trading limits, local paper, exchange-test,
+  and limited-live approval are not signal-only prerequisites. No private executor,
+  order intent, reservation, position, production/test/demo order is in scope.
+- Literature was reread by the specific sections recorded in the plan, not in
+  full. The Ultimate MA ZIP contains an MT4 `.ex4`, generic installation material,
+  no source formula, and a link whose search record identifies an MT5 product.
+  Binary identity, formula, licensing for code reuse, and repaint behaviour remain
+  unverified. It was not executed and is excluded from the critical path.
+- Approved scope is mirrored in PROJECT_SPEC/EXECUTION_PLAN/TASKS. Canonical source,
+  existing C# preparation, task statuses, and unrelated edits are preserved.
+- Verification: the unchanged docs validator passed with `phases=19`,
+  `milestones=41`, `tasks=119`, and `ready=none (explicit unresolved blocker)`;
+  its built-in canonical-source SHA-256 check passed. All 19 unique local
+  Markdown targets in the revised plan exist, and scope notices in the four
+  companion documents agree. `pwsh` was not on PATH; direct Windows PowerShell
+  execution failed on UTF-8 decoding, then the unchanged validator body passed
+  via stdin with explicit UTF-8 input and Get-Content encoding. No .NET checks,
+  signal runtime, Telegram delivery, or trading-quality evidence is claimed.
+
+## Retained execution checkpoint
+
+- Phase: 17 — Limited Live
+- Milestone: P17-M01 — Constrained live gate
+- Current task: P17-M01-T001 (BLOCKED after configuration implementation; approval/evidence missing)
+- Authorization: the user authorized development and checks for P17-M01-T001 → T002 → T003 in dependency order. This does not waive any gate, approve parameters, or authorize P17-M02.
+- Next task: P17-M01-T001 remains blocked pending explicit approval of the exact parameters, verified preceding-gate evidence, and a canonical accepted `PromotionReviewRecord` bound to that evidence.
+
+## P17-M01 checkpoint review — 2026-11-05
+
+- Rechecked the repository for new seed/limit approvals, frozen OOS and
+  reconciliation evidence, operational shadow, separate local-paper evidence,
+  externally verified Binance exchange-test evidence, and canonical approval
+  artifacts. None was found. This repository review cannot establish whether
+  evidence exists outside the workspace.
+- T001 remains BLOCKED. Resume it only when the real evidence from each required
+  lane is available and a canonical accepted `PromotionReviewRecord` plus
+  `LimitedLiveParameterApproval` binds that evidence to the exact seed/limits,
+  configuration identity, and review.
+- T002 remains BLOCKED until T001 is DONE; complete and verify guardrails and
+  rollback after that transition. T003 remains BLOCKED until T002 is DONE;
+  collect operational gate evidence after that transition. Do not start P17-M02.
+- Existing uncommitted P17 code and architecture edits are preserved. They are
+  preparation only and do not count as approval or gate evidence. No parameters
+  were invented; no orders or activation were run.
+
+## P17-M01-T001 configuration evidence
+
+- The current authorization covers T001 → T002 → T003 in dependency order. It
+  does not waive acceptance gates, approve any parameter, or authorize P17-M02;
+  the older T001-only wording below records the earlier implementation pass.
+
+- Startup: `main` was clean; SDK `10.0.401` matched `global.json`; locked restore
+  and the docs validator passed; P16-M02-T003 was DONE. The user explicitly
+  authorized T001 only. T001 moved BLOCKED → READY → IN_PROGRESS before work.
+- Evidence review: the canonical source contains historical candidate seeds,
+  not an approval record. Existing local shadow/paper/exchange-test fixtures are
+  synthetic; external Binance test-environment evidence and an explicit
+  limited-live parameter approval are absent. No numeric seed or risk limit was
+  added.
+- TDD RED: the initial focused runtime profile discovered two tests and both
+  failed at runtime with `NotImplementedException` from the new configuration
+  shell. The approval-binding correction then discovered four tests with one
+  runtime `NotImplementedException` for the missing parameter-approval record.
+  GREEN: `LimitedLiveConfigurationTests` passed 4/4, covering nullable unknown
+  parameters, blocker reporting, strict JSON rejection, canonical approval
+  round-trip, and exact parameter/review/configuration binding.
+- Acceptance: `PromotionReviewRecordTests` 10/10,
+  `ExchangeTestConfigurationTests` 17/17, and
+  `ActivationSeparationEvidenceTests` 4/4 passed. App Release build passed with
+  warnings-as-errors; scoped format passed after repository BOM/CRLF formatting.
+- Outcome: the inert App contract retains caller-supplied decimal parameters,
+  evidence IDs, and strict versioned JSON with explicit-path loading. Caller
+  supplied approval strings remain unverified blockers. A resolved approval can
+  only be bound through a canonical accepted `PromotionReviewRecord` with
+  provided non-synthetic evidence and no blockers/unknowns; parsing revalidates
+  the record and exact evidence binding. The contract has no credentials,
+  network, order, or activation surface. T001 remains BLOCKED because no
+  approved parameter set or verified external live-transition evidence exists.
+  At the time of this T001 pass, T002 was not started. Canonical
+  source and ignored `graft/` remain unchanged; no real order or production
+  credential was used.
+
+Current blocker review: T001 remains BLOCKED because the exact seed/limits have
+no explicit approval, preceding-gate evidence is not externally verified, and
+no canonical accepted `PromotionReviewRecord` binds those exact parameters to
+provided non-synthetic evidence. T002/T003 remain blocked by dependency;
+P17-M02 is outside the current authorization.
+
+To resume T001, provide all of the following: a real frozen OOS result with its
+reconciliation checkpoint; operational shadow evidence; separate local-paper
+evidence; externally verified Binance exchange-test evidence; and an explicit
+parameter-approval record whose canonical content binds the exact limited-live
+parameters to the accepted promotion review. Synthetic local fixtures do not
+satisfy these inputs.
+
+## P17-M01-T002 inactive guardrail preparation
+
+- The user separately authorized inactive T002 preparation while T001 remains
+  BLOCKED. T002 remains BLOCKED and cannot become DONE until T001 acceptance,
+  approved parameters, and verified external evidence are present.
+- TDD RED: the focused `LimitedLiveGuardrailsTests` profile discovered six tests
+  and all six reached the runtime `NotImplementedException` shell. GREEN:
+  `LimitedLiveGuardrailsTests` passed 7/7 after the evaluator was implemented.
+- `LimitedLiveGuardrails.Evaluate` is a pure App evaluator. It blocks entry when
+  configuration is not accepted, kill-switch state is unknown/enabled,
+  reconciliation is not acknowledged, a position is unknown/manual, partial
+  fill protection is unknown/missing, restart recovery is unverified, or rollback
+  is unavailable. Unsafe states require rollback; the evaluator exposes no submit,
+  dispatch, network, credential, or activation path and adds no numeric limits.
+- This is implementation evidence only. No live order, production credential,
+  network call, T002 gate approval, T003 evidence, or P17-M02 work occurred.
+
+- The T001 correction adds `LimitedLiveParameterApproval`. A promotion review
+  alone cannot authorize a caller-supplied parameter map: the explicit approval
+  record stores the exact parameter content, configuration identity, review
+  identity, approver reference, and timestamp in canonical JSON. Changed values
+  fail the binding check. No external approval is present, so T001 remains
+  BLOCKED.
 
 ## CI formatting follow-up
 
