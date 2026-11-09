@@ -52,7 +52,13 @@ public static class ReplaySnapshotBuilder
         }
 
         IEnumerable<ReplayEnvelope> ordered = source
-            .Where(envelope => cursor.IsEligible(envelope.CausalEvent))
+            .Where(envelope =>
+            {
+                CausalMarketEvent causal = envelope.CausalEvent;
+                return ReplayCausalVisibility.IsEligible(causal.Payload.EventTime,
+                    causal.AvailabilityTime, causal.StableSequence,
+                    causal.Payload is Bar bar ? bar.CloseTime : null, cursor);
+            })
             .OrderBy(static envelope => envelope.CausalEvent,
                 Comparer<CausalMarketEvent>.Create(CausalMarketEventOrdering.Compare));
 

@@ -1,5 +1,37 @@
 # Current checkpoint
 
+## P15-M03-T004 (SR-02.1) — DONE (2026-11-09)
+
+- **Scope/authorization:** User explicitly authorized only P15-M03-T004. Dependencies P15-M03-T003 and P14-M01-T002 were DONE. No T005 implementation started. T005 remains BLOCKED; its blocker wording now records that SR-02.2 needs separate authorization because both dependencies are DONE.
+- **Root cause:** Single-source delivery already delayed a Bar until `max(EventTime, AvailabilityTime, CloseTime)`, but `ReplaySnapshotBuilder` filtered prefixes using only event time, availability, and sequence. Multi-source delivery honored the Bar close for `ReplayEnvelope` Bars, while its prefix filter also omitted close time. A minute-1 Bar with minute-1 availability and minute-3 close therefore appeared in a Trade-at-minute-2 prefix.
+- **Deliverable:** Added shared internal `ReplayCausalVisibility` for inclusive event-time, availability-time, Bar-close, and stable-sequence eligibility. Single- and multi-source delivery and prefix construction now use the same eligibility bounds. Multi-source persisted order and all original event, exchange, receive, availability, and sequence fields remain unchanged; equal timestamps still order by saved stable sequence. No strategy formulas, identity, App trading/runtime, fill simulation, or positions changed.
+- **RED/GREEN:** The command below failed before the fix with 2/2 tests failing: both `Assert.DoesNotContain` checks found the minute-1 Bar in the Trade-at-minute-2 prefix. After the fix, the same focused filter passed 2/2. Boundary tests prove inclusion at close minute 3 and availability minute 4 and unchanged causal timestamps/sequences; equal-time tests assert prefix sequence boundaries. The T004 regressions also submit exact duplicates and compare single/multi-source outputs and prefixes across input permutations, proving one delivery and deterministic causal views.
+
+```powershell
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" test tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --filter "FullyQualifiedName~RunnerPrefixWaitsForBarCloseAndAvailabilityBoundaries|FullyQualifiedName~MultiSourcePrefixWaitsForBarCloseAndAvailabilityBoundaries"'
+```
+
+- **Final tests/build:** `TradingBot.Replay.Tests` passed 61/61. Locked restore succeeded. Release build with `--warnaserror` succeeded with 0 warnings and 0 errors. Exact combined command:
+
+```powershell
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" restore tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj --locked-mode; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "$HOME\.dotnet\dotnet.exe" build tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --no-restore --warnaserror; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "$HOME\.dotnet\dotnet.exe" test tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj -c Release --no-build --no-restore; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "$HOME\.dotnet\dotnet.exe" format src/TradingBot.Backtesting/TradingBot.Backtesting.csproj --verify-no-changes --include src/TradingBot.Backtesting/HistoricalReplayRunner.cs src/TradingBot.Backtesting/MultiSourceReplay.cs src/TradingBot.Backtesting/ReplaySnapshot.cs src/TradingBot.Backtesting/ReplayCausalVisibility.cs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "$HOME\.dotnet\dotnet.exe" format tests/TradingBot.Replay.Tests/TradingBot.Replay.Tests.csproj --verify-no-changes --include tests/TradingBot.Replay.Tests/HistoricalReplayRunnerTests.cs tests/TradingBot.Replay.Tests/MultiSourceReplayTests.cs; exit $LASTEXITCODE'
+```
+
+- **Format:** Both final scoped `dotnet format ... --verify-no-changes` commands in the combined command exited 0. The first verification had identified the new helper's line endings/UTF-8 BOM; `dotnet format` normalized that file before the final passing checks.
+- **Actual replay smoke:** Ran a temporary console against both `HistoricalReplayRunner` and `MultiSourceReplayRunner`; both excluded the Bar before minute 3 and included it at the close boundary. The smoke project was removed after the run.
+
+```powershell
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" run --project tools/t004-replay-smoke/ReplaySmoke.csproj -c Release'
+```
+
+Output: `Replay smoke passed: single-source and multi-source exclude the Bar before minute 3 and include it at the close boundary.`
+
+- **Docs/source:** `pwsh -NoProfile -File tools/validate-docs.ps1` passed: `phases=19; milestones=43; tasks=152; ready=none (explicit unresolved blocker)`. `pwsh -NoProfile -File tools/tests/validate-docs.Tests.ps1` passed all 11 fixture cases. `pwsh -NoProfile -Command '(Get-FileHash docs/sources/FINAL_TECH_SPEC.md -Algorithm SHA256).Hash'` returned `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`; canonical source unchanged.
+- **Changed files:** `src/TradingBot.Backtesting/ReplayCausalVisibility.cs`, `HistoricalReplayRunner.cs`, `MultiSourceReplay.cs`, `ReplaySnapshot.cs`; `tests/TradingBot.Replay.Tests/HistoricalReplayRunnerTests.cs`, `MultiSourceReplayTests.cs`; `docs/architecture/event-model.md`, `multi-source-replay.md`, `persistence.md`; `docs/TASKS.md` (T004 DONE; T005 remains BLOCKED with separate authorization blocker); `HANDOFF.md`.
+- **Limits/scope:** Smoke uses fixed synthetic records only; no external exchange data or production/live behavior was tested. No P17, canonical source, App trading runtime, fill/position simulation, or unrelated task statuses changed.
+- **Next:** Separately authorize P15-M03-T005 (SR-02.2). Do not begin it under this authorization.
+
+
 ## P15-M03-T002 (SR-01.2) — DONE (2026-11-09)
 
 - **Scope/authorization:** P15-M03-T001 is DONE. User explicitly authorized only P15-M03-T002; P15-M03-T003 and all other tasks were not started. T003 remains BLOCKED pending separate SR-01.3 implementation authorization.

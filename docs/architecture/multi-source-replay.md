@@ -20,9 +20,10 @@ temporary file and atomic rename. Reopening validates the contract and its
 content identity, so a modified source/order reference is rejected. Replay
 delivery uses `MultiSourceReplayRunner` in Backtesting. Each typed record must
 match its saved source/event/sequence/timestamp reference. The runner orders by
-causal availability, event time, and saved global sequence; bar records become
-available no earlier than close time. Each handler receives one cursor and an
-immutable prefix filtered by event time, availability, and global sequence.
+causal availability, event time, and saved global sequence; Bar records become
+available no earlier than both their close and availability times. Each handler
+receives one cursor and an immutable prefix filtered by event time, availability,
+Bar close time, and global sequence.
 Capture diagnostics and standalone Lane B liquidation observations keep their
 own payload contracts. Missing rows and conflicting identities fail the run;
 exact duplicate rows are delivered once and remain visible as diagnostics.

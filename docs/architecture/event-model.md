@@ -50,11 +50,11 @@ deserialization. Infrastructure persists the envelope version beside the
 existing causal tuple and migrates version-one journal rows to format version 1
 transactionally.
 
-ReplaySnapshotBuilder applies the cursor's inclusive event-time,
-availability-time, and stable-sequence bounds before ordering eligible
-envelopes by payload event time and stable sequence. The resulting stream
-snapshot is immutable; this is a deterministic view boundary and does not
-introduce a full replay runner or recovery policy.
+ReplaySnapshotBuilder applies inclusive event-time, availability-time, and
+stable-sequence cursor bounds plus an inclusive `Bar.CloseTime` bound before
+ordering eligible envelopes by payload event time and stable sequence. The
+resulting stream snapshot is immutable; this is a deterministic view boundary
+and does not introduce a full replay runner or recovery policy.
 
 Core event records contain no Binance wire DTOs. Late, missing, and gap
 recovery, quality flags, and venue-specific ordering guarantees remain
@@ -66,8 +66,8 @@ with a diagnostic, and stops before delivery when an event identity or stable
 sequence conflicts. Delivery order uses a monotonic virtual availability clock
 of `max(EventTime, AvailabilityTime, Bar.CloseTime)`, then event time and the
 persisted stable sequence. Each handler receives an immutable
-`ReplayStreamSnapshot` built with the existing inclusive `CausalEventCursor`,
-so unavailable or future events cannot enter a causal prefix. Receive time and
-optional exchange time remain metadata on every delivered envelope. A handler
-exception leaves that step uncommitted and prevents later deliveries; the
-runner returns diagnostics and no execution or authorization state.
+`ReplayStreamSnapshot` whose prefix uses the inclusive cursor bounds plus the
+Bar close boundary, so unavailable events and not-yet-closed bars cannot enter.
+Receive time and optional exchange time remain metadata on delivered envelopes.
+A handler exception leaves that step uncommitted and prevents later deliveries;
+the runner returns diagnostics and no execution or authorization state.

@@ -313,18 +313,8 @@ public sealed class ReplayRunner
     private static DateTimeOffset AvailableAt(ReplayEnvelope envelope)
     {
         CausalMarketEvent causal = envelope.CausalEvent;
-        DateTimeOffset availableAt = causal.Payload.EventTime.Value;
-        if (causal.AvailabilityTime.Value > availableAt)
-        {
-            availableAt = causal.AvailabilityTime.Value;
-        }
-
-        if (causal.Payload is Bar bar && bar.CloseTime.Value > availableAt)
-        {
-            availableAt = bar.CloseTime.Value;
-        }
-
-        return availableAt;
+        return ReplayCausalVisibility.AvailableAt(causal.Payload.EventTime,
+            causal.AvailabilityTime, causal.Payload is Bar bar ? bar.CloseTime : null);
     }
 
     private readonly record struct ReplayIdentity(Type PayloadType, string InstrumentId,

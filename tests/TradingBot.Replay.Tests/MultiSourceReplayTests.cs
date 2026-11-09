@@ -88,13 +88,18 @@ public sealed class MultiSourceReplayTests
                     new Quantity(1m), new Price(99m), "fixed-fixture"),
                 0, 20, Time(1), Time(1))
         ];
+        Dictionary<string, long[]> prefixes = [];
         MultiSourceReplayResult result = MultiSourceReplayRunner.Run(CreateManifest(records),
-            records.Reverse(), _ => { });
+            records.Reverse(), context => prefixes.Add(context.Current.Ordering.EventId,
+                context.Prefix.Select(static item => item.Ordering.GlobalStableSequence)
+                    .ToArray()));
 
         Assert.True(result.Succeeded);
         Assert.Equal([10L, 20L], result.Steps.Select(static step =>
             step.Current.Ordering.GlobalStableSequence));
         Assert.Equal(20, result.Steps[1].Cursor.MaxStableSequence);
+        Assert.Equal([10L], prefixes["trade-1"]);
+        Assert.Equal([10L, 20L], prefixes["liquidation-1"]);
     }
 
     [Fact]
@@ -115,6 +120,90 @@ public sealed class MultiSourceReplayTests
         Assert.True(result.Succeeded);
         Assert.Equal(Time(3), Assert.Single(result.Steps).VirtualTime.Value);
         Assert.Equal(Time(3), result.Steps[0].Cursor.AsOf.Value);
+    }
+
+    [Fact]
+    public void MultiSourcePrefixWaitsForBarCloseAndAvailabilityBoundaries()
+    {
+        InstrumentId instrument = new("BTCUSDT");
+        Bar closeAtThree = new("bar-close", instrument, new UtcTimestamp(Time(1)),
+            new UtcTimestamp(Time(0)), new UtcTimestamp(Time(3)), new Price(100m),
+            new Price(102m), new Price(99m), new Price(101m), new Quantity(1m));
+        Bar availableAtFour = new("bar-late-availability", instrument,
+            new UtcTimestamp(Time(1)), new UtcTimestamp(Time(0)),
+            new UtcTimestamp(Time(3)), new Price(100m), new Price(102m),
+            new Price(99m), new Price(101m), new Quantity(1m));
+        MultiSourceReplayRecord[] records =
+        [
+            Record("bars", "bar-close", new ReplayEnvelope("bars",
+                new CausalMarketEvent(closeAtThree, new UtcTimestamp(Time(1)),
+                    new UtcTimestamp(Time(1)), 0, new UtcTimestamp(Time(0)))),
+                0, 10, Time(1), Time(1), Time(0)),
+            Record("trades", "trade-before-close", new ReplayEnvelope("trades",
+                new CausalMarketEvent(new Trade("trade-before-close", instrument,
+                    new UtcTimestamp(Time(2)), new Price(101m), new Quantity(1m),
+                    TradeSide.Buy), new UtcTimestamp(Time(2)), new UtcTimestamp(Time(2)), 0)),
+                0, 20, Time(2), Time(2)),
+            Record("bars", "bar-late-availability", new ReplayEnvelope("bars",
+                new CausalMarketEvent(availableAtFour, new UtcTimestamp(Time(1)),
+                    new UtcTimestamp(Time(4)), 1, new UtcTimestamp(Time(0)))),
+                1, 30, Time(1), Time(4), Time(0)),
+            Record("trades", "trade-at-close", new ReplayEnvelope("trades",
+                new CausalMarketEvent(new Trade("trade-at-close", instrument,
+                    new UtcTimestamp(Time(3)), new Price(101m), new Quantity(1m),
+                    TradeSide.Buy), new UtcTimestamp(Time(3)), new UtcTimestamp(Time(3)), 1)),
+                1, 40, Time(3), Time(3)),
+            Record("trades", "trade-at-availability", new ReplayEnvelope("trades",
+                new CausalMarketEvent(new Trade("trade-at-availability", instrument,
+                    new UtcTimestamp(Time(4)), new Price(101m), new Quantity(1m),
+                    TradeSide.Buy), new UtcTimestamp(Time(4)), new UtcTimestamp(Time(4)), 2)),
+                2, 50, Time(4), Time(4))
+        ];
+        MultiSourceDatasetManifest manifest = CreateManifest(records);
+        Dictionary<string, MultiSourceReplayStepContext> byEvent = [];
+        MultiSourceReplayResult result = MultiSourceReplayRunner.Run(manifest,
+            [.. records.Reverse(), records[0]],
+            context => byEvent.Add(context.Current.Ordering.EventId, context));
+        Dictionary<string, string[]> orderedPrefixes = [];
+        MultiSourceReplayResult orderedResult = MultiSourceReplayRunner.Run(manifest,
+            records, context => orderedPrefixes.Add(context.Current.Ordering.EventId,
+                context.Prefix.Select(static item => item.Ordering.EventId).ToArray()));
+
+        Assert.True(result.Succeeded);
+        Assert.True(orderedResult.Succeeded);
+        Assert.Equal(records.Length, result.Steps.Count);
+        Assert.Contains(result.Diagnostics,
+            diagnostic => diagnostic.Kind == MultiSourceReplayDiagnosticKind.Duplicate);
+        Assert.Equal(result.Steps.Select(static step => step.Current.Ordering.EventId),
+            orderedResult.Steps.Select(static step => step.Current.Ordering.EventId));
+        Assert.Equal(result.Steps.Select(static step => step.VirtualTime),
+            orderedResult.Steps.Select(static step => step.VirtualTime));
+        Assert.DoesNotContain(byEvent["trade-before-close"].Prefix,
+            item => item.Ordering.EventId == "bar-close");
+        Assert.Contains(byEvent["trade-at-close"].Prefix,
+            item => item.Ordering.EventId == "bar-close");
+        Assert.DoesNotContain(byEvent["trade-at-close"].Prefix,
+            item => item.Ordering.EventId == "bar-late-availability");
+        Assert.Contains(byEvent["trade-at-availability"].Prefix,
+            item => item.Ordering.EventId == "bar-late-availability");
+        foreach (string eventId in byEvent.Keys)
+        {
+            Assert.Equal(byEvent[eventId].Prefix.Select(static item => item.Ordering.EventId),
+                orderedPrefixes[eventId]);
+        }
+        MultiSourceReplayRecord deliveredBar = byEvent["bar-close"].Current;
+        ReplayEnvelope barEnvelope = Assert.IsType<ReplayEnvelope>(deliveredBar.Payload);
+        Assert.Equal(0L, deliveredBar.Ordering.SourceSequence);
+        Assert.Equal(10L, deliveredBar.Ordering.GlobalStableSequence);
+        Assert.Equal(new UtcTimestamp(Time(1)), deliveredBar.Ordering.ReceiveTime);
+        Assert.Equal(new UtcTimestamp(Time(0)), deliveredBar.Ordering.ExchangeTime);
+        Assert.Equal(new UtcTimestamp(Time(1)), barEnvelope.CausalEvent.Payload.EventTime);
+        Assert.Equal(new UtcTimestamp(Time(1)), barEnvelope.CausalEvent.ReceiveTime);
+        Assert.Equal(new UtcTimestamp(Time(1)), barEnvelope.CausalEvent.AvailabilityTime);
+        Assert.Equal(new UtcTimestamp(Time(0)), barEnvelope.CausalEvent.ExchangeTime);
+        Assert.Equal(0, barEnvelope.CausalEvent.StableSequence);
+        Assert.Equal(Time(3), byEvent["bar-close"].VirtualTime.Value);
+        Assert.Equal(Time(4), byEvent["bar-late-availability"].VirtualTime.Value);
     }
 
     private static List<(string EventId, DateTimeOffset Time, string Prefix)> Run(

@@ -430,9 +430,10 @@ Staged-selection reads reconstruct the immutable chain from canonical JSON,
 verify the row metadata and SHA-256 key, and replay every stage before returning.
 
 ReplaySnapshotBuilder in TradingBot.Backtesting builds one immutable
-ReplayStreamSnapshot. It applies CausalEventCursor.IsEligible to each envelope
-first, then orders eligible events by payload EventTime and StableSequence.
-Receive time is retained metadata and is never substituted for event time.
+ReplayStreamSnapshot. It applies inclusive event-time, availability-time, and
+stable-sequence cursor bounds plus an inclusive Bar.CloseTime bound before
+ordering eligible events by payload EventTime and StableSequence. Receive time
+is retained metadata and is never substituted for event time.
 
 The version-9 feature-quality snapshot table, retained in schema version 12, is:
 

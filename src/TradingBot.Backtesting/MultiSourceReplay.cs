@@ -250,9 +250,9 @@ public static class MultiSourceReplayRunner
                 record.Ordering.GlobalStableSequence);
             CausalEventCursor cursor = new(new UtcTimestamp(availableAt), sequence);
             MultiSourceReplayRecord[] prefix = ordered
-                .Where(item => item.Ordering.EventTime.Value <= availableAt
-                    && item.Ordering.AvailabilityTime.Value <= availableAt
-                    && item.Ordering.GlobalStableSequence <= sequence)
+                .Where(item => ReplayCausalVisibility.IsEligible(item.Ordering.EventTime,
+                    item.Ordering.AvailabilityTime, item.Ordering.GlobalStableSequence,
+                    BarCloseTime(item), cursor))
                 .OrderBy(static item => item.Ordering.EventTime.Value)
                 .ThenBy(static item => item.Ordering.GlobalStableSequence)
                 .ToArray();
@@ -284,23 +284,14 @@ public static class MultiSourceReplayRunner
         IEnumerable<MultiSourceDatasetSource> sources) =>
         new([], diagnostics, succeeded: false, sources);
 
-    private static DateTimeOffset AvailableAt(MultiSourceReplayRecord record)
-    {
-        MultiSourceReplayOrderEntry order = record.Ordering;
-        DateTimeOffset availableAt = order.EventTime.Value;
-        if (order.AvailabilityTime.Value > availableAt)
-        {
-            availableAt = order.AvailabilityTime.Value;
-        }
+    private static DateTimeOffset AvailableAt(MultiSourceReplayRecord record) =>
+        ReplayCausalVisibility.AvailableAt(record.Ordering.EventTime,
+            record.Ordering.AvailabilityTime, BarCloseTime(record));
 
-        if (record.Payload is ReplayEnvelope { CausalEvent.Payload: Bar bar }
-            && bar.CloseTime.Value > availableAt)
-        {
-            availableAt = bar.CloseTime.Value;
-        }
-
-        return availableAt;
-    }
+    private static UtcTimestamp? BarCloseTime(MultiSourceReplayRecord record) =>
+        record.Payload is ReplayEnvelope { CausalEvent.Payload: Bar bar }
+            ? bar.CloseTime
+            : null;
 
     private readonly record struct RecordIdentity(string SourceId, string EventId,
         long SourceSequence)
