@@ -634,10 +634,10 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
                 nameof(options));
         }
 
-        if (!options.BaseAddress.AbsolutePath.TrimEnd('/').EndsWith("/market",
+        if (!options.BaseAddress.AbsolutePath.TrimEnd('/').EndsWith("/market/ws",
             StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException("The Binance market stream must use the /market route.",
+            throw new ArgumentException("The Binance market stream must use the /market/ws route.",
                 nameof(options));
         }
 

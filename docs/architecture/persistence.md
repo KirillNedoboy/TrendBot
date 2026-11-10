@@ -38,10 +38,26 @@ P12-M01-T002 adds durable execution lifecycle state, dispatch claims, and
 idempotency receipts while preserving the existing reservation and operational
 boundaries. Core remains BCL-only; the SQLite execution tables are owned by
 Infrastructure and the App coordinator only composes these APIs.
+P15-M03-T007 adds `SqliteNativeBarInputLedger` for public native klines. It is a
+separate file-backed database with its own schema version and no migration to
+the shared trading database. The append-only receipt log retains input payloads,
+revision/status diagnostics, per-symbol intake sequence, and the latest committed
+primary-trigger checkpoint. Receipts and checkpoints advance atomically; there
+is no retention API, preserving seed history needed by the active feed.
+
 
 ## API and migration
 
 The synchronous API is intentionally small:
+
+- SqliteNativeBarInputLedger.Open(databasePath, commandTimeoutSeconds = 30)
+  initializes only an empty standalone file with its own schema version and
+  rejects non-empty or unsupported databases. `Append(streamId, receipt)` stores
+  one next-sequence input receipt and advances its trigger checkpoint in the
+  same immediate transaction; an identical receipt at the same sequence returns
+  false, while a sequence or content conflict throws. `Read(streamId)` returns
+  an immutable snapshot after validating payload hashes, contiguous sequences,
+  accepted/duplicate/correction transitions, and checkpoint parity.
 
 - SqliteEventJournal.Open(databasePath, commandTimeoutSeconds = 30) opens a
   file-backed journal and applies the supported migration.

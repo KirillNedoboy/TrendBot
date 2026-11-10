@@ -34,7 +34,7 @@ public enum BinanceStreamDiagnosticKind
 /// <summary>Bounds and timing policy for the public market stream.</summary>
 public sealed record BinanceWebSocketOptions
 {
-    public Uri BaseAddress { get; init; } = new("wss://fstream.binance.com/market");
+    public Uri BaseAddress { get; init; } = new("wss://fstream.binance.com/market/ws");
 
     public bool UseCombinedStreams { get; init; }
 

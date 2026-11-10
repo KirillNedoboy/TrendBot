@@ -29,7 +29,7 @@ public sealed class BinanceWebSocketClientTests
             [BinanceSubscription.AggregateTrade("BTCUSDT")]);
 
         Assert.Single(events);
-        Assert.Equal("wss://fstream.binance.com/market", transport.ConnectedUris.Single().ToString());
+        Assert.Equal("wss://fstream.binance.com/market/ws", transport.ConnectedUris.Single().ToString());
         Assert.Contains("\"method\":\"SUBSCRIBE\"", transport.SentTexts.Single());
         Assert.Contains("btcusdt@aggTrade", transport.SentTexts.Single());
         Assert.Equal(0, events[0].StableSequence);

@@ -73,8 +73,64 @@ records. Equal identity with a different hash is `RevisionConflict`; the
 previous accepted revision remains authoritative and the conflicting payload
 does not become Core input. Callers bridge REST and WebSocket views by supplying
 the prior accepted-revision set to REST ingestion or the matching accepted
-revision to WebSocket ingestion. This boundary is in-memory and does not add a
-durable revision ledger; persistence and restart recovery remain later work.
+revision to WebSocket ingestion. The boundary itself has no durable state.
+P15-M03-T007 adds a separate App/Infrastructure SQLite intake ledger that stores
+native wire payloads and revisions so the feed can reconstruct this same
+accepted-revision set after restart.
+
+## Native public close-driven feed (P15-M03-T006 / SR-02.3)
+
+`TradingBot.App.NativePublicKlineFeed` composes the existing
+`IBinancePublicRestClient`, `BinanceMarketWebSocketClient`, and
+`BinanceKlineIngestionBoundary`; it adds no Binance transport or parallel
+adapter. Startup history is fetched from the profile's declared native `15m`
+and `1h` history starts, using REST pages capped at the official maximum of
+1,500 rows and one fixed warmup cutoff. Only valid closed bars enter each
+history. Missing/unsupported profile source, timeframe, or history start stays
+unknown and blocks readiness.
+
+Live evaluation is driven only by a newly accepted closed `15m` WebSocket bar.
+No wall-clock timer triggers evaluation. The immutable input cut includes only
+closed bars whose end-exclusive close is no later than the primary event time,
+whose availability is no later than the trigger's availability, and whose
+stable intake sequence is no later than the trigger sequence. The latest
+eligible closed `1h` bar is the HTF cut; a later, reordered, or co-closing HTF
+bar cannot revise an already committed evaluation. Market-data age and
+availability age are checked separately against the configured freshness
+policy. Unknown seed/warmup, pivot confirmation delay, stale input, or a gap
+blocks `IsReady`; readiness describes input/profile quality only and does not
+authorize a signal, strategy, or runtime.
+
+The current official [USD-M WebSocket connection guide](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect)
+routes regular market streams through `/market` and documents `/market/ws`
+access mode; the [route-change notice](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Important-WebSocket-Change-Notice)
+maps Kline streams to the market route and supports JSON `SUBSCRIBE`. The
+existing market client now defaults to `wss://fstream.binance.com/market/ws`
+for that route.
+
+## Durable native bar intake and recovery (P15-M03-T007 / SR-02.4)
+
+The ledger-enabled `NativePublicKlineFeed.WarmupAsync` overload restores a
+per-symbol append-only sequence before completing native REST warmup.
+`SqliteNativeBarInputLedger` owns a separate file and schema version; it rejects
+non-empty or differently versioned SQLite files and never migrates the shared
+trading database. Each receipt retains the serialized REST/WS kline and source
+metadata, accepted revision hash/status, diagnostics, and intake sequence.
+Receipt insertion and checkpoint advancement share one immediate transaction.
+
+Restart validates the contiguous sequence, payload hashes, revision transitions,
+and committed-trigger checkpoint, then replays each saved input through the
+same timeframe-aware ingestion boundary. The feed recovers native history and
+the next sequence without re-fetching covered seed bars. Missing bars can be
+filled by explicit `BackfillAsync`; it appends history only and never reruns a
+previous primary evaluation. An exact retry is idempotent, a correction remains
+a diagnostic without replacing the accepted revision, and a committed primary
+trigger is not emitted again after restart. There is no retention/deletion API,
+so active seed history is not discarded. Disk/SQLite failures propagate and
+fail the feed closed. This ledger stores native bars only; it does not alter the
+depth/trade capture contract.
+
+
 
 ## Exchange eligibility metadata (P05-M01-T001)
 
