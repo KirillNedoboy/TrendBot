@@ -130,6 +130,54 @@ so active seed history is not discarded. Disk/SQLite failures propagate and
 fail the feed closed. This ledger stores native bars only; it does not alter the
 depth/trade capture contract.
 
+## Bounded public intake coverage (P15-M03-T008 / SR-02.5)
+
+The T008 pre-run envelope is fixed and deliberately narrow: one predeclared
+`BTCUSDT` instrument, no ranking/replacement based on successful data, and a
+point-in-time `GET /fapi/v1/exchangeInfo` snapshot timestamped by the existing
+REST client. `MetadataCandidateFilter` supplies the existing metadata-only
+USDT-perpetual/trading eligibility and exclusion reasons; an ineligible or
+missing BTCUSDT snapshot aborts before kline requests. The full typed metadata
+snapshot and its canonical DTO hash are retained with the run.
+
+REST history is the half-open UTC window
+`[last completed UTC hour boundary - 24h, boundary)`: 96 expected closed 15m
+bars and 24 expected closed 1h bars. The bounded warmup allows one REST page per
+timeframe per run and caps the raw response at 97/25 rows respectively, including a
+possible open row at the end boundary. It does not retry REST requests or fill
+missing intervals. Historical REST `receive/availability` is the local response
+observation time; original historical availability is unknown and must not be
+inferred from bar event time.
+
+Prospective capture subscribes to the existing `NativePublicKlineFeed` and
+`BinanceMarketWebSocketClient` for the same symbol's native 15m/1h kline
+streams. Its total limit is 70 minutes, with one controlled reconnect after the
+first accepted closed 15m input, no automatic retries, and at most 120 seconds
+from reconnect start through the first received event. Numeric-ID command replies
+with a `result` field are control messages and are ignored before market sequence
+assignment; they never enter durable input. The run must record closed
+15m and 1h inputs after reconnect. Per-run storage is capped at 64 MiB across
+SQLite/WAL/SHM and evidence files, 50,000 ledger receipts, 4 MiB each for the
+exchangeInfo snapshot and coverage report, 64 KiB per WS frame, 256 KiB per
+message, and 512 deduplication entries.
+
+The coverage report keeps modeled REST history and recorded prospective WS
+availability in separate interval sets. It retains expected/covered opens,
+gaps, corrections, unknown inputs, source/run/config hashes, PIT metadata, and
+recovered replay fingerprints. Any missing interval remains a gap; there is no
+synthetic fill. Prospective expected intervals follow nominal wall-clock
+boundaries. A closed WS bar outside that expected-open set remains durable and
+replayable, but is not claimed as coverage of a new prospective interval.
+
+HTTP/SQLite failures, an exceeded cap, unexpected disconnect,
+stale/parse/unknown input, revision correction, missing initial closed 15m
+within 20 minutes, reconnect taking over 120 seconds, or missing post-reconnect
+closed 15m/1h by 70 minutes aborts the run and prevents T008 from becoming DONE.
+
+T008's actual run artifact and final verification are recorded in the current
+task row and `HANDOFF.md`; REST availability is never presented as prospective
+WS coverage or full-market coverage.
+
 
 
 ## Exchange eligibility metadata (P05-M01-T001)

@@ -15,5 +15,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/TradingBot.DataTool/TradingBot.DataTool.csproj" />
+    <Project Path="tools/TradingBot.T008Capture/TradingBot.T008Capture.csproj" />
   </Folder>
 </Solution>

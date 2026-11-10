@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>TradingBot.T008Capture</AssemblyName>
+    <RootNamespace>TradingBot.T008Capture</RootNamespace>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TradingBot.App\TradingBot.App.csproj" />
+  </ItemGroup>
+</Project>

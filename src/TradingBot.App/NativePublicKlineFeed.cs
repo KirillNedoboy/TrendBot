@@ -61,6 +61,22 @@ public sealed record NativePublicKlineFeedUpdate(
     string? DiagnosticCode,
     string? DiagnosticMessage);
 
+/// <summary>Per-timeframe bounds for a capture's REST history warmup.</summary>
+public sealed record NativePublicKlineRestHistoryBudget
+{
+    public int MaximumPages { get; }
+
+    public int MaximumRows { get; }
+
+    public NativePublicKlineRestHistoryBudget(int maximumPages, int maximumRows)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumPages);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumRows);
+        MaximumPages = maximumPages;
+        MaximumRows = maximumRows;
+    }
+}
+
 /// <summary>
 /// Composes existing public Binance REST/WebSocket clients with the native
 /// timeframe ingestion boundary. A new evaluation is produced only for a newly
@@ -100,6 +116,8 @@ public sealed class NativePublicKlineFeed
     private readonly IBinancePublicRestClient _restClient;
     private readonly TimeProvider _timeProvider;
     private readonly SqliteNativeBarInputLedger? _ledger;
+    private readonly NativePublicKlineRestHistoryBudget? _setupHistoryBudget;
+    private readonly NativePublicKlineRestHistoryBudget? _contextHistoryBudget;
     private readonly Dictionary<string, BinanceKlineAcceptedRevision> _acceptedRevisions =
         new(StringComparer.Ordinal);
     private readonly SortedDictionary<long, ScreenerBar> _setupBars = [];
@@ -112,7 +130,9 @@ public sealed class NativePublicKlineFeed
 
     private NativePublicKlineFeed(IBinancePublicRestClient restClient, string symbol,
         PublicSignalProfileConfiguration profile, TimeProvider timeProvider,
-        SqliteNativeBarInputLedger? ledger)
+        SqliteNativeBarInputLedger? ledger,
+        NativePublicKlineRestHistoryBudget? setupHistoryBudget,
+        NativePublicKlineRestHistoryBudget? contextHistoryBudget)
     {
         _restClient = restClient;
         _symbol = symbol.ToUpperInvariant();
@@ -120,6 +140,8 @@ public sealed class NativePublicKlineFeed
         _profile = profile;
         _timeProvider = timeProvider;
         _ledger = ledger;
+        _setupHistoryBudget = setupHistoryBudget;
+        _contextHistoryBudget = contextHistoryBudget;
     }
 
     public string Symbol => _symbol;
@@ -136,12 +158,17 @@ public sealed class NativePublicKlineFeed
 
     public ImmutableValueList<string> StreamDiagnostics => new(_streamDiagnostics);
 
+    public int SetupRestPagesRequested { get; private set; }
+
+    public int ContextRestPagesRequested { get; private set; }
+
     /// <summary>Loads the exact declared REST history before live input is read.</summary>
     public static Task<NativePublicKlineFeed> WarmupAsync(
         IBinancePublicRestClient restClient, string symbol,
         PublicSignalProfileConfiguration profile, TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default) =>
-        WarmupAsyncCore(restClient, symbol, profile, timeProvider, null, cancellationToken);
+        WarmupAsyncCore(restClient, symbol, profile, timeProvider, null, null, null,
+            cancellationToken);
 
     public static Task<NativePublicKlineFeed> WarmupAsync(
         IBinancePublicRestClient restClient, string symbol,
@@ -149,26 +176,62 @@ public sealed class NativePublicKlineFeed
         TimeProvider? timeProvider = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(ledger);
-        return WarmupAsyncCore(restClient, symbol, profile, timeProvider,
-            ledger, cancellationToken);
+        return WarmupAsyncCore(restClient, symbol, profile, timeProvider, ledger, null,
+            null, cancellationToken);
     }
+
+    /// <summary>Loads history while enforcing per-timeframe REST page and row budgets.</summary>
+    public static Task<NativePublicKlineFeed> WarmupBoundedAsync(
+        IBinancePublicRestClient restClient, string symbol,
+        PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
+        NativePublicKlineRestHistoryBudget setupHistoryBudget,
+        NativePublicKlineRestHistoryBudget contextHistoryBudget,
+        TimeProvider? timeProvider = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        ArgumentNullException.ThrowIfNull(setupHistoryBudget);
+        ArgumentNullException.ThrowIfNull(contextHistoryBudget);
+        return WarmupAsyncCore(restClient, symbol, profile, timeProvider, ledger,
+            setupHistoryBudget, contextHistoryBudget, cancellationToken);
+    }
+    /// <summary>Restores durable input without issuing REST history requests.</summary>
+    public static NativePublicKlineFeed RestoreFromLedger(
+        IBinancePublicRestClient restClient, string symbol,
+        PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(restClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentNullException.ThrowIfNull(ledger);
+
+        NativePublicKlineFeed feed = new(restClient, symbol, profile,
+            timeProvider ?? TimeProvider.System, ledger, null, null);
+        feed.RestoreLedger();
+        return feed;
+    }
+
 
     private static async Task<NativePublicKlineFeed> WarmupAsyncCore(
         IBinancePublicRestClient restClient, string symbol,
         PublicSignalProfileConfiguration profile, TimeProvider? timeProvider,
-        SqliteNativeBarInputLedger? ledger, CancellationToken cancellationToken)
+        SqliteNativeBarInputLedger? ledger,
+        NativePublicKlineRestHistoryBudget? setupHistoryBudget,
+        NativePublicKlineRestHistoryBudget? contextHistoryBudget,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(restClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(profile);
         TimeProvider clock = timeProvider ?? TimeProvider.System;
-        NativePublicKlineFeed feed = new(restClient, symbol, profile, clock, ledger);
+        NativePublicKlineFeed feed = new(restClient, symbol, profile, clock, ledger,
+            setupHistoryBudget, contextHistoryBudget);
         feed.RestoreLedger();
         DateTimeOffset requestedAt = clock.GetUtcNow();
-        await feed.LoadHistoryAsync(profile.Setup, "15m", requestedAt, cancellationToken)
-            .ConfigureAwait(false);
-        await feed.LoadHistoryAsync(profile.Context, "1h", requestedAt, cancellationToken)
-            .ConfigureAwait(false);
+        await feed.LoadHistoryAsync(profile.Setup, "15m", requestedAt,
+            feed._setupHistoryBudget, cancellationToken).ConfigureAwait(false);
+        await feed.LoadHistoryAsync(profile.Context, "1h", requestedAt,
+            feed._contextHistoryBudget, cancellationToken).ConfigureAwait(false);
         return feed;
     }
 
@@ -177,10 +240,10 @@ public sealed class NativePublicKlineFeed
     {
         ThrowIfLedgerFailed();
         DateTimeOffset requestedAt = _timeProvider.GetUtcNow();
-        await LoadHistoryAsync(_profile.Setup, "15m", requestedAt, cancellationToken)
-            .ConfigureAwait(false);
-        await LoadHistoryAsync(_profile.Context, "1h", requestedAt, cancellationToken)
-            .ConfigureAwait(false);
+        await LoadHistoryAsync(_profile.Setup, "15m", requestedAt,
+            _setupHistoryBudget, cancellationToken).ConfigureAwait(false);
+        await LoadHistoryAsync(_profile.Context, "1h", requestedAt,
+            _contextHistoryBudget, cancellationToken).ConfigureAwait(false);
         if (HasCompleteCoverage(_profile.Setup, "15m", requestedAt)
             && HasCompleteCoverage(_profile.Context, "1h", requestedAt))
         {
@@ -373,7 +436,7 @@ public sealed class NativePublicKlineFeed
 
     private async Task LoadHistoryAsync(PublicSignalTimeframeConfiguration? timeframe,
         string expectedTimeframe, DateTimeOffset requestedAt,
-        CancellationToken cancellationToken)
+        NativePublicKlineRestHistoryBudget? budget, CancellationToken cancellationToken)
     {
         if (timeframe?.HistoryStartUtc is not { } historyStart
             || timeframe.Timeframe is not { } declaredTimeframe
@@ -401,11 +464,60 @@ public sealed class NativePublicKlineFeed
         }
 
         DateTimeOffset pageStart = DateTimeOffset.FromUnixTimeMilliseconds(missingOpen.Value);
-        while (pageStart <= requestedAt)
+        int pagesRequested = 0;
+        int rowsRequested = 0;
+        long requestedAtMilliseconds = requestedAt.ToUnixTimeMilliseconds();
+        while (pageStart < requestedAt)
         {
+            int pageLimit = RestKlinePageLimit;
+            if (budget is not null)
+            {
+                if (pagesRequested >= budget.MaximumPages)
+                {
+                    throw new InvalidOperationException(
+                        $"The {expectedTimeframe} REST page budget was exhausted before history was complete.");
+                }
+
+                int remainingRows = budget.MaximumRows - rowsRequested;
+                if (remainingRows <= 0)
+                {
+                    throw new InvalidOperationException(
+                        $"The {expectedTimeframe} REST row budget was exhausted before history was complete.");
+                }
+
+                pageLimit = Math.Min(RestKlinePageLimit, remainingRows);
+            }
+
+            if (expectedTimeframe == "15m")
+            {
+                SetupRestPagesRequested = checked(SetupRestPagesRequested + 1);
+            }
+            else
+            {
+                ContextRestPagesRequested = checked(ContextRestPagesRequested + 1);
+            }
+
             IReadOnlyList<BinanceKline> page = await _restClient.GetKlinesAsync(_symbol,
-                expectedTimeframe, RestKlinePageLimit, pageStart, requestedAt,
-                cancellationToken).ConfigureAwait(false);
+                expectedTimeframe, pageLimit, pageStart, requestedAt, cancellationToken)
+                .ConfigureAwait(false);
+            if (budget is not null)
+            {
+                pagesRequested = checked(pagesRequested + 1);
+                if (page.Count > pageLimit)
+                {
+                    throw new InvalidDataException(
+                        $"The {expectedTimeframe} REST response exceeded its requested row limit.");
+                }
+
+                rowsRequested = checked(rowsRequested + page.Count);
+                if (page.Any(kline => kline.OpenTimeMilliseconds < startMilliseconds
+                    || kline.OpenTimeMilliseconds > requestedAtMilliseconds))
+                {
+                    throw new InvalidDataException(
+                        $"The {expectedTimeframe} REST response escaped its declared time window.");
+                }
+            }
+
             if (page.Count == 0)
             {
                 break;
@@ -416,7 +528,7 @@ public sealed class NativePublicKlineFeed
                          item.OpenTimeMilliseconds))
             {
                 if (!kline.IsClosed
-                    || kline.CloseTimeMilliseconds > requestedAt.ToUnixTimeMilliseconds())
+                    || kline.CloseTimeMilliseconds > requestedAtMilliseconds)
                 {
                     continue;
                 }

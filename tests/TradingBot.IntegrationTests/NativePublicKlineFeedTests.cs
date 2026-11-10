@@ -38,6 +38,107 @@ public sealed class NativePublicKlineFeedTests
     }
 
     [Fact]
+    public async Task BoundedWarmupUsesOnePageAndTimeframeSpecificRawRowLimits()
+    {
+        FixedTimeProvider timeProvider = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), false);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), timeProvider);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.Open(database.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1,
+            TimeSpan.FromHours(3));
+
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupBoundedAsync(
+            restClient, "BTCUSDT", profile, ledger,
+            new NativePublicKlineRestHistoryBudget(1, 12),
+            new NativePublicKlineRestHistoryBudget(1, 3),
+            timeProvider, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, feed.SetupRestPagesRequested);
+        Assert.Equal(1, feed.ContextRestPagesRequested);
+        Assert.Equal(12, int.Parse(Query(handler.Requests[0], "limit"),
+            CultureInfo.InvariantCulture));
+        Assert.Equal(3, int.Parse(Query(handler.Requests[1], "limit"),
+            CultureInfo.InvariantCulture));
+        Assert.Equal(11, feed.SetupHistory.Count);
+        Assert.Equal(2, feed.ContextHistory.Count);
+    }
+
+    [Fact]
+    public async Task RestoreFromLedgerRecoversHistoryWithoutRequestingRest()
+    {
+        using TemporaryLedger database = new();
+        string[] expectedSetupIds;
+        string[] expectedContextIds;
+        long[] expectedSetupSequences;
+        long[] expectedContextSequences;
+        using (FeedFixture original = await CreateFixtureAsync(ledgerPath: database.Path))
+        {
+            expectedSetupIds = original.Feed.SetupHistory
+                .Select(static bar => bar.Bar.EventId).ToArray();
+            expectedContextIds = original.Feed.ContextHistory
+                .Select(static bar => bar.Bar.EventId).ToArray();
+            expectedSetupSequences = original.Feed.SetupHistory
+                .Select(static bar => bar.StableSequence).ToArray();
+            expectedContextSequences = original.Feed.ContextHistory
+                .Select(static bar => bar.StableSequence).ToArray();
+        }
+
+        FixedTimeProvider timeProvider = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), true);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), timeProvider);
+        using SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.Open(database.Path);
+
+        NativePublicKlineFeed recovered = NativePublicKlineFeed.RestoreFromLedger(
+            restClient, "BTCUSDT", CreateProfile(1, 1, TimeSpan.FromHours(3)),
+            ledger, timeProvider);
+
+        Assert.Empty(handler.Requests);
+        Assert.Equal(expectedSetupIds,
+            recovered.SetupHistory.Select(static bar => bar.Bar.EventId));
+        Assert.Equal(expectedContextIds,
+            recovered.ContextHistory.Select(static bar => bar.Bar.EventId));
+        Assert.Equal(expectedSetupSequences,
+            recovered.SetupHistory.Select(static bar => bar.StableSequence));
+        Assert.Equal(expectedContextSequences,
+            recovered.ContextHistory.Select(static bar => bar.StableSequence));
+    }
+
+
+    [Fact]
+    public async Task BoundedWarmupStopsBeforeRequestingPastItsPageBudget()
+    {
+        FixedTimeProvider timeProvider = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), false, maxRowsPerResponse: 5);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), timeProvider);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.Open(database.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1,
+            TimeSpan.FromHours(3));
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => NativePublicKlineFeed.WarmupBoundedAsync(restClient, "BTCUSDT",
+                profile, ledger, new NativePublicKlineRestHistoryBudget(1, 12),
+                new NativePublicKlineRestHistoryBudget(1, 3), timeProvider,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("page budget", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Requests);
+        Assert.Equal("15m", Query(handler.Requests[0], "interval"));
+        Assert.Equal("12", Query(handler.Requests[0], "limit"));
+        Assert.Equal(5, ledger.Read("binance-usdm-native-kline:BTCUSDT").Receipts.Count);
+    }
+
+    [Fact]
     public async Task OpenPrimaryKlineDoesNotTriggerButItsAcceptedCloseDoes()
     {
         using FeedFixture fixture = await CreateFixtureAsync();
@@ -533,7 +634,7 @@ public sealed class NativePublicKlineFeedTests
     }
 
     private sealed class KlineHandler(IReadOnlyList<BinanceKline> bars,
-        bool rejectRequests) : HttpMessageHandler
+        bool rejectRequests, int maxRowsPerResponse = int.MaxValue) : HttpMessageHandler
     {
         private readonly List<BinanceKline> _bars = [.. bars];
 
@@ -558,7 +659,7 @@ public sealed class NativePublicKlineFeedTests
             object?[][] rows = _bars.Where(bar => bar.Timeframe == interval
                     && bar.OpenTimeMilliseconds >= start && bar.OpenTimeMilliseconds <= end)
                 .OrderBy(static bar => bar.OpenTimeMilliseconds)
-                .Take(limit)
+                .Take(Math.Min(limit, maxRowsPerResponse))
                 .Select(static bar => new object?[]
                 {
                     bar.OpenTimeMilliseconds,

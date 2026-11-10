@@ -37,6 +37,34 @@ public sealed class BinanceWebSocketClientTests
     }
 
     [Fact]
+    public async Task SuccessfulCommandAcknowledgmentsWithNullOrArrayResultsAreIgnored()
+    {
+        FakeTransport transport = new(
+            [
+            Text("{\"result\":null,\"id\":1}"),
+            Text("{\"result\":[\"btcusdt@kline_15m\",\"btcusdt@kline_1h\"],\"id\":2}"),
+            Text(AggTrade(1, 1700000000000, 1700000000000)),
+            Close()
+        ]);
+        BinanceMarketWebSocketClient client = CreateClient(transport,
+            new BinanceWebSocketOptions
+            {
+                AutoReconnect = false,
+                ReceiveTimeout = Timeout.InfiniteTimeSpan,
+                HeartbeatInterval = Timeout.InfiniteTimeSpan,
+                SessionLifetime = Timeout.InfiniteTimeSpan
+            });
+
+        List<BinanceStreamEnvelope> events = await ReadAsync(client,
+            [BinanceSubscription.AggregateTrade("BTCUSDT")]);
+
+        Assert.Single(events);
+        Assert.Equal(0, events[0].StableSequence);
+        Assert.DoesNotContain(client.Diagnostics,
+            diagnostic => diagnostic.Kind == BinanceStreamDiagnosticKind.ParseError);
+    }
+
+    [Fact]
     public async Task ParsesRawAndCombinedEventsAcrossFragmentedFrames()
     {
         FakeTransport transport = new(

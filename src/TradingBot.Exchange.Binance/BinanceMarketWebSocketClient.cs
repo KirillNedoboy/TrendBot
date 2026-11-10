@@ -215,6 +215,11 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
                             exception.Message, stableSequence);
                         continue;
                     }
+                    if (marketEvent is null)
+                    {
+                        continue;
+                    }
+
 
                     DateTimeOffset receiveTime = _timeProvider.GetUtcNow();
                     long eventSequence = stableSequence++;
@@ -331,7 +336,7 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
         _activeTransport = null;
     }
 
-    private static BinanceWebSocketEvent ParseEvent(string rawJson)
+    private static BinanceWebSocketEvent? ParseEvent(string rawJson)
     {
         using JsonDocument document = JsonDocument.Parse(rawJson);
         JsonElement root = document.RootElement;
@@ -345,6 +350,13 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
         {
             streamName = ReadString(root, "stream");
             root = combinedData;
+        }
+
+        if (root.TryGetProperty("result", out _)
+            && root.TryGetProperty("id", out JsonElement requestId)
+            && requestId.ValueKind == JsonValueKind.Number)
+        {
+            return null;
         }
 
         string eventType = ReadString(root, "e");
