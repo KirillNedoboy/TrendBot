@@ -1,5 +1,24 @@
 # Current checkpoint
 
+## P15-M03-T009 (SR-03.1) — DONE (2026-11-10)
+
+- **Authorization/dependencies:** The user authorized only T009; formal dependency P15-M03-T008 was DONE before implementation. The user additionally authorized changing only T010's blocker evidence; T010 remains BLOCKED and its implementation is unauthorized. No other later task was changed.
+- **Deliverable:** Added `LaneASetupObservationProjection`, retaining the exact existing SETUP-01/02 results and their shared price-context/quality evidence. Each family/direction exposes `Confirmed`, `NoSetup`, `Unknown`, or `Invalidated`; `IsComplete` is false if any required family/direction is unknown. Same-direction overlap is explicitly `Confirmed`, `NoOverlap`, or `Unknown`, preserving both families. `LaneASignalEvaluationResult.SetupObservations` exposes the projection. No evaluator/formula clone, optional Lane B/C gate, `Neutral` state, persistence, order, risk, position, or private transport behavior was added.
+- **Behavioral checks:** The focused Core filter below passed 43/43, covering SETUP-01/02 and quality regressions, all four statuses in both directions, family overlap, required-unknown blocking, optional unknown Vwap/POC, unknown-to-confirmed prefix transition, and same-input serialized replay parity.
+- **Build/format:** `TradingBot.App` Release build with `--warnaserror` passed with 0 warnings/errors. Scoped whitespace verification passed for the Core projection, App evaluator result, and projection test. The App file was already untracked; its existing line endings were normalized because the changed-file formatter requires CRLF.
+- **Docs/hash:** Documentation fixtures passed 11/11; the validator passed with 19 phases, 43 milestones, 152 tasks, and no READY task (explicit unresolved blockers). Canonical source SHA-256: `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- **T010 boundary:** T010 remains BLOCKED; only its blocker evidence now states T009 is DONE and T010 implementation requires separate explicit authorization. No T010 code, scope, acceptance criteria, or status changes were made.
+- **Changed files:** `src/TradingBot.Core/LaneASetupObservationProjection.cs` (new), `src/TradingBot.App/LaneASignalEvaluator.cs` (additive projection property), `tests/TradingBot.Core.Tests/LaneASetupObservationProjectionTests.cs` (new), `docs/architecture/lane-a-observation-projection.md` (new), `docs/TASKS.md` (T009 status/evidence; T010 blocker evidence only), and `HANDOFF.md`.
+
+```powershell
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" test tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~LaneASetupObservationProjectionTests|FullyQualifiedName~BoundaryRejectionSetupTests|FullyQualifiedName~CenterRetestSetupTests|FullyQualifiedName~LaneASetupFixtureTests|FullyQualifiedName~FeatureQualityEvaluatorTests|FullyQualifiedName~FeatureQualityRegressionTests"'
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" build src/TradingBot.App/TradingBot.App.csproj -c Release --no-restore --warnaserror'
+pwsh -NoProfile -File tools/tests/validate-docs.Tests.ps1
+pwsh -NoProfile -File tools/validate-docs.ps1
+pwsh -NoProfile -Command '(Get-FileHash docs/sources/FINAL_TECH_SPEC.md -Algorithm SHA256).Hash'
+```
+
+
 ## P15-M03-T006–T008 authorized work
 
 - **Authorization/order:** The user authorized only T006 → T007 → T008; T007 and T008 are formally DONE. T008's predeclared envelope was BTCUSDT only via `/fapi/v1/exchangeInfo` plus `MetadataCandidateFilter`; REST `[last completed UTC hour boundary − 24h, boundary)`, 96/24 expected closes, one REST page per timeframe and raw caps 97/25 per run; prospective WS ≤70m, one controlled reconnect, no automatic retry, ≤120s to first post-reconnect event; 64 MiB per-run store, 50,000 receipts, 4 MiB metadata/report each, WS frame/message ≤64/256 KiB, dedup 512. Three separate bounded attempts were made: two aborted at WebSocket parsing and one passed. Each attempt used one page per timeframe, so total across attempts was three pages per timeframe; no REST retry occurred within a run. T009+ remains blocked and unauthorized. P17, private execution, order/risk behavior, canonical source, commit, and push remain out of scope.
