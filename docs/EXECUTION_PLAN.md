@@ -10,13 +10,13 @@ Every replay-facing milestone preserves the causal tuple of event time, exchange
 
 The user requests **15-minute primary signals without opening orders**, not continuation of limited-live work. Follow the revised [signal-only research plan](../additional-strategy-research-plan.md): public 15-minute/1-hour data → existing Lane A setups → durable signals → output-only notifications → prospective outcome evaluation. Additional MA/structure/Lane B/C hypotheses are separate comparisons, not prerequisites for delivering the baseline signal system.
 
-- The independent signal branch is formally registered. P15-M03-T001 and P15-M03-T002 are DONE; P15-M03-T003 through T031 remain BLOCKED. Preserve existing task evidence and the Phase 17 blockers. There is no Phase 19, no SR-07 dependency on baseline SR-08, and no production, testnet, demo, paper-order, or real-order scope.
+- The independent signal branch is formally registered. P15-M03-T001 through T011 are DONE; P15-M03-T012 through T031 remain BLOCKED pending prerequisites and independent authorizations. Preserve historical task evidence and Phase 17 blockers. There is no Phase 19, no SR-07 dependency on baseline SR-08, and no production, testnet, demo, paper-order, or real-order scope.
 
 Audit checkpoint (2026-11-09): GOV-01.1/01.2 are recorded in P01-M03 and verified with native PowerShell 7. The validator accepts the formal mapping in P15-M03. P15-M03-T001 and P15-M03-T002 are DONE; later signal tasks remain BLOCKED pending prerequisites and separate authorizations. The architecture review records causal defects and earlier tooling failures; do not use that historical audit as current check evidence. No implementation task starts through this planning update.
 
 ## Signal-only detailed work plan
 
-**Статус: планирование зарегистрировано, само по себе не разрешает реализацию.** Ниже 33 work items в девяти группах; их однозначное соответствие formal IDs находится в [TASKS](TASKS.md#signal-only-work-item-mapping), а статусы/dependencies/acceptance/evidence — только в formal task rows. GOV-01.1/01.2 завершены; P15-M03-T001 и P15-M03-T002 — DONE; последующие SR tasks остаются `BLOCKED`. Runtime, scripts, параметры V1, canonical source и P17 не меняются.
+**Статус: формальная регистрация завершена, реализация разрешена только в пределах отдельно авторизованных задач.** Ниже 33 work items в девяти группах; их однозначное соответствие formal IDs находится в [TASKS](TASKS.md#signal-only-work-item-mapping), а статусы/dependencies/acceptance/evidence — только в formal task rows. GOV-01.1/01.2 завершены; P15-M03-T001–T011 — DONE; P15-M03-T012–T031 остаются `BLOCKED` из-за незавершённых зависимостей или отсутствия отдельной авторизации. Runtime, scripts, параметры V1, canonical source и P17 не меняются.
 
 ### Brainstorming decision
 
@@ -406,7 +406,7 @@ GOV-01 tooling and formal registration are complete. Their evidence is in [TASKS
 | Bounded duration/resources/storage/health и разрешение public run | До SR-06 | Нет service/deployment запуска по одному наличию плана. |
 | Нет пригодных Flow vectors/OB/trade/Lane B/C данных либо ML evidence | Только соответствующая optional study | UNKNOWN/INCONCLUSIVE/reject; baseline и независимые optional studies не блокируются. |
 
-При новом discovered contract conflict, failed causal parity, утрате durable state или невозможности наблюсти требуемую приёмку остановить затронутую задачу, сохранить evidence и blocker. Не сужать acceptance молча, не выдавать mock/синтетическую прибыль за real-data proof. Следующий шаг: startup selector сейчас не выбирает READY task; P15-M03-T001 (SR-01.1) остаётся BLOCKED до отдельной реализации-authorization. Неопределённые profile values остаются unknown и не придумываются. GOV закрыта; SR implementation и торговля не начинались.
+При новом discovered contract conflict, failed causal parity, утрате durable state или невозможности наблюсти требуемую приёмку остановить затронутую задачу, сохранить evidence и blocker. Не сужать acceptance молча, не выдавать mock/синтетическую прибыль за real-data proof. Следующий шаг: startup selector не выбирает READY task; P15-M03-T012 (SR-04.1) и P15-M03-T015 (SR-05.1) остаются BLOCKED до отдельной авторизации, при выполненных зависимостях. GOV закрыта; P15-M03-T001–T011 формально DONE. T012+ и торговые работы не начинались. Неопределённые profile values остаются unknown и не придумываются.
 
 
 

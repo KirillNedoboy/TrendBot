@@ -139,3 +139,29 @@ identity, provenance, blockers, and explicit exclusions. It grants no private
 or real-order execution authority. Export evidence remains synthetic/local;
 private reconciliation, real Binance connectivity, Linux/systemd operation,
 and long-duration soak remain outside this task.
+
+## P15-M03-T011 public-only signal runtime
+
+Start the isolated signal path with `signal-only --config <public-config.json>`.
+The strict format-v1 root requires mode `signal-only-public`, a complete explicit
+Binance USD-M native-kline profile and scenario-policy set, unique symbols within
+the declared universe bounds, and separate file-backed paths for the input ledger
+and signal journal. Unknown or duplicate properties and private transport settings
+are rejected before either database is opened.
+
+The command composes the existing public REST and market WebSocket clients. Each
+symbol has one `SignalOnlyInstrumentConsumer` with per-instrument serialization.
+An empty ledger triggers REST warmup; a populated ledger restores feed history and
+replays pending accepted closed 15m receipts in durable intake order. Only a newly
+accepted closed 15m WebSocket input triggers existing Lane A evaluators and the
+scenario/quality projection. Closed 1h WebSocket context is retained with its
+durable payload hash for causal signal provenance.
+
+Confirmed setups atomically commit the signal/evidence, scenario checkpoint and
+events, cursor, and output-only outbox through `SqliteSignalJournalStore`;
+non-confirmed inputs commit diagnostics instead. A crash after input-ledger append
+but before journal commit is recovered by replaying the original receipt, while a
+committed journal checkpoint prevents a duplicate signal/outbox on restart. This
+path has no private transport, signer, executor, risk authorization, order intent,
+position, or portfolio dependency. The existing `shadow` command and its gates are
+unchanged. Public live connectivity and Linux/systemd operation remain unverified.

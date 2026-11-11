@@ -1,7 +1,9 @@
 ﻿using System.Globalization;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using TradingBot.App;
 using TradingBot.Core;
@@ -501,6 +503,340 @@ public sealed class NativePublicKlineFeedTests
                 missing.OpenTimeMilliseconds).EventId);
     }
 
+    [Fact]
+    public async Task SignalOnlyConsumerPersistsClosedInputAndReopensWithoutDuplicates()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1,
+            TimeSpan.FromHours(3));
+        SignalScenarioPolicySet policies = CreateScenarioPolicies();
+        string streamId = "binance-usdm-native-kline:BTCUSDT";
+        BinanceKline trigger = CreateKline(PrimaryOpen, "15m", true);
+        BinanceStreamEnvelope envelope = CreateEnvelope(trigger, CoClose.AddMilliseconds(20));
+        string eventId = BinanceKlineIdentity.Create("BTCUSDT", "15m",
+            trigger.OpenTimeMilliseconds).EventId;
+        string committedJson;
+
+        using (FeedFixture fixture = await CreateFixtureAsync(
+            ledgerPath: inputDatabase.Path))
+        using (SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.Open(inputDatabase.Path))
+        using (SqliteSignalJournalStore journal =
+            SqliteSignalJournalStore.Open(journalDatabase.Path))
+        {
+            using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+                policies, fixture.Feed, ledger, journal);
+            NativePublicKlineFeedUpdate update = await consumer.ProcessAsync(envelope,
+                TestContext.Current.CancellationToken);
+            NativePublicKlineEvaluation evaluation =
+                Assert.IsType<NativePublicKlineEvaluation>(update.Evaluation);
+            Assert.Equal(BinanceKlineIngestionStatus.Accepted, update.Status);
+            Assert.True(evaluation.IsReady);
+
+            SignalJournalSnapshot committed = journal.Read(streamId);
+            AssertDurableOutcome(evaluation, committed, eventId);
+            committedJson = CoreJsonSerializer.Serialize(committed);
+        }
+
+        KlineHandler rejectingHandler = new(CreateRestBars(null), true);
+        using HttpClient recoveryHttpClient = new(rejectingHandler);
+        BinancePublicRestClient recoveryRestClient = new(recoveryHttpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")),
+            new FixedTimeProvider(WarmupAt));
+        using SqliteNativeBarInputLedger reopenedLedger =
+            SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore reopenedJournal =
+            SqliteSignalJournalStore.Open(journalDatabase.Path);
+        NativePublicKlineFeed recoveredFeed = NativePublicKlineFeed.RestoreFromLedger(
+            recoveryRestClient, "BTCUSDT", profile, reopenedLedger,
+            new FixedTimeProvider(WarmupAt));
+        using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
+            policies, recoveredFeed, reopenedLedger, reopenedJournal);
+
+        NativePublicKlineFeedUpdate duplicate = await recovered.ProcessAsync(envelope,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BinanceKlineIngestionStatus.Duplicate, duplicate.Status);
+        Assert.Equal(committedJson,
+            CoreJsonSerializer.Serialize(reopenedJournal.Read(streamId)));
+        Assert.Empty(rejectingHandler.Requests);
+    }
+
+    [Fact]
+    public async Task SignalOnlyConsumerPersistsConfirmedSignalAndOutbox()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        DateTimeOffset contextHistoryStart = HistoryStart.AddHours(-2);
+        BinanceKline[] restBars = CreateRestBars(null, contextHistoryStart);
+        DateTimeOffset pivotOpen = HistoryStart.AddMinutes(15 * 8);
+        int pivotIndex = Array.FindIndex(restBars, bar => bar.Timeframe == "15m"
+            && bar.OpenTimeMilliseconds == pivotOpen.ToUnixTimeMilliseconds());
+        Assert.NotEqual(-1, pivotIndex);
+        restBars[pivotIndex] = CreateKline(pivotOpen, "15m", true, low: 60m);
+        DateTimeOffset contextPivotOpen = contextHistoryStart.AddHours(1);
+        int contextPivotIndex = Array.FindIndex(restBars, bar => bar.Timeframe == "1h"
+            && bar.OpenTimeMilliseconds == contextPivotOpen.ToUnixTimeMilliseconds());
+        Assert.NotEqual(-1, contextPivotIndex);
+        restBars[contextPivotIndex] = CreateKline(contextPivotOpen, "1h", true, low: 60m);
+
+        KlineHandler handler = new(restBars, false);
+        using HttpClient httpClient = new(handler);
+        FixedTimeProvider timeProvider = new(WarmupAt);
+        BinancePublicRestClient rest = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), timeProvider);
+        using SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore journal =
+            SqliteSignalJournalStore.Open(journalDatabase.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1,
+            TimeSpan.FromHours(3), htfSlowPeriodBars: 2,
+            contextHistoryStart: contextHistoryStart, channelCenterPeriodBars: 2);
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupAsync(
+            rest, "BTCUSDT", profile, ledger, timeProvider,
+            TestContext.Current.CancellationToken);
+        using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), feed, ledger, journal);
+        BinanceKline context = CreateKline(ContextOpen, "1h", true);
+        NativePublicKlineFeedUpdate contextUpdate = await consumer.ProcessAsync(
+            CreateEnvelope(context, CoClose.AddMilliseconds(10)),
+            TestContext.Current.CancellationToken);
+        Assert.Null(contextUpdate.Evaluation);
+        BinanceKline trigger = CreateKline(PrimaryOpen, "15m", true,
+            low: 100m, openOverride: 110m, highOverride: 112m,
+            closeOverride: 111m);
+        string triggerEventId = BinanceKlineIdentity.Create("BTCUSDT", "15m",
+            trigger.OpenTimeMilliseconds).EventId;
+        BinanceStreamEnvelope envelope = CreateEnvelope(trigger,
+            CoClose.AddMilliseconds(20));
+
+        NativePublicKlineEvaluation evaluation = Assert.IsType<NativePublicKlineEvaluation>(
+            (await consumer.ProcessAsync(envelope, TestContext.Current.CancellationToken))
+                .Evaluation);
+
+        Assert.True(evaluation.IsReady);
+        Assert.Equal(LaneASetupObservationStatus.Confirmed,
+            evaluation.LaneA.SetupObservations.CenterRetestLongStatus);
+        SignalJournalSnapshot snapshot = journal.Read(
+            "binance-usdm-native-kline:BTCUSDT");
+        SignalJournalSignal persisted = Assert.Single(snapshot.Signals);
+        Assert.Equal(SetupType.CenterRetest, persisted.Signal.Identity.Family);
+        Assert.Equal(Direction.Long, persisted.Signal.Identity.Direction);
+        Assert.Equal(BinanceKlineIdentity.Create("BTCUSDT", "15m",
+            pivotOpen.ToUnixTimeMilliseconds()).EventId,
+            persisted.Signal.Identity.SetupEventId);
+        Assert.Equal(triggerEventId, persisted.Signal.ReferencePrice.EventId);
+        Assert.Equal(SignalEvidenceState.Complete, persisted.Evidence.State);
+        string contextEventId = BinanceKlineIdentity.Create("BTCUSDT", "1h",
+            context.OpenTimeMilliseconds).EventId;
+        NativeBarInputLedgerReceipt contextReceipt = Assert.Single(
+            ledger.Read("binance-usdm-native-kline:BTCUSDT").Receipts,
+            receipt => receipt.EventId == contextEventId
+                && receipt.Status == NativeBarInputReceiptStatus.Accepted);
+        SignalInputReference contextReference = Assert.Single(
+            persisted.Evidence.Provenance.InputReferences,
+            reference => reference.Role == SignalInputRole.HigherTimeframe
+                && reference.EventId == contextEventId);
+        Assert.Equal(contextReceipt.RevisionHash, contextReference.PayloadHash);
+        Assert.Contains(snapshot.ScenarioEvents, scenarioEvent =>
+            scenarioEvent.Kind == SignalScenarioEventKind.AlertCreated
+            && scenarioEvent.SignalId == persisted.Signal.Identity.SignalId);
+        Assert.Single(snapshot.Outbox);
+    }
+
+    [Fact]
+    public async Task SignalOnlyConsumerReplaysInputCommittedBeforeProcessCrash()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1,
+            TimeSpan.FromHours(3));
+        SignalScenarioPolicySet policies = CreateScenarioPolicies();
+        string streamId = "binance-usdm-native-kline:BTCUSDT";
+        BinanceKline trigger = CreateKline(PrimaryOpen, "15m", true);
+        BinanceStreamEnvelope envelope = CreateEnvelope(trigger, CoClose.AddMilliseconds(20));
+        string eventId = BinanceKlineIdentity.Create("BTCUSDT", "15m",
+            trigger.OpenTimeMilliseconds).EventId;
+
+        using (FeedFixture fixture = await CreateFixtureAsync(
+            ledgerPath: inputDatabase.Path))
+        using (SqliteSignalJournalStore journal =
+            SqliteSignalJournalStore.Open(journalDatabase.Path))
+        {
+            NativePublicKlineFeedUpdate accepted = fixture.Feed.Accept(envelope);
+            Assert.Equal(BinanceKlineIngestionStatus.Accepted, accepted.Status);
+            Assert.Null(journal.Read(streamId).Checkpoint);
+        }
+
+        KlineHandler rejectingHandler = new(CreateRestBars(null), true);
+        using HttpClient recoveryHttpClient = new(rejectingHandler);
+        BinancePublicRestClient recoveryRestClient = new(recoveryHttpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")),
+            new FixedTimeProvider(WarmupAt));
+        using SqliteNativeBarInputLedger reopenedLedger =
+            SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore reopenedJournal =
+            SqliteSignalJournalStore.Open(journalDatabase.Path);
+        NativePublicKlineFeed recoveredFeed = NativePublicKlineFeed.RestoreFromLedger(
+            recoveryRestClient, "BTCUSDT", profile, reopenedLedger,
+            new FixedTimeProvider(WarmupAt));
+        using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
+            policies, recoveredFeed, reopenedLedger, reopenedJournal);
+
+        SignalJournalSnapshot recoveredSnapshot = reopenedJournal.Read(streamId);
+        NativeBarInputLedgerReceipt triggerReceipt = Assert.Single(
+            reopenedLedger.Read(streamId).Receipts, receipt =>
+                receipt.EventId == eventId
+                && receipt.Status == NativeBarInputReceiptStatus.Accepted
+                && receipt.TriggerEventId == eventId);
+        NativePublicKlineEvaluation replayed = Assert.IsType<NativePublicKlineEvaluation>(
+            recoveredFeed.ReplayDurableReceipt(triggerReceipt).Update.Evaluation);
+        AssertDurableOutcome(replayed, recoveredSnapshot, eventId);
+        Assert.NotNull(recoveredSnapshot.Checkpoint);
+        Assert.Empty(rejectingHandler.Requests);
+    }
+
+    [Fact]
+    public async Task SignalOnlyConfigurationRejectsPrivateTransportBeforeOpeningStores()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        SignalOnlyConfiguration configuration = new(["btcusdt"],
+            inputDatabase.Path, journalDatabase.Path,
+            CreateProfile(1, 1, TimeSpan.FromHours(3)), CreateScenarioPolicies());
+        JsonObject root = JsonNode.Parse(configuration.ToJson())!.AsObject();
+        root["privateTransport"] = "enabled";
+        string configPath = Path.Combine(Path.GetTempPath(),
+            $"tradingbot-signal-only-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(configPath, root.ToJsonString(),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            using StringWriter output = new();
+            using StringWriter error = new();
+            int result = await SignalOnlyCommand.RunAsync(
+                ["signal-only", "--config", configPath], output, error,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, result);
+            Assert.Contains("invalid public configuration", error.ToString(),
+                StringComparison.Ordinal);
+            Assert.False(File.Exists(inputDatabase.Path));
+            Assert.False(File.Exists(journalDatabase.Path));
+            Assert.Throws<JsonException>(() =>
+                SignalOnlyConfiguration.Parse(root.ToJsonString()));
+        }
+        finally
+        {
+            File.Delete(configPath);
+        }
+    }
+
+    [Fact]
+    public void SignalOnlyCompositionHasNoPrivateOrExecutionDependencies()
+    {
+        string[] forbiddenNames =
+        [
+            "Private", "Signer", "Executor", "Risk", "Authorization",
+            "OrderIntent", "Position", "Portfolio"
+        ];
+        Type[] roots = [typeof(SignalOnlyCommand), typeof(SignalOnlyInstrumentConsumer)];
+        Type[] implementationTypes = roots.Concat(roots.SelectMany(type =>
+            type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))).ToArray();
+        Type[] dependencyTypes = implementationTypes.SelectMany(DeclaredTypes)
+            .SelectMany(ExpandType).ToArray();
+
+        Assert.DoesNotContain(dependencyTypes, type => forbiddenNames.Any(name =>
+            type.Name.Contains(name, StringComparison.Ordinal)));
+    }
+
+    private static IEnumerable<Type> DeclaredTypes(Type type)
+    {
+        BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
+            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        return type.GetFields(flags).Select(static field => field.FieldType)
+            .Concat(type.GetProperties(flags).Select(static property => property.PropertyType))
+            .Concat(type.GetConstructors(flags).SelectMany(static constructor =>
+                constructor.GetParameters().Select(static parameter => parameter.ParameterType)))
+            .Concat(type.GetMethods(flags).SelectMany(static method =>
+                new[] { method.ReturnType }.Concat(method.GetParameters()
+                    .Select(static parameter => parameter.ParameterType))));
+    }
+
+    private static IEnumerable<Type> ExpandType(Type type)
+    {
+        if (type.HasElementType && type.GetElementType() is { } elementType)
+        {
+            foreach (Type element in ExpandType(elementType))
+            {
+                yield return element;
+            }
+        }
+
+        yield return type;
+        if (type.IsGenericType)
+        {
+            foreach (Type argument in type.GetGenericArguments())
+            {
+                foreach (Type nested in ExpandType(argument))
+                {
+                    yield return nested;
+                }
+            }
+        }
+    }
+
+    private static void AssertDurableOutcome(NativePublicKlineEvaluation evaluation,
+        SignalJournalSnapshot snapshot, string sourceEventId)
+    {
+        Assert.NotNull(snapshot.Checkpoint);
+        LaneASetupObservationProjection projection = evaluation.LaneA.SetupObservations;
+        List<string> confirmedInputs = [];
+        Add(projection.BoundaryLongStatus, SetupType.BoundaryRejection, Direction.Long);
+        Add(projection.BoundaryShortStatus, SetupType.BoundaryRejection, Direction.Short);
+        Add(projection.CenterRetestLongStatus, SetupType.CenterRetest, Direction.Long);
+        Add(projection.CenterRetestShortStatus, SetupType.CenterRetest, Direction.Short);
+        if (confirmedInputs.Count == 0)
+        {
+            Assert.Contains(snapshot.Diagnostics, diagnostic =>
+                diagnostic.InputEventId == sourceEventId
+                && diagnostic.Code == "no-confirmed-setup");
+            return;
+        }
+
+        Assert.NotNull(snapshot.ScenarioSnapshot);
+        foreach (string inputEventId in confirmedInputs)
+        {
+            Assert.True(snapshot.ScenarioSnapshot.ProcessedInputs.Any(input =>
+                    input.EventId == inputEventId)
+                || snapshot.Diagnostics.Any(diagnostic =>
+                    diagnostic.InputEventId == inputEventId));
+        }
+
+        void Add(LaneASetupObservationStatus status, SetupType family,
+            Direction direction)
+        {
+            if (status == LaneASetupObservationStatus.Confirmed)
+            {
+                confirmedInputs.Add(
+                    $"scenario-confirm:{sourceEventId}:{family}:{direction}");
+            }
+        }
+    }
+
+    private static SignalScenarioPolicySet CreateScenarioPolicies() => new(
+        SignalScenarioPolicySet.CurrentFormatVersion,
+        new SignalScenarioExpiryPolicy(SignalScenarioExpiryPolicy.CurrentFormatVersion,
+            "signal-only-expiry-v1", TimeSpan.FromHours(24)),
+        new SignalScenarioRearmPolicy(SignalScenarioRearmPolicy.CurrentFormatVersion,
+            "signal-only-rearm-v1", TimeSpan.Zero, true),
+        new SignalScenarioInvalidationPolicy(
+            SignalScenarioInvalidationPolicy.CurrentFormatVersion,
+            "signal-only-invalidation-v1", true, true));
+
+
     private static async Task<FeedFixture> CreateFixtureAsync(int setupSeedBars = 1,
         int setupWarmupBars = 1, int? missingSetupIndex = null,
         TimeSpan? maximumAge = null, string? ledgerPath = null,
@@ -524,13 +860,15 @@ public sealed class NativePublicKlineFeedTests
     }
 
     private static PublicSignalProfileConfiguration CreateProfile(int setupSeedBars,
-        int setupWarmupBars, TimeSpan maximumAge)
+        int setupWarmupBars, TimeSpan maximumAge, int htfSlowPeriodBars = 1,
+        DateTimeOffset? contextHistoryStart = null, int channelCenterPeriodBars = 1)
     {
         PublicSignalTimeframeConfiguration Timeframe(string timeframe, int seedBars,
-            int warmupBars) => new(timeframe, PublicSignalDataSource.BinanceUsdMNativeKlines,
-            "binance-usdm-native-kline-v1", HistoryStart, "history-v1", seedBars,
-            "seed-v1", warmupBars, "warmup-v1", "freshness-v1", maximumAge,
-            maximumAge);
+            int warmupBars, DateTimeOffset? historyStart = null) => new(timeframe,
+            PublicSignalDataSource.BinanceUsdMNativeKlines,
+            "binance-usdm-native-kline-v1", historyStart ?? HistoryStart, "history-v1",
+            seedBars, "seed-v1", warmupBars, "warmup-v1", "freshness-v1",
+            maximumAge, maximumAge);
 
         PublicSignalIndicatorConfiguration indicators = new(
             priceContextVersion: PriceContextFeatureCalculator.CurrentAlgorithmVersion,
@@ -539,7 +877,7 @@ public sealed class NativePublicKlineFeedTests
             atrPeriodBars: 1, atrMode: PriceContextAtrMode.Sma,
             atrValueUnit: PublicSignalValueUnit.Price,
             channelCenterKind: PriceContextChannelCenterKind.Ema,
-            channelCenterPeriodBars: 1,
+            channelCenterPeriodBars: channelCenterPeriodBars,
             hlc3SmoothingKind: PriceContextMovingAverageKind.Ema,
             channelCenterValueUnit: PublicSignalValueUnit.Price,
             channelWidthKind: PriceContextChannelWidthKind.Atr,
@@ -548,17 +886,18 @@ public sealed class NativePublicKlineFeedTests
             channelWidthMultiplierUnit: PublicSignalMultiplierUnit.Dimensionless,
             levelBufferMultiplier: 1m,
             levelBufferMultiplierUnit: PublicSignalMultiplierUnit.Dimensionless,
-            htfFastPeriodBars: 1, htfSlowPeriodBars: 1,
+            htfFastPeriodBars: 1, htfSlowPeriodBars: htfSlowPeriodBars,
             htfMovingAverageKind: PriceContextMovingAverageKind.Ema,
             htfConfirmationBars: 1,
             htfMovingAverageValueUnit: PublicSignalValueUnit.Price);
         return new PublicSignalProfileConfiguration(1, "test-profile-v1",
             Timeframe("15m", setupSeedBars, setupWarmupBars),
-            Timeframe("1h", 1, 1), indicators,
+            Timeframe("1h", 1, 1, contextHistoryStart), indicators,
             new PublicSignalUniverseConfiguration("test-universe-v1", 1, 1));
     }
 
-    private static BinanceKline[] CreateRestBars(int? missingSetupIndex)
+    private static BinanceKline[] CreateRestBars(int? missingSetupIndex,
+        DateTimeOffset? contextHistoryStart = null)
     {
         List<BinanceKline> bars = [];
         for (int index = 0; index <= 12; index++)
@@ -571,25 +910,30 @@ public sealed class NativePublicKlineFeedTests
             }
         }
 
-        for (int index = 0; index <= 2; index++)
+        DateTimeOffset contextStart = contextHistoryStart ?? HistoryStart;
+        for (int index = 0; index <= 4; index++)
         {
-            bars.Add(CreateKline(HistoryStart.AddHours(index), "1h",
-                HistoryStart.AddHours(index + 1) <= WarmupAt));
+            DateTimeOffset openTime = contextStart.AddHours(index);
+            bars.Add(CreateKline(openTime, "1h",
+                openTime.AddHours(1) <= WarmupAt));
         }
 
         return [.. bars];
     }
 
     private static BinanceKline CreateKline(DateTimeOffset openTime, string timeframe,
-        bool isClosed, decimal? low = null)
+        bool isClosed, decimal? low = null, decimal? openOverride = null,
+        decimal? highOverride = null, decimal? closeOverride = null)
     {
         long duration = timeframe == "15m" ? TimeSpan.FromMinutes(15).Ticks
             : TimeSpan.FromHours(1).Ticks;
         long openMilliseconds = openTime.ToUnixTimeMilliseconds();
-        decimal open = 100m + (decimal)(openTime - HistoryStart).TotalMinutes / 100m;
-        decimal close = open + 0.5m;
+        decimal open = openOverride
+            ?? 100m + (decimal)(openTime - HistoryStart).TotalMinutes / 100m;
+        decimal close = closeOverride ?? open + 0.5m;
+        decimal high = highOverride ?? Math.Max(open, close) + 1m;
         decimal minimum = low ?? open - 1m;
-        return new BinanceKline(openMilliseconds, open, Math.Max(open, close) + 1m,
+        return new BinanceKline(openMilliseconds, open, high,
             Math.Min(minimum, Math.Min(open, close)), close, 10m,
             checked(openMilliseconds + duration / TimeSpan.TicksPerMillisecond - 1),
             1000m, 10, 5m, 500m, "0", timeframe, isClosed);

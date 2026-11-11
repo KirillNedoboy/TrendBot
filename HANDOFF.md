@@ -1,13 +1,42 @@
 # Current checkpoint
 
+
+## P15-M03-T011 (SR-03.3) — DONE (2026-11-10)
+
+- **Authorization/order:** T010 was formally accepted as DONE before T011 began. The user authorized only T010 and T011 in sequence. T012+ remain BLOCKED pending separate authorization; no later task was started or unblocked.
+- **Deliverable:** Added `SignalOnlyConfiguration`, `SignalOnlyCommand`, and `SignalOnlyInstrumentConsumer`, and routed `signal-only --config` through `Program.Main` without changing the existing `shadow`/`shadow-audit-export` paths. Config is strict format v1 and `signal-only-public`: it requires an explicit ready Binance USD-M native-kline profile and scenario policies, unique in-bound symbols, and distinct file-backed input-ledger/signal-journal paths. Public REST warms an empty ledger; restart restores an existing ledger, replays pending accepted closed 15m receipts in original durable order, and resumes with one serialized consumer per instrument.
+- **Signal flow:** Closed 15m WebSocket inputs use the existing native feed, Lane A evaluators, scenario projection, and quality. Confirmed Center Retest produced one durable signal/evidence record, scenario alert, checkpoint, and outbox item in SQLite. The signal's 1h provenance hash matched the separately persisted public input receipt; this exposed and fixed receipt-hash tracking for non-trigger HTF WebSocket inputs. Non-confirmed input produced a durable diagnostic; restart/retry and crash-gap replay did not duplicate it. No evaluator/formula copy was added.
+- **Boundaries:** Unknown/duplicate/forbidden config is rejected before stores open. The actual process-level `signal-only --config` probe rejected an unknown `privateTransport` field with exit 2. Reflection checks found no private signer/executor, risk authorization, OrderIntent, position, or portfolio dependency in the composition. No order, execution, risk/position behavior, private transport, or delivery side effect was added. The existing shadow command remains intact.
+- **Checks:** `NativePublicKlineFeedTests` passed 22/22; `OperationalShadowCommandTests` passed 2/2; App Release build with `--warnaserror` passed with 0 warnings/errors; scoped changed-file format verification passed. Documentation fixtures passed all 11 cases; the docs validator passed with 19 phases, 43 milestones, 152 tasks, and no READY task (explicit unresolved blockers). Canonical source SHA-256: `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- **Limits:** Positive closed-input/journal behavior used deterministic public-feed fixtures with real SQLite; no live Binance session, Linux/systemd execution, or production operation was exercised.
+- **Changed files:** `src/TradingBot.App/SignalOnlyConfiguration.cs`, `SignalOnlyCommand.cs`, `SignalOnlyInstrumentConsumer.cs`, `NativePublicKlineFeed.cs`, `Program.cs`; `tests/TradingBot.IntegrationTests/NativePublicKlineFeedTests.cs`; `docs/architecture/operations.md`, `docs/EXECUTION_PLAN.md`, `docs/TASKS.md`, and `HANDOFF.md`.
+
+- **Next:** P15-M03-T012 (SR-04.1) remains BLOCKED pending a separate user authorization. Do not start T012+.
+
+
+## P15-M03-T010 (SR-03.2) — DONE (2026-11-10)
+
+- **Authorization/dependencies:** The user authorized T010 after formal P15-M03-T009=DONE and authorized T011 only in strict sequence. T010 acceptance was recorded before T011 implementation. No T012+ work was started or authorized.
+- **Deliverable:** Added `SqliteSignalJournalStore` and immutable commit/read contracts in Infrastructure. Standalone SQLite schema v1 persists input receipts, stable signal/evidence identity, append-only scenario events, diagnostics, outbox rows, and checkpoint. A single immediate transaction commits the complete projection; exact retry returns false, identity/hash conflict fails closed, and a late event cannot rewrite the committed signal. Shared order/portfolio storage is not opened.
+- **Behavioral checks:** `SqliteSignalJournalStoreTests` passed 8/8: commit/reopen/exact retry, late-input stability, input and signal hash conflicts, checkpoint-trigger failure rollback and retry, concurrent exact commits, continuous/restarted snapshot parity, and standalone-schema isolation. The full Infrastructure.Tests project passed 126/126.
+- **Build/format:** Infrastructure Release build with `--warnaserror` passed with 0 warnings/errors. Scoped whitespace verification passed for both new Infrastructure files and the journal test.
+- **Changed files:** `src/TradingBot.Infrastructure/SignalJournalContracts.cs`, `src/TradingBot.Infrastructure/SqliteSignalJournalStore.cs`, `tests/TradingBot.Infrastructure.Tests/SqliteSignalJournalStoreTests.cs`, `docs/architecture/persistence.md`, `docs/TASKS.md`, and `HANDOFF.md`.
+
+```powershell
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" test tests/TradingBot.Infrastructure.Tests/TradingBot.Infrastructure.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~SqliteSignalJournalStoreTests'
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" build src/TradingBot.Infrastructure/TradingBot.Infrastructure.csproj -c Release --no-restore --warnaserror'
+pwsh -NoProfile -Command '& "$HOME\.dotnet\dotnet.exe" test tests/TradingBot.Infrastructure.Tests/TradingBot.Infrastructure.Tests.csproj -c Release --no-restore'
+```
+
+
 ## P15-M03-T009 (SR-03.1) — DONE (2026-11-10)
 
-- **Authorization/dependencies:** The user authorized only T009; formal dependency P15-M03-T008 was DONE before implementation. The user additionally authorized changing only T010's blocker evidence; T010 remains BLOCKED and its implementation is unauthorized. No other later task was changed.
+- **Authorization/dependencies:** The user authorized T009, then separately authorized only T010 and T011 in strict sequence. T008 was DONE before T009; T009 was formally DONE before T010 started. T012+ remain unauthorized.
 - **Deliverable:** Added `LaneASetupObservationProjection`, retaining the exact existing SETUP-01/02 results and their shared price-context/quality evidence. Each family/direction exposes `Confirmed`, `NoSetup`, `Unknown`, or `Invalidated`; `IsComplete` is false if any required family/direction is unknown. Same-direction overlap is explicitly `Confirmed`, `NoOverlap`, or `Unknown`, preserving both families. `LaneASignalEvaluationResult.SetupObservations` exposes the projection. No evaluator/formula clone, optional Lane B/C gate, `Neutral` state, persistence, order, risk, position, or private transport behavior was added.
 - **Behavioral checks:** The focused Core filter below passed 43/43, covering SETUP-01/02 and quality regressions, all four statuses in both directions, family overlap, required-unknown blocking, optional unknown Vwap/POC, unknown-to-confirmed prefix transition, and same-input serialized replay parity.
 - **Build/format:** `TradingBot.App` Release build with `--warnaserror` passed with 0 warnings/errors. Scoped whitespace verification passed for the Core projection, App evaluator result, and projection test. The App file was already untracked; its existing line endings were normalized because the changed-file formatter requires CRLF.
 - **Docs/hash:** Documentation fixtures passed 11/11; the validator passed with 19 phases, 43 milestones, 152 tasks, and no READY task (explicit unresolved blockers). Canonical source SHA-256: `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
-- **T010 boundary:** T010 remains BLOCKED; only its blocker evidence now states T009 is DONE and T010 implementation requires separate explicit authorization. No T010 code, scope, acceptance criteria, or status changes were made.
+- **T010 boundary:** T010 was subsequently authorized and accepted as documented above; T011 was not started before T010 was formally marked DONE. No T012+ implementation was authorized or started.
 - **Changed files:** `src/TradingBot.Core/LaneASetupObservationProjection.cs` (new), `src/TradingBot.App/LaneASignalEvaluator.cs` (additive projection property), `tests/TradingBot.Core.Tests/LaneASetupObservationProjectionTests.cs` (new), `docs/architecture/lane-a-observation-projection.md` (new), `docs/TASKS.md` (T009 status/evidence; T010 blocker evidence only), and `HANDOFF.md`.
 
 ```powershell

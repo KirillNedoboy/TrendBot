@@ -60,6 +60,17 @@ public sealed record NativePublicKlineFeedUpdate(
     NativePublicKlineEvaluation? Evaluation,
     string? DiagnosticCode,
     string? DiagnosticMessage);
+public sealed record NativePublicKlineFeedReplay(
+    string? Symbol,
+    BinanceKline? Kline,
+    BinanceKlineSourceKind? SourceKind,
+    UtcTimestamp? AvailabilityTime,
+    NativePublicKlineFeedUpdate Update);
+
+public sealed record NativePublicKlineFeedInput(
+    BinanceStreamEnvelope Envelope,
+    NativeBarInputLedgerReceipt Receipt,
+    NativePublicKlineFeedUpdate Update);
 
 /// <summary>Per-timeframe bounds for a capture's REST history warmup.</summary>
 public sealed record NativePublicKlineRestHistoryBudget
@@ -126,6 +137,7 @@ public sealed class NativePublicKlineFeed
     private readonly HashSet<string> _unresolvedStreamDiagnostics = new(StringComparer.Ordinal);
     private long _nextIntakeSequence;
     private DateTimeOffset? _lastCommittedSetupEventTime;
+    private NativeBarInputLedgerReceipt? _lastIntakeReceipt;
     private Exception? _ledgerFailure;
 
     private NativePublicKlineFeed(IBinancePublicRestClient restClient, string symbol,
@@ -403,6 +415,68 @@ public sealed class NativePublicKlineFeed
         return new NativePublicKlineFeedUpdate(ingestion.Status, ingestion.Identity,
             evaluation, diagnosticCode, diagnosticMessage);
     }
+    /// <summary>Accepts an envelope and returns its exact durable intake receipt.</summary>
+    public NativePublicKlineFeedInput AcceptWithReceipt(
+        BinanceStreamEnvelope envelope)
+    {
+        _lastIntakeReceipt = null;
+        NativePublicKlineFeedUpdate update = Accept(envelope);
+        NativeBarInputLedgerReceipt receipt = _lastIntakeReceipt
+            ?? throw new InvalidOperationException(
+                "The native public feed did not persist its intake receipt.");
+        return new NativePublicKlineFeedInput(envelope, receipt, update);
+    }
+
+    /// <summary>Re-evaluates one persisted trigger at its original causal sequence.</summary>
+    public NativePublicKlineFeedReplay ReplayDurableReceipt(
+        NativeBarInputLedgerReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        LedgerKlinePayload payload = DeserializeLedgerPayload(receipt.PayloadJson);
+        if (payload.Kline is null || payload.Symbol is null
+            || payload.SourceMetadata is null)
+        {
+            return new NativePublicKlineFeedReplay(null, null, null, null,
+                new NativePublicKlineFeedUpdate(ToIngestionStatus(receipt.Status),
+                    null, null, receipt.DiagnosticCode, receipt.DiagnosticMessage));
+        }
+
+        BinanceKlineIdentity identity = BinanceKlineIdentity.Create(payload.Symbol,
+            payload.Kline.Timeframe, payload.Kline.OpenTimeMilliseconds);
+        if (!StringComparer.Ordinal.Equals(receipt.EventId, identity.EventId))
+        {
+            throw new InvalidDataException(
+                "The durable public kline receipt has a mismatched event identity.");
+        }
+
+        NativePublicKlineEvaluation? evaluation = null;
+        if (receipt.TriggerEventId is not null)
+        {
+            if (!StringComparer.Ordinal.Equals(receipt.TriggerEventId, identity.EventId)
+                || receipt.TriggerEventTime is null
+                || !_acceptedRevisions.TryGetValue(identity.EventId,
+                    out BinanceKlineAcceptedRevision? revision)
+                || !StringComparer.Ordinal.Equals(revision.RevisionHash,
+                    receipt.RevisionHash))
+            {
+                throw new InvalidDataException(
+                    "The durable public trigger does not match its restored revision.");
+            }
+
+            evaluation = Evaluate(revision, receipt.IntakeSequence);
+            if (evaluation.TriggerRevision.CoreBar.EventTime != receipt.TriggerEventTime)
+            {
+                throw new InvalidDataException(
+                    "The restored public trigger changed its causal event time.");
+            }
+        }
+
+        return new NativePublicKlineFeedReplay(payload.Symbol, payload.Kline,
+            payload.SourceMetadata.Kind, payload.SourceMetadata.AvailabilityTime,
+            new NativePublicKlineFeedUpdate(ToIngestionStatus(receipt.Status),
+                identity, evaluation, receipt.DiagnosticCode, receipt.DiagnosticMessage));
+    }
+
 
     /// <summary>
     /// Reads both native public streams through the existing reconnecting Binance
@@ -410,6 +484,22 @@ public sealed class NativePublicKlineFeed
     /// same timeframe-aware ingestion boundary as direct callers.
     /// </summary>
     public async IAsyncEnumerable<NativePublicKlineFeedUpdate> ReadAsync(
+        BinanceMarketWebSocketClient marketClient,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (BinanceStreamEnvelope envelope in ReadEnvelopesAsync(marketClient,
+            cancellationToken).ConfigureAwait(false))
+        {
+            yield return Accept(envelope);
+        }
+    }
+
+    /// <summary>
+    /// Reads the same native public subscriptions as <see cref="ReadAsync"/> but
+    /// returns the original envelope so a serial consumer can persist its causal
+    /// identity beside the feed evaluation.
+    /// </summary>
+    public async IAsyncEnumerable<BinanceStreamEnvelope> ReadEnvelopesAsync(
         BinanceMarketWebSocketClient marketClient,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -425,7 +515,7 @@ public sealed class NativePublicKlineFeed
             await foreach (BinanceStreamEnvelope envelope in marketClient
                 .ReadAsync(subscriptions, cancellationToken).ConfigureAwait(false))
             {
-                yield return Accept(envelope);
+                yield return envelope;
             }
         }
         finally
@@ -947,6 +1037,7 @@ public sealed class NativePublicKlineFeed
                 payloadJson, diagnosticCode, diagnosticMessage, triggerEventId,
                 triggerEventTime);
             _ledger.Append(_sourceId, receipt);
+            _lastIntakeReceipt = receipt;
             _nextIntakeSequence = sequence;
         }
         catch (Exception exception)
@@ -992,6 +1083,16 @@ public sealed class NativePublicKlineFeed
             BinanceKlineIngestionStatus.Duplicate => NativeBarInputReceiptStatus.Duplicate,
             BinanceKlineIngestionStatus.RevisionConflict => NativeBarInputReceiptStatus.Correction,
             BinanceKlineIngestionStatus.Invalid => NativeBarInputReceiptStatus.Invalid,
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+        };
+
+    private static BinanceKlineIngestionStatus ToIngestionStatus(
+        NativeBarInputReceiptStatus status) => status switch
+        {
+            NativeBarInputReceiptStatus.Accepted => BinanceKlineIngestionStatus.Accepted,
+            NativeBarInputReceiptStatus.Duplicate => BinanceKlineIngestionStatus.Duplicate,
+            NativeBarInputReceiptStatus.Correction => BinanceKlineIngestionStatus.RevisionConflict,
+            NativeBarInputReceiptStatus.Invalid => BinanceKlineIngestionStatus.Invalid,
             _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
         };
 

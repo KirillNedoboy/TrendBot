@@ -45,6 +45,16 @@ revision/status diagnostics, per-symbol intake sequence, and the latest committe
 primary-trigger checkpoint. Receipts and checkpoints advance atomically; there
 is no retention API, preserving seed history needed by the active feed.
 
+P15-M03-T010 adds `SqliteSignalJournalStore` as a second isolated file-backed
+database. Its schema version 1 contains only signal-journal inputs, checkpoints,
+signals, scenario events, diagnostics, and output-only outbox rows; it does not
+open or migrate the shared order/portfolio database. One immediate transaction
+appends the input receipt, immutable signal/evidence, scenario-event suffix,
+diagnostic, outbox rows, and checkpoint. Expected cursor, stable sequence,
+content hashes, and append-only scenario history are checked before commit.
+Exact retries are no-ops; identity/hash conflicts fail closed. `Read` validates
+the durable journal after reopen.
+
 
 ## API and migration
 
@@ -58,6 +68,15 @@ The synchronous API is intentionally small:
   false, while a sequence or content conflict throws. `Read(streamId)` returns
   an immutable snapshot after validating payload hashes, contiguous sequences,
   accepted/duplicate/correction transitions, and checkpoint parity.
+
+- `SqliteSignalJournalStore.Open(databasePath, commandTimeoutSeconds = 30)`
+  initializes only an empty, file-backed, standalone schema v1 and rejects
+  unsupported or non-empty databases. `Append(commit)` atomically advances the
+  expected per-stream cursor and stores the signal/evidence, scenario transition,
+  diagnostic, and outbox; an exact retry returns false and conflicting identity,
+  hash, or cursor throws. `ReadCurrentState(streamId)` restores the checkpoint
+  and scenario snapshot; `Read(streamId)` validates the full committed history,
+  signals, events, diagnostics, outbox, and checkpoint.
 
 - SqliteEventJournal.Open(databasePath, commandTimeoutSeconds = 30) opens a
   file-backed journal and applies the supported migration.
