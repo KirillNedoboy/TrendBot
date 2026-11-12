@@ -15,6 +15,15 @@ public static class SignalOnlyCommand
         ArgumentNullException.ThrowIfNull(args);
         output ??= Console.Out;
         error ??= Console.Error;
+
+        if (args.Length >= 2
+            && StringComparer.OrdinalIgnoreCase.Equals(args[0], CommandName)
+            && StringComparer.OrdinalIgnoreCase.Equals(args[1], "telegram-send"))
+        {
+            return await DeliverTelegramAsync(args, output, error,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (args.Length >= 2
             && StringComparer.OrdinalIgnoreCase.Equals(args[0], CommandName)
             && StringComparer.OrdinalIgnoreCase.Equals(args[1], "render"))
@@ -132,6 +141,95 @@ public static class SignalOnlyCommand
             return 1;
         }
     }
+
+    private static async Task<int> DeliverTelegramAsync(string[] args,
+        TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        if (args.Length != 8
+            || !StringComparer.Ordinal.Equals(args[2], "--journal")
+            || !StringComparer.Ordinal.Equals(args[4], "--delivery-state")
+            || !StringComparer.Ordinal.Equals(args[6], "--symbol")
+            || string.IsNullOrWhiteSpace(args[3])
+            || string.IsNullOrWhiteSpace(args[5])
+            || string.IsNullOrWhiteSpace(args[7]))
+        {
+            await error.WriteLineAsync(
+                "Usage: TradingBot.App signal-only telegram-send --journal <file> --delivery-state <file> --symbol <symbol>")
+                .ConfigureAwait(false);
+            return 2;
+        }
+
+        string? botToken = Environment.GetEnvironmentVariable(
+            "TRADINGBOT_TELEGRAM_BOT_TOKEN");
+        string? chatId = Environment.GetEnvironmentVariable(
+            "TRADINGBOT_TELEGRAM_CHAT_ID");
+        if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId))
+        {
+            await error.WriteLineAsync(
+                "signal-only telegram-send: TRADINGBOT_TELEGRAM_BOT_TOKEN and TRADINGBOT_TELEGRAM_CHAT_ID are required")
+                .ConfigureAwait(false);
+            return 2;
+        }
+
+        string symbol = args[7].ToUpperInvariant();
+        if (symbol.Length > 32 || !symbol.All(char.IsAsciiLetterOrDigit))
+        {
+            await error.WriteLineAsync(
+                "signal-only telegram-send: invalid public symbol")
+                .ConfigureAwait(false);
+            return 2;
+        }
+
+        try
+        {
+            string journalPath = Path.GetFullPath(args[3]);
+            string deliveryPath = Path.GetFullPath(args[5]);
+            StringComparer pathComparer = OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            if (pathComparer.Equals(journalPath, deliveryPath))
+            {
+                await error.WriteLineAsync(
+                    "signal-only telegram-send: journal and delivery state require separate files")
+                    .ConfigureAwait(false);
+                return 2;
+            }
+
+            using SqliteSignalJournalStore journal =
+                SqliteSignalJournalStore.OpenReadOnly(journalPath);
+            using SqliteSignalOutboxDeliveryStore deliveryStore =
+                SqliteSignalOutboxDeliveryStore.Open(deliveryPath);
+            using HttpClient httpClient = new(new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectTimeout = TimeSpan.FromSeconds(10)
+            })
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+            TelegramOutboxDeliveryService sender = new(journal, deliveryStore,
+                httpClient, SignalOutboxDeliveryPolicy.Default, botToken, chatId);
+            string streamId = $"binance-usdm-native-kline:{symbol}";
+            SignalOutboxDeliverySnapshot? result =
+                await sender.DispatchNextAsync(streamId, cancellationToken)
+                    .ConfigureAwait(false);
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                channel = "Telegram",
+                status = result?.Status.ToString() ?? "Idle",
+                outboxId = result?.OutboxId,
+                attemptsStarted = result?.AttemptsStarted
+            })).ConfigureAwait(false);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            await error.WriteLineAsync(
+                $"signal-only telegram-send: failed ({exception.GetType().Name})")
+                .ConfigureAwait(false);
+            return 1;
+        }
+    }
+
 
     private static bool IsSupportedRenderFormat(string format) =>
         StringComparer.OrdinalIgnoreCase.Equals(format, "json")

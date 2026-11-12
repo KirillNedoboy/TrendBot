@@ -55,6 +55,25 @@ content hashes, and append-only scenario history are checked before commit.
 Exact retries are no-ops; identity/hash conflicts fail closed. `Read` validates
 the durable journal after reopen.
 
+P15-M03-T013 adds `SqliteSignalOutboxDeliveryStore` in a second, separate
+file-backed database. A claim first reads and validates committed rows from
+`SqliteSignalJournalStore`; the delivery ledger never accepts caller-created
+outbox payloads. The durable policy is fixed on first use and bounds attempts,
+message age, exponential backoff, and lease duration. `Leased` means no network
+request has started: an expired lease returns to `Pending`. `Sending` is
+persisted before the HTTP request; an expired sending lease or ambiguous
+response becomes terminal `UnknownDelivery`, never an automatic resend. A
+Telegram `retry_after` value advances a durable sender-wide rate-limit fence.
+Permanent rejection, retry exhaustion, and expiry are terminal. Attempt,
+acknowledgment, rejection, and unknown receipts use the existing immutable
+`SignalDeliveryReceipt` contract. The stable outbox ID is included in plain-text
+messages to help recognize repeats; it is not an exactly-once key or a read
+receipt. The delivery database contains no bot token, chat ID, URL, raw response,
+or exception text. Telegram is output-only; no update polling, commands, or
+buttons are composed.
+
+
+
 
 ## API and migration
 
@@ -77,6 +96,19 @@ The synchronous API is intentionally small:
   hash, or cursor throws. `ReadCurrentState(streamId)` restores the checkpoint
   and scenario snapshot; `Read(streamId)` validates the full committed history,
   signals, events, diagnostics, outbox, and checkpoint.
+
+- `SqliteSignalOutboxDeliveryStore.Open(deliveryStatePath,
+  commandTimeoutSeconds = 30)` initializes a separate, strict schema-v1
+  delivery journal and rejects a non-empty or unsupported file. Its
+  `ClaimNext(signalJournal, streamId, policy, now)` reads committed outbox
+  content from the signal journal, persists the immutable delivery policy,
+  recovers expired leases, expires stale rows, and atomically leases one
+  eligible item. `BeginAttempt` records the attempt before the HTTP side effect.
+  `RecordAcknowledgement`, `RecordFailure`, and `RecordUnknownDelivery` persist
+  redacted receipts and state transitions. `Read(streamId)` validates durable
+  receipts after reopen. The delivery path must be a different file from the
+  committed signal journal.
+
 
 - SqliteEventJournal.Open(databasePath, commandTimeoutSeconds = 30) opens a
   file-backed journal and applies the supported migration.

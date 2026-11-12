@@ -1,5 +1,29 @@
 # Current checkpoint
 
+## P15-M03-T013 (SR-04.2) — DONE (2026-11-12)
+
+- **Authorization/order:** User authorized T013 only, followed by T014 after acceptance. T012 was DONE. T014/T016+ and all other tasks remained untouched during T013; unrelated working-tree changes were preserved. No commit or push.
+- **Deliverable:** Added `TelegramOutboxDeliveryService` using only committed `SqliteSignalJournalStore` rows and fixed Bot API `sendMessage` plain-text output with stable outbox ID; no polling, updates, buttons, or inbound controls. Added a separate durable `SqliteSignalOutboxDeliveryStore` with persisted policy, claims/leases, pre-send attempts, immutable receipts, bounded attempts/age/backoff, sender-wide `retry_after`, expiry, permanent failure, and terminal `UnknownDelivery` after possible acceptance or expired sending lease. Telegram `message_id` is an API acknowledgment, not a human-read receipt.
+- **Checks:** `TelegramOutboxDeliveryTests` passed 8/8 using local deterministic SQLite/HTTP-handler fixtures: claim recovery, crash/reopen, timeout-after-accept, acknowledgment/reopen, exact rate-limit delay, permanent failure, retry exhaustion, expiry, malformed response, and redaction. App Release build with `--warnaserror` passed with 0 warnings/errors. Scoped C# format verification passed. No real credentials and no external Telegram request.
+- **Docs validator/stale blockers:** `tools/validate-docs.ps1` stops at `P15-M03-T014 is BLOCKED with all dependencies DONE but has no explicit unresolved blocker`. A read-only scan using the validator's rule also finds `P15-M03-T016` for the same reason (dependencies T015 and T010 are DONE). Both task rows remain unchanged per scope.
+- **Boundaries:** No orders, private execution, risk, intents, positions, or FINAL_TECH_SPEC changes. `docs/architecture/persistence.md` documents the isolated delivery ledger. Only T013 status/evidence and the current summary were updated in `docs/TASKS.md`.
+- **Changed files:** `src/TradingBot.Infrastructure/SignalOutboxDeliveryContracts.cs`, `SqliteSignalOutboxDeliveryStore.cs`; `src/TradingBot.App/TelegramOutboxDeliveryService.cs`, `SignalOnlyCommand.cs`; `tests/TradingBot.IntegrationTests/TelegramOutboxDeliveryTests.cs`; `docs/architecture/persistence.md`, `docs/TASKS.md`, and `HANDOFF.md`.
+
+## P15-M03-T014 (SR-04.3) — DONE (2026-11-12)
+
+- **Authorization/order:** T014 began only after T013 was accepted as DONE. No T016+ or other task was started.
+- **Local output:** `SignalOnlyJournalOutputTests` passed 2/2 on a committed SQLite fixture. This verifies local rendering only.
+- **API acknowledgment:** `ApiAcknowledgmentAndMessageIdSurviveDeliveryJournalReopen` passed 1/1 with a local fake HTTP handler; the Telegram-style `message_id` persisted across reopen. This is fixture evidence only—not an external receipt and not proof of human reading.
+- **Prior local verdict:** Before separate send authorization, local rendering and fake API acknowledgment had no external receipt. T014 remained BLOCKED.
+- **Docs validator:** After genuine T014 acceptance, `tools/validate-docs.ps1` fails on the out-of-scope stale blocker `P15-M03-T016 is BLOCKED with all dependencies DONE but has no explicit unresolved blocker`. Its row remains unchanged.
+- **One-shot external smoke:** After explicit confirmation for one message to the previously specified personal chat, a synthetic committed `TESTONLY` signal (`signalId=7e624eed95e07643b06d457d90efc9f5cdd9b675de6e52bef5bae1296b21c25d`, `outboxId=60b7944f3219eda1ab5028df7898ed92a186e1b75511394104bf64e722e7e0c3`) rendered locally as one pending output with `publishedAt=null`. The previously supplied token and chat ID were supplied only as child-process environment variables without writing their values to source, journal, or output. One `sendMessage` attempt returned `PermanentFailure`; no second request was made.
+- **First external verdict:** Reopening the first isolated delivery database showed `PermanentFailure`, one started attempt, and no API acknowledgment receipt. The exact provider error was not retained by the redacted sender; no retry of that terminal row occurred. At that point T014 remained BLOCKED.
+- **Redaction check:** Four retained SQLite journal/sidecar files were scanned in memory without displaying the credential or destination; neither value was present. The temporary runner source and build artifacts were removed; only the synthetic redacted journals remain under the temporary smoke directory.
+- **Cause and recovery:** Read-only Telegram `getMe` returned HTTP 200; `getChat` for the previously specified personal chat returned 400 (`chat-not-found`). After the user started the bot conversation from their account, `getChat` returned HTTP 200. No inbound polling or order controls were added.
+- **Accepted external smoke:** A new synthetic committed `TESTONLY` signal (`signalId=ef06960991bca558d99338a4ce363a5598da558af306ae3f53940714f8648c56`, `outboxId=10d54e8f3af92c185d18e0e05955fccfd245d8f08cc04e48be74c13d14a5505b`) rendered as one pending local output with `publishedAt=null`. After a separate exact-message/chat confirmation, one `sendMessage` request returned `Acknowledged`; reopening the delivery database showed `Acknowledged`, one attempt, and a persisted Telegram API message receipt. The local renderer still made no publication claim; API acknowledgment does not prove human reading or a real-market signal.
+- **Redaction and scope:** Four files of the successful synthetic run were scanned in memory; neither credential nor chat ID appeared. The temporary runner source/build files were deleted; redacted SQLite journals remain in the temporary smoke directory. T014 status/evidence was updated only after this authorized receipt. T016+ and other task rows remain unchanged.
+
+
 
 ## P15-M03-T015 (SR-05.1) — DONE (2026-11-12)
 
