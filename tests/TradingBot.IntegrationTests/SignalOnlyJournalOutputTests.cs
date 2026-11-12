@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using TradingBot.App;
 using TradingBot.Core;
+using TradingBot.Backtesting;
 using TradingBot.Infrastructure;
 using Xunit;
 
@@ -188,6 +189,52 @@ public sealed class SignalOnlyJournalOutputTests
             StringComparison.Ordinal);
         Assert.Contains("DIAGNOSTIC unknown-configuration", consoleResult.Output,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CommittedSignalOutcomeSurvivesObserverJournalReopen()
+    {
+        using TemporaryDatabase database = new();
+        string outcomeDirectory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+            $"tradingbot-outcome-fixture-{Guid.NewGuid():N}");
+        try
+        {
+            using (SqliteSignalJournalStore writer = SqliteSignalJournalStore.Open(database.Path))
+            {
+                JournalBuilder builder = new(writer);
+                builder.Confirm("observer-confirm", "observer-anchor",
+                    SetupType.BoundaryRejection, Direction.Long, 0, 1, 15, 3);
+            }
+            using SqliteSignalJournalStore reader =
+                SqliteSignalJournalStore.OpenReadOnly(database.Path);
+            SignalJournalSignal committed = Assert.Single(reader.Read(StreamId).Signals);
+            SignalOutcomePolicy policy = new("fixture-label-v1",
+                BaseTimeValue.AddMinutes(45), null, null, 110m, 90m);
+            SignalOutcomeBar[] bars =
+            [
+                new(BaseTimeValue.AddMinutes(15), BaseTimeValue.AddMinutes(30),
+                    BaseTimeValue.AddMinutes(30), 100m, 115m, 95m, 101m),
+                new(BaseTimeValue.AddMinutes(30), BaseTimeValue.AddMinutes(45),
+                    BaseTimeValue.AddMinutes(45), 101m, 105m, 97m, 102m)
+            ];
+            SignalObservedOutcome outcome = SignalOutcomeObserver.Observe(
+                committed.Signal, committed.Evidence, SignalObservationClock.ChannelPublished,
+                "local-output", BaseTimeValue.AddMinutes(22), policy, bars,
+                BaseTimeValue.AddMinutes(46));
+            Assert.True(SignalOutcomeJournal.Append(outcomeDirectory, outcome));
+            Assert.False(SignalOutcomeJournal.Append(outcomeDirectory, outcome));
+            SignalObservedOutcome restored = Assert.Single(
+                SignalOutcomeJournal.ReadAll(outcomeDirectory));
+            Assert.Equal(outcome.CanonicalJson, restored.CanonicalJson);
+            Assert.Equal(1, restored.CoveredBars);
+            Assert.Equal(SignalPassage.Neither, restored.Passage);
+            Assert.Equal(102m / 101m - 1m, restored.SignedReturn);
+        }
+        finally
+        {
+            if (Directory.Exists(outcomeDirectory))
+                Directory.Delete(outcomeDirectory, recursive: true);
+        }
     }
 
     [Fact]

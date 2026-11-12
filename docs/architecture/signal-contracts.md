@@ -6,13 +6,13 @@
 
 | Contract | Purpose | Identity or hash |
 |---|---|---|
-| `SignalIdentity` | Logical occurrence: instrument, venue, 15m setup timeframe, direction, family, profile/family versions, and setup event ID | `SignalId`, SHA-256 of the logical identity fields; excludes evidence and card content |
+| `SignalIdentity` | Logical occurrence: instrument, venue, 15m setup timeframe, direction, family, profile/family versions, and setup event ID (the pre-confirmation structural anchor when composed through `SignalScenarioAnchor`) | `SignalId`, SHA-256 of the logical identity fields; excludes evidence and card content |
 | `SignalEvidenceRecord` | Completeness state, quality reasons, public input provenance, and profile-configuration hash | `RecordHash`, SHA-256 of evidence content; linked by `SignalId` |
 | `SignalRecord` | Immutable passive card: assessment state, setup interval, decision time, reference price, evidence hash, optional calibrated probability | `RecordHash`, SHA-256 of card content; distinct from `SignalId` and evidence hash |
 | `SignalDeliveryReceipt` | One output attempt/acknowledgment/rejection/unknown receipt, bound to one exact signal record | `ReceiptId`, content identity; links `SignalId` and `SignalRecordHash` |
 | `SignalOutcomeRecord` | Independent measured/expired/unknown outcome and method version | `OutcomeId`, content identity; links `SignalId`, `SignalRecordHash`, and `EvidenceRecordHash` |
 
-Signal identity intentionally excludes payload hashes and mutable card/evidence content. A corrected or changed evidence record can therefore preserve `SignalId` while changing evidence and signal `RecordHash`. Record hashes, receipt IDs, and outcome IDs are separate values with separate meanings. Each hash/ID uses lowercase SHA-256 over the `CoreJsonSerializer` encoding of its declared content material, excluding that material's own hash/ID.
+Signal identity intentionally excludes payload hashes, anchor timestamps/sequences, restart/run metadata, publication time, and mutable card/evidence content. The scenario projector seeds `SignalIdentity.SetupEventId` from the structural anchor before confirmation; see [passive scenario lifecycle](scenario-lifecycle.md). A corrected or changed evidence record can therefore preserve `SignalId` while changing evidence and signal `RecordHash`. Record hashes, receipt IDs, and outcome IDs are separate values with separate meanings. Each hash/ID uses lowercase SHA-256 over the `CoreJsonSerializer` encoding of its declared content material, excluding that material's own hash/ID.
 
 ## Causal provenance
 

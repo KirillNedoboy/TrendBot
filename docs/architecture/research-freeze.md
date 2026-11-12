@@ -143,3 +143,29 @@ cannot mark OOS data viewed. These contracts do not execute evaluation, prove
 strategy performance, grant promotion or execution authority, or represent
 fills. Tests use deterministic synthetic fixtures; no real OOS performance
 evidence is claimed.
+
+## P15-M03-T016 independent outcome observation (SR-05.2)
+
+`SignalOutcomeObserver` in Backtesting accepts a committed signal/evidence pair,
+an explicit decision or named-channel publication boundary, an absolute horizon,
+optional expiry/invalidation cut, optional directional levels, and complete
+subsequent UTC OHLC bars with availability times. The channel boundary must be
+supplied from delivery evidence; absent publication remains UnknownPublication.
+No historic delivery timestamp is inferred. Any bar containing the boundary
+strictly inside its interval is excluded in full. Published-time signed returns
+and extrema use the open of the first complete subsequent bar, not the earlier
+decision reference; this is a next-eligible-open observation convention, not
+an observed fill or reaction-latency model. Decision-time returns use the signal
+reference price. Horizon/expiry cuts inside a bar censor that incomplete
+interval; gaps, unavailable bars and missing paths remain explicit.
+
+Single-bar target/invalidation conflicts without a complete detailed path
+produce Ambiguous with `[bar open, bar close]` first-passage bounds, never a
+chosen favorable ordering. A detailed full-bar path must retain both extrema
+and ordered endpoints before it can resolve first passage. Ties have signed
+return zero, not a hit. Partial-path MAE/MFE remain identified as censored,
+while horizon signed return is null unless the path is complete. An isolated
+atomic outcome ledger stores the canonical hash and separate identity material;
+exact restart retries deduplicate, changed path content under the same identity
+conflicts. The signal and delivery journals are not modified. These outcomes
+are research observations, not fills, P/L, OOS evidence or order authority.
