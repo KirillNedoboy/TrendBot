@@ -113,3 +113,33 @@ artifact with the same native evidence ID still invalidates its affected
 category. Current fixtures remain synthetic and therefore do not supply real
 operational shadow, local-paper, exchange-test, performance, or reconciliation
 proof.
+
+## P15-M03-T015 signal-study freeze (SR-05.1)
+
+`SignalStudyManifest` is a separate BCL-only signal-research contract; it does
+not alter the existing `FrozenResearchManifest` or promotion APIs. Its
+canonical identity binds hashes for the dataset, point-in-time universe,
+configuration, formula, seed history, labels, horizons, cost model, latency
+assumptions, exclusions, and one untouched out-of-sample dataset. It also binds
+the primary estimand, null hypothesis, precision, rejection and multiplicity
+policies, the chronological split plan, and the complete declared trial
+registry. Any unresolved required declaration remains `Unknown`; no threshold
+or default is inferred.
+
+Split intervals are UTC and half-open. Each walk-forward fold declares training,
+optional development, and validation windows, followed by one OOS window.
+Every label records its information cut, dependency interval, availability
+time, assignment, and any explicit purge reason. A non-purged label may not
+overlap or become available after a later development, validation, or OOS
+boundary. Forward embargo intervals are derived from included validation-label
+availability. The plan records no evaluation result.
+
+The canonical manifest journal is write-once; evidence must present the exact
+manifest identity, so changed inputs require a new identity and invalidate
+prior evidence. A separate atomic first-view journal is keyed by the OOS
+dataset hash: repeated access by the same study is idempotent, but another
+study identity cannot reclassify that dataset as untouched. Unknown manifests
+cannot mark OOS data viewed. These contracts do not execute evaluation, prove
+strategy performance, grant promotion or execution authority, or represent
+fills. Tests use deterministic synthetic fixtures; no real OOS performance
+evidence is claimed.

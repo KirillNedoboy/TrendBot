@@ -303,6 +303,41 @@ public sealed class SqliteSignalJournalStoreTests
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'signal_journal_%';"));
     }
 
+    [Fact]
+    public void ReadOnlyJournalReadsCommittedRowsAndRejectsWritesWithoutCreatingFiles()
+    {
+        using TemporaryDatabase database = new();
+        ScenarioFixture fixture = new();
+        using (SqliteSignalJournalStore writable =
+            SqliteSignalJournalStore.Open(database.Path))
+        {
+            Assert.True(writable.Append(fixture.FirstCommit()));
+        }
+
+        SignalJournalSnapshot expected;
+        using (SqliteSignalJournalStore writable =
+            SqliteSignalJournalStore.Open(database.Path))
+        {
+            expected = writable.Read(StreamId);
+        }
+
+        using SqliteSignalJournalStore readOnly =
+            SqliteSignalJournalStore.OpenReadOnly(database.Path);
+        SignalJournalSnapshot actual = readOnly.Read(StreamId);
+        Assert.Equal(expected.Signals, actual.Signals);
+        Assert.Equal(expected.ScenarioEvents, actual.ScenarioEvents);
+        Assert.Throws<InvalidOperationException>(() =>
+            readOnly.Append(fixture.FirstCommit()));
+
+        string missingPath = System.IO.Path.Combine(Path.GetTempPath(),
+            $"tradingbot-missing-signals-{Guid.NewGuid():N}.sqlite");
+        Assert.Throws<FileNotFoundException>(() =>
+            SqliteSignalJournalStore.OpenReadOnly(missingPath));
+        Assert.False(File.Exists(missingPath));
+    }
+
+
+
     private static long CountTable(string path, string table) =>
         ReadScalar(path, $"SELECT COUNT(*) FROM {table};");
 

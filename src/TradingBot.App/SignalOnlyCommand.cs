@@ -15,6 +15,13 @@ public static class SignalOnlyCommand
         ArgumentNullException.ThrowIfNull(args);
         output ??= Console.Out;
         error ??= Console.Error;
+        if (args.Length >= 2
+            && StringComparer.OrdinalIgnoreCase.Equals(args[0], CommandName)
+            && StringComparer.OrdinalIgnoreCase.Equals(args[1], "render"))
+        {
+            return await RenderJournalAsync(args, output, error).ConfigureAwait(false);
+        }
+
         if (args.Length != 3
             || !StringComparer.OrdinalIgnoreCase.Equals(args[0], CommandName)
             || !StringComparer.Ordinal.Equals(args[1], "--config")
@@ -34,10 +41,14 @@ public static class SignalOnlyCommand
         catch (Exception exception) when (exception is IOException or JsonException
             or ArgumentException or NotSupportedException)
         {
+            await output.WriteLineAsync(
+                SignalOnlyJournalRenderer.ConfigurationUnavailableDiagnosticJson())
+                .ConfigureAwait(false);
             await error.WriteLineAsync("signal-only: invalid public configuration")
                 .ConfigureAwait(false);
             return 2;
         }
+
 
         using CancellationTokenSource consoleStop = new();
         using CancellationTokenSource runStop =
@@ -74,6 +85,57 @@ public static class SignalOnlyCommand
             Console.CancelKeyPress -= cancelHandler;
         }
     }
+
+
+    private static async Task<int> RenderJournalAsync(string[] args,
+        TextWriter output, TextWriter error)
+    {
+        if (args.Length != 8
+            || !StringComparer.Ordinal.Equals(args[2], "--journal")
+            || !StringComparer.Ordinal.Equals(args[4], "--symbol")
+            || !StringComparer.Ordinal.Equals(args[6], "--format")
+            || string.IsNullOrWhiteSpace(args[3])
+            || string.IsNullOrWhiteSpace(args[5])
+            || !IsSupportedRenderFormat(args[7]))
+        {
+            await error.WriteLineAsync(
+                "Usage: TradingBot.App signal-only render --journal <file> --symbol <symbol> --format <json|console>")
+                .ConfigureAwait(false);
+            return 2;
+        }
+
+        string symbol = args[5].ToUpperInvariant();
+        if (symbol.Length > 32 || !symbol.All(char.IsAsciiLetterOrDigit))
+        {
+            await error.WriteLineAsync("signal-only render: invalid public symbol")
+                .ConfigureAwait(false);
+            return 2;
+        }
+
+        string streamId = $"binance-usdm-native-kline:{symbol}";
+        try
+        {
+            using SqliteSignalJournalStore journal =
+                SqliteSignalJournalStore.OpenReadOnly(args[3]);
+            SignalJournalSnapshot snapshot = journal.Read(streamId);
+            string rendered = StringComparer.OrdinalIgnoreCase.Equals(args[7], "json")
+                ? SignalOnlyJournalRenderer.RenderJson(streamId, snapshot)
+                : SignalOnlyJournalRenderer.RenderConsole(streamId, snapshot);
+            await output.WriteLineAsync(rendered).ConfigureAwait(false);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            await error.WriteLineAsync(
+                $"signal-only render: failed ({exception.GetType().Name})")
+                .ConfigureAwait(false);
+            return 1;
+        }
+    }
+
+    private static bool IsSupportedRenderFormat(string format) =>
+        StringComparer.OrdinalIgnoreCase.Equals(format, "json")
+        || StringComparer.OrdinalIgnoreCase.Equals(format, "console");
 
     private static async Task RunConfiguredAsync(SignalOnlyConfiguration configuration,
         TextWriter output, CancellationTokenSource runStop)

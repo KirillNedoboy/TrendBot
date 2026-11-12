@@ -1,6 +1,23 @@
 # Current checkpoint
 
 
+## P15-M03-T015 (SR-05.1) — DONE (2026-11-12)
+
+- **Authorization/order:** T012 was accepted and its status/evidence and HANDOFF updated before T015 began. The user authorized T015 next and excluded T013–T014, T016+, and all other tasks. No excluded task row or implementation was changed.
+- **Deliverable:** Added BCL-only `SignalStudyManifest` and `SignalStudyTemporalSplitPlan` in Backtesting. The canonical identity binds dataset, PIT universe, configuration, formula, seed history, labels, horizons, cost, latency, exclusions, OOS dataset, evaluation criteria, split plan, and trial registry. Missing required declarations remain `Unknown`; no numeric threshold is invented. Half-open chronological folds validate information cuts, label availability, overlap/purging, and availability-derived forward embargo. A write-once manifest journal binds evidence to identity; an atomic OOS first-view journal blocks reuse of the same OOS dataset hash under a changed study identity.
+- **Authority/limits:** These contracts do not evaluate a strategy or authorize promotion, orders, risk, positions, private transport, or fills. Tests use synthetic fixtures; no real OOS performance evidence is claimed.
+- **Checks:** `SignalStudyManifestTests` passed 4/4, covering canonical immutable snapshots/write-once persistence, changed-input invalidation, explicit Unknown gates, temporal boundaries and development/validation embargoes, plus OOS first-view idempotency/reuse blocking. Scoped C# format verification passed. `tools/validate-docs.ps1` remains blocked by `P15-M03-T013 is BLOCKED with all dependencies DONE but has no explicit unresolved blocker`; T013 is unchanged because it is outside this authorization.
+- **Changed files:** `src/TradingBot.Backtesting/SignalStudyManifest.cs`, `SignalStudyTemporalSplitPlan.cs`, `SignalStudyOutOfSampleViewJournal.cs`; `tests/TradingBot.Replay.Tests/SignalStudyManifestTests.cs`; `docs/architecture/research-freeze.md`, `docs/TASKS.md`, and `HANDOFF.md`.
+
+## P15-M03-T012 (SR-04.1) — DONE (2026-11-12)
+
+- **Authorization/order:** The user authorized T012 first and T015 only after T012 acceptance. T013–T014 and T016+ remain outside this authorization. T012 status/evidence is recorded before starting T015.
+- **Deliverable:** Added a read-only `signal-only render --journal <file> --symbol <symbol> --format <json|console>` path. JSON and console render committed signal/evidence identity, interval, decision/HTF cuts, scenario anchor/episode/event links, reference provenance, quality reasons, and separate `RESEARCH`/`UNKNOWN` semantics. Missing configuration is a diagnostic; the view does not invent a delivery receipt or publication time.
+- **State/authority:** Scenario references are explicitly `scenario-reference-only`; `ConfirmedOnClosedBar` remains distinct from statistical validation `UNKNOWN`. Duplicate append is idempotent, continuation/cancel/expiry preserve the original signal and alert IDs, and cross-family overlap preserves both signal/alert links. Rendering uses SQLite read-only mode; no Telegram sender, order, private transport, risk, intent, or position path was introduced.
+- **Checks:** Process-level App CLI JSON/console tests on a committed SQLite fixture passed 2/2, including missing/unknown configuration, duplicate/retry/continuation, overlap, cancel, and expiry. Read-only journal test passed 1/1. Scoped changed-file format verification passed. The docs fixture/validator is blocked because T013 is BLOCKED with all dependencies DONE and no explicit unresolved blocker; T013 remains unchanged per scope. Canonical `FINAL_TECH_SPEC.md` SHA-256 remains `77E87BF93E538101FC7558F5F73195DCCE58F3BFF2C887E5A290F1A82C16FD54`.
+- **Limits:** The committed journal was a deterministic fixture, not a live exchange capture. No external delivery or production operation was attempted.
+- **Changed files:** `src/TradingBot.App/SignalOnlyCommand.cs`, `SignalOnlyJournalRenderer.cs`; `src/TradingBot.Infrastructure/SqliteSignalJournalStore.cs`; `tests/TradingBot.Infrastructure.Tests/SqliteSignalJournalStoreTests.cs`; `tests/TradingBot.IntegrationTests/SignalOnlyJournalOutputTests.cs`; `docs/architecture/signal-contracts.md`, `docs/TASKS.md`, and `HANDOFF.md`.
+
 ## P15-M03-T011 (SR-03.3) — DONE (2026-11-10)
 
 - **Authorization/order:** T010 was formally accepted as DONE before T011 began. The user authorized only T010 and T011 in sequence. T012+ remain BLOCKED pending separate authorization; no later task was started or unblocked.
@@ -11,7 +28,7 @@
 - **Limits:** Positive closed-input/journal behavior used deterministic public-feed fixtures with real SQLite; no live Binance session, Linux/systemd execution, or production operation was exercised.
 - **Changed files:** `src/TradingBot.App/SignalOnlyConfiguration.cs`, `SignalOnlyCommand.cs`, `SignalOnlyInstrumentConsumer.cs`, `NativePublicKlineFeed.cs`, `Program.cs`; `tests/TradingBot.IntegrationTests/NativePublicKlineFeedTests.cs`; `docs/architecture/operations.md`, `docs/EXECUTION_PLAN.md`, `docs/TASKS.md`, and `HANDOFF.md`.
 
-- **Next:** P15-M03-T012 (SR-04.1) remains BLOCKED pending a separate user authorization. Do not start T012+.
+- **Next:** P15-M03-T012 and P15-M03-T015 are now DONE after separate authorization. T013–T014 and T016+ remain outside scope; do not proceed without separate authorization.
 
 
 ## P15-M03-T010 (SR-03.2) — DONE (2026-11-10)

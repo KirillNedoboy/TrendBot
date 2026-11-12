@@ -16,15 +16,51 @@ public sealed class SqliteSignalJournalStore : IDisposable
     private const int SchemaVersion = 1;
     private readonly string _databasePath;
     private readonly int _commandTimeoutSeconds;
+    private readonly bool _readOnly;
 
-    private SqliteSignalJournalStore(string databasePath, int commandTimeoutSeconds)
+    private SqliteSignalJournalStore(string databasePath, int commandTimeoutSeconds,
+        bool readOnly)
     {
         _databasePath = databasePath;
         _commandTimeoutSeconds = commandTimeoutSeconds;
+        _readOnly = readOnly;
     }
 
     public static SqliteSignalJournalStore Open(string databasePath,
         int commandTimeoutSeconds = 30)
+    {
+        string fullPath = ValidatePath(databasePath, commandTimeoutSeconds);
+        Initialize(fullPath, commandTimeoutSeconds);
+        return new SqliteSignalJournalStore(fullPath, commandTimeoutSeconds,
+            readOnly: false);
+    }
+
+    public static SqliteSignalJournalStore OpenReadOnly(string databasePath,
+        int commandTimeoutSeconds = 30)
+    {
+        string fullPath = ValidatePath(databasePath, commandTimeoutSeconds);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("The signal journal does not exist.",
+                fullPath);
+        }
+
+        using SqliteConnection connection = OpenRawConnection(fullPath,
+            commandTimeoutSeconds, SqliteOpenMode.ReadOnly);
+        connection.Open();
+        if (ReadUserVersion(connection) != SchemaVersion)
+        {
+            throw new InvalidDataException(
+                "The SQLite file is not a supported signal journal.");
+        }
+
+        ValidateSchema(connection);
+        return new SqliteSignalJournalStore(fullPath, commandTimeoutSeconds,
+            readOnly: true);
+    }
+
+    private static string ValidatePath(string databasePath,
+        int commandTimeoutSeconds)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(commandTimeoutSeconds);
@@ -34,9 +70,7 @@ public sealed class SqliteSignalJournalStore : IDisposable
                 nameof(databasePath));
         }
 
-        string fullPath = Path.GetFullPath(databasePath);
-        Initialize(fullPath, commandTimeoutSeconds);
-        return new SqliteSignalJournalStore(fullPath, commandTimeoutSeconds);
+        return Path.GetFullPath(databasePath);
     }
 
     /// <summary>
@@ -47,6 +81,12 @@ public sealed class SqliteSignalJournalStore : IDisposable
     public bool Append(SignalJournalCommit commit)
     {
         ArgumentNullException.ThrowIfNull(commit);
+        if (_readOnly)
+        {
+            throw new InvalidOperationException(
+                "A read-only signal journal cannot accept commits.");
+        }
+
         string snapshotJson = CoreJsonSerializer.Serialize(commit.ScenarioSnapshot);
         string snapshotHash = ComputeHash(snapshotJson);
         string commitJson = SerializeCommit(commit, snapshotHash);
@@ -338,12 +378,13 @@ public sealed class SqliteSignalJournalStore : IDisposable
     }
 
     private static SqliteConnection OpenRawConnection(string databasePath,
-        int commandTimeoutSeconds)
+        int commandTimeoutSeconds,
+        SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate)
     {
         SqliteConnectionStringBuilder builder = new()
         {
             DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
+            Mode = mode,
             Pooling = false,
             DefaultTimeout = commandTimeoutSeconds
         };
@@ -353,11 +394,16 @@ public sealed class SqliteSignalJournalStore : IDisposable
     private SqliteConnection OpenConnection()
     {
         SqliteConnection connection = OpenRawConnection(_databasePath,
-            _commandTimeoutSeconds);
+            _commandTimeoutSeconds,
+            _readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate);
         try
         {
             connection.Open();
-            ConfigureDurability(connection);
+            if (!_readOnly)
+            {
+                ConfigureDurability(connection);
+            }
+
             return connection;
         }
         catch
