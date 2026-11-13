@@ -192,6 +192,138 @@ public sealed class SignalOnlyJournalOutputTests
     }
 
     [Fact]
+    public void BoundedReplaySerializesCommittedSignalAndMatchesReopenedJournal()
+    {
+        using TemporaryDatabase database = new();
+        string firstJson;
+        string signalId;
+        using (SqliteSignalJournalStore writer = SqliteSignalJournalStore.Open(database.Path))
+        {
+            JournalBuilder builder = new(writer);
+            ScenarioCommit committed = builder.Confirm("replay-confirm", "replay-anchor",
+                SetupType.BoundaryRejection, Direction.Long, 0, 1, 15, 3);
+            signalId = committed.Anchor.Identity.SignalId;
+            firstJson = SignalOnlyBoundedRun.SerializeJournalForReplay(writer.Read(StreamId));
+        }
+
+        using SqliteSignalJournalStore reader = SqliteSignalJournalStore.OpenReadOnly(database.Path);
+        Assert.Equal(firstJson, SignalOnlyBoundedRun.SerializeJournalForReplay(reader.Read(StreamId)));
+        using JsonDocument document = JsonDocument.Parse(firstJson);
+        JsonElement signal = Assert.Single(document.RootElement.GetProperty("signals").EnumerateArray())
+            .GetProperty("signal");
+        Assert.Equal(signalId, signal.GetProperty("identity").GetProperty("signalId").GetString());
+        Assert.Equal(JsonValueKind.Null, signal.GetProperty("probability").ValueKind);
+    }
+
+    [Theory]
+    [InlineData(3, 1)]
+    [InlineData(4, 0)]
+    public void BoundedRunWaitsForBothTimeframesAtASharedClose(int setupCloses, int contextCloses)
+    {
+        DateTimeOffset start = BaseTimeValue.AddMinutes(12);
+        DateTimeOffset boundary = BaseTimeValue.AddHours(1);
+
+        Assert.True(SignalOnlyBoundedRun.HasCompleteCoverage(start, boundary.AddTicks(-1), 3, 0));
+        Assert.False(SignalOnlyBoundedRun.HasCompleteCoverage(start, boundary, setupCloses, contextCloses));
+        Assert.True(SignalOnlyBoundedRun.HasCompleteCoverage(start, boundary, 4, 1));
+        Assert.False(SignalOnlyBoundedRun.HasCompleteCoverage(start, boundary, 5, 1));
+    }
+
+    [Fact]
+    public void BoundedOutcomeUsesAdjacentEndExclusiveBarsWithoutOverlap()
+    {
+        using TemporaryDatabase database = new();
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(database.Path);
+        JournalBuilder builder = new(journal);
+        builder.Confirm("bounded-outcome", "bounded-anchor",
+            SetupType.BoundaryRejection, Direction.Long, 0, 1, 15, 3);
+        SignalJournalSignal committed = Assert.Single(journal.Read(StreamId).Signals);
+        ScreenerBar[] history =
+        [
+            OutcomePathBar("path-first", 15, 30, 30, 100m, 103m, 99m, 101m, 4),
+            OutcomePathBar("path-second", 30, 45, 45, 101m, 104m, 100m, 102m, 5)
+        ];
+        SignalOutcomePolicy policy = new("fixture-bounded-outcome-v1",
+            BaseTimeValue.AddMinutes(45), null, null, null, null);
+
+        SignalObservedOutcome outcome = SignalOutcomeObserver.Observe(committed.Signal, committed.Evidence,
+            SignalObservationClock.Decision, null, null, policy,
+            SignalOnlyBoundedRun.CreateOutcomeBars(history), BaseTimeValue.AddMinutes(45));
+
+        Assert.Equal(SignalObservationState.Complete, outcome.State);
+        Assert.Equal(2, outcome.CoveredBars);
+        Assert.Equal(102m / 100m - 1m, outcome.SignedReturn);
+    }
+
+    [Fact]
+    public void BoundedOutcomeWaitsUntilCloseEventAndReceiptAreAvailable()
+    {
+        using TemporaryDatabase database = new();
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(database.Path);
+        JournalBuilder builder = new(journal);
+        builder.Confirm("early-close", "early-close-anchor",
+            SetupType.BoundaryRejection, Direction.Long, 0, 1, 15, 3);
+        SignalJournalSignal committed = Assert.Single(journal.Read(StreamId).Signals);
+        ScreenerBar[] history =
+        [
+            OutcomePathBar("early-receipt", 15, 30, 29, 100m, 103m, 99m, 101m, 4),
+            OutcomePathBar("late-receipt", 30, 45, 46, 101m, 104m, 100m, 102m, 5)
+        ];
+        SignalOutcomePolicy policy = new("fixture-availability-v1",
+            BaseTimeValue.AddMinutes(45), null, null, null, null);
+        SignalOutcomeBar[] bars = SignalOnlyBoundedRun.CreateOutcomeBars(history);
+
+        Assert.Equal(BaseTimeValue.AddMinutes(29), history[0].AvailabilityTime.Value);
+        Assert.Equal(BaseTimeValue.AddMinutes(30), bars[0].AvailableAt);
+        Assert.Equal(BaseTimeValue.AddMinutes(46), bars[1].AvailableAt);
+        SignalObservedOutcome beforeClose = SignalOutcomeObserver.Observe(committed.Signal, committed.Evidence,
+            SignalObservationClock.Decision, null, null, policy, bars, BaseTimeValue.AddMinutes(29));
+        SignalObservedOutcome beforeReceipt = SignalOutcomeObserver.Observe(committed.Signal, committed.Evidence,
+            SignalObservationClock.Decision, null, null, policy, bars, BaseTimeValue.AddMinutes(45));
+        SignalObservedOutcome afterReceipt = SignalOutcomeObserver.Observe(committed.Signal, committed.Evidence,
+            SignalObservationClock.Decision, null, null, policy, bars, BaseTimeValue.AddMinutes(46));
+        Assert.Equal(SignalObservationState.Censored, beforeClose.State);
+        Assert.Equal(SignalObservationState.Censored, beforeReceipt.State);
+        Assert.Null(beforeClose.SignedReturn);
+        Assert.Null(beforeReceipt.SignedReturn);
+        Assert.Equal(SignalObservationState.Complete, afterReceipt.State);
+        Assert.Equal(2, afterReceipt.CoveredBars);
+        Assert.Equal(102m / 100m - 1m, afterReceipt.SignedReturn);
+
+        Bar laterEvent = new("late-event", new InstrumentId("BTCUSDT"),
+            AtMinute(31), AtMinute(15), AtMinute(30), new Price(100m), new Price(103m),
+            new Price(99m), new Price(101m), new Quantity(1m));
+        ScreenerBar eventBar = new("binance-public", laterEvent, 1m, AtMinute(29), AtMinute(29), 4);
+        Assert.Equal(BaseTimeValue.AddMinutes(31), Assert.Single(
+            SignalOnlyBoundedRun.CreateOutcomeBars([eventBar])).AvailableAt);
+    }
+
+    [Fact]
+    public void BoundedRunWaitsForARealAvailableBarThroughEverySignalHorizon()
+    {
+        using TemporaryDatabase database = new();
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(database.Path);
+        DateTimeOffset horizon = BaseTimeValue.AddMinutes(30);
+        Assert.True(SignalOnlyBoundedRun.OutcomeHorizonsObserved(journal.Read(StreamId), [], horizon, 900));
+        JournalBuilder builder = new(journal);
+        builder.Confirm("horizon-confirm", "horizon-anchor",
+            SetupType.BoundaryRejection, Direction.Long, 0, 1, 15, 3);
+        SignalJournalSnapshot snapshot = journal.Read(StreamId);
+        ScreenerBar delayed = OutcomePathBar("horizon-bar", 15, 30, 31,
+            100m, 103m, 99m, 101m, 4);
+        Bar laterEvent = new("horizon-event", new InstrumentId("BTCUSDT"),
+            AtMinute(31), AtMinute(15), AtMinute(30), new Price(100m), new Price(103m),
+            new Price(99m), new Price(101m), new Quantity(1m));
+        ScreenerBar notYetEvent = new("binance-public", laterEvent, 1m, AtMinute(30), AtMinute(30), 4);
+
+        Assert.False(SignalOnlyBoundedRun.OutcomeHorizonsObserved(snapshot, [], horizon, 900));
+        Assert.False(SignalOnlyBoundedRun.OutcomeHorizonsObserved(snapshot, [delayed], horizon, 900));
+        Assert.False(SignalOnlyBoundedRun.OutcomeHorizonsObserved(snapshot, [notYetEvent], horizon, 900));
+        Assert.True(SignalOnlyBoundedRun.OutcomeHorizonsObserved(snapshot, [delayed],
+            BaseTimeValue.AddMinutes(31), 900));
+    }
+
+    [Fact]
     public void CommittedSignalOutcomeSurvivesObserverJournalReopen()
     {
         using TemporaryDatabase database = new();
@@ -264,6 +396,16 @@ public sealed class SignalOnlyJournalOutputTests
         Assert.Equal(JsonValueKind.Null,
             diagnostic.GetProperty("publishedAt").ValueKind);
         Assert.False(File.Exists(missingPath));
+    }
+
+    private static ScreenerBar OutcomePathBar(string eventId, int openMinute, int closeMinute,
+        int availableMinute, decimal open, decimal high, decimal low, decimal close, long sequence)
+    {
+        Bar bar = new(eventId, new InstrumentId("BTCUSDT"), AtMinute(closeMinute),
+            AtMinute(openMinute), AtMinute(closeMinute), new Price(open), new Price(high),
+            new Price(low), new Price(close), new Quantity(1m));
+        return new ScreenerBar("binance-public", bar, 1m, AtMinute(availableMinute),
+            AtMinute(availableMinute), sequence);
     }
 
     private static async Task<CliResult> RunCliAsync(string journalPath,

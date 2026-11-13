@@ -268,7 +268,7 @@ public sealed class CenterRetestSetupTests
             unsupportedVersion.Long.Reasons);
 
         PriceContextFeatureResult wrongContextVersion = ManualContext(
-            priceContextVersion: "price-context-v3");
+            priceContextVersion: "price-context-v5");
         CenterRetestSetupResult wrongVersion = EvaluateManual(wrongContextVersion);
         Assert.Equal(CenterRetestSetupState.UnknownConfiguration,
             wrongVersion.Long.State);

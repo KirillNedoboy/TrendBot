@@ -12,11 +12,11 @@ The contract does not evaluate signals, access market data, read secrets, or aut
 | Each timeframe | `timeframe`, public `source`, `sourceVersion`, UTC `historyStartUtc`, `historyVersion`, `seedHistoryBars`, `seedVersion`, `warmupBars`, `warmupVersion`, `freshnessVersion`, `maximumMarketDataAge`, `maximumAvailabilityAge` |
 | Formula versions | `priceContextVersion`, `featureQualityVersion`, `setupFamilyVersion` |
 | Structure and ATR | `pivotLeftBars`, `pivotRightBars`, `atrPeriodBars`, `atrMode`, `atrValueUnit` |
-| Local channel | `channelCenterKind`, `channelCenterPeriodBars`, `hlc3SmoothingKind`, `channelCenterValueUnit`, `channelWidthKind`, `channelWidthPeriodBars`, `channelWidthMultiplier`, `channelWidthValueUnit`, `channelWidthMultiplierUnit`, `levelBufferMultiplier`, `levelBufferMultiplierUnit` |
+| Local channel | `channelCenterKind`, `channelCenterPeriodBars`, `hlc3SmoothingKind`, `channelCenterValueUnit`, `channelWidthKind`, `channelWidthPeriodBars`, `channelWidthMultiplier`, `channelWidthValueUnit`, `channelWidthMultiplierUnit`, `levelBufferMultiplier`, `levelBufferMultiplierUnit`, `boundaryMinimumChannelWidth`, `boundaryMinimumChannelWidthUnit` |
 | 1h context | `htfFastPeriodBars`, `htfSlowPeriodBars`, `htfMovingAverageKind`, `htfConfirmationBars`, `htfMovingAverageValueUnit` |
 | Point-in-time universe | `selectionVersion`, `minimumSymbols`, `maximumSymbols` |
 
-Period/count fields are measured in bars by their property names. Freshness ages are `TimeSpan` values and keep market-data age distinct from local availability age. Price-valued features require the explicit `Price` unit; multipliers require the explicit `Dimensionless` unit. History start must be UTC. Declared counts, ages, and multipliers must be positive; minimum universe size cannot exceed maximum.
+Period/count fields are measured in bars by their property names. Freshness ages are `TimeSpan` values and keep market-data age distinct from local availability age. Price-valued features and the Boundary Rejection minimum full-channel width require the explicit `Price` unit; multipliers require the explicit `Dimensionless` unit. History start must be UTC. Declared counts, ages, widths, and multipliers must be positive; minimum universe size cannot exceed maximum.
 
 ## Unknown and rejection behavior
 
@@ -24,4 +24,4 @@ Every strategy value, history boundary, warmup count, freshness limit, universe 
 
 The schema accepts only the public native-kline source enum and the exact `15m` / `1h` roles. Unsupported schema versions, timeframes, enum values, units, malformed declarations, and unknown JSON members reject through `CoreJsonSerializer`; this includes private, activation, quantity, leverage, and portfolio properties. Configuration parsing has no credential or secret-store dependency.
 
-No complete profile is declared by this contract change. Parameter values and source/formula version selections remain unknown until separately supplied and reviewed; a future complete profile must still be declared before publication or runtime work.
+This contract change supplied no complete profile or defaults. A later explicitly authorized T017 exploratory profile is separately frozen in `research-freeze.md`; it is not a validated or production profile.

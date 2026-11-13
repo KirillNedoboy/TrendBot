@@ -775,7 +775,8 @@ public sealed class NativePublicKlineFeed
         FeatureQualityPolicy qualityPolicy = new(null,
             ConservativeTtl(setup), ConservativeTtl(context), null);
         LaneASignalEvaluationResult laneA = LaneASignalEvaluator.Evaluate(input, cursor,
-            new LaneASignalEvaluationConfiguration(priceConfiguration, qualityPolicy, null));
+            new LaneASignalEvaluationConfiguration(priceConfiguration, qualityPolicy,
+                indicators?.BoundaryMinimumChannelWidth));
         List<string> reasons = BuildReadinessReasons(setup, context, indicators,
             trigger.CoreBar, asOf, setupBars, contextBars,
             _unresolvedStreamDiagnostics);
@@ -883,8 +884,7 @@ public sealed class NativePublicKlineFeed
             return;
         }
 
-        if (!StringComparer.Ordinal.Equals(indicators.PriceContextVersion,
-                PriceContextFeatureCalculator.CurrentAlgorithmVersion))
+        if (!PriceContextFeatureCalculator.IsSupportedAlgorithmVersion(indicators.PriceContextVersion))
         {
             reasons.Add("price-context-version-unsupported");
         }
@@ -898,7 +898,8 @@ public sealed class NativePublicKlineFeed
         if (indicators.AtrValueUnit != PublicSignalValueUnit.Price
             || indicators.ChannelCenterValueUnit != PublicSignalValueUnit.Price
             || indicators.ChannelWidthValueUnit != PublicSignalValueUnit.Price
-            || indicators.HtfMovingAverageValueUnit != PublicSignalValueUnit.Price)
+            || indicators.HtfMovingAverageValueUnit != PublicSignalValueUnit.Price
+            || indicators.BoundaryMinimumChannelWidthUnit != PublicSignalValueUnit.Price)
         {
             reasons.Add("price-context-value-unit-unsupported");
         }

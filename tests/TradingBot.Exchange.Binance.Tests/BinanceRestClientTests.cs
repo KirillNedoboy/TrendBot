@@ -310,6 +310,51 @@ public sealed class BinanceRestClientTests
         Assert.Contains("Too many requests", error.Message);
     }
 
+    [Fact]
+    public async Task OversizedUnannouncedResponseStopsReadingAtConfiguredLimit()
+    {
+        using CountingUnseekableStream body = new(new byte[4096]);
+        FixtureHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body)
+        });
+        using HttpClient httpClient = new(handler) { BaseAddress = BaseAddress };
+        BinancePublicRestClient client = new(httpClient,
+            new BinanceRestOptions(BaseAddress) { MaxResponseBytes = 64 });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.GetServerTimeAsync(TestContext.Current.CancellationToken));
+        Assert.InRange(body.TotalRead, 1, 65);
+    }
+
+    private sealed class CountingUnseekableStream(byte[] bytes) : Stream
+    {
+        public int TotalRead { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count) => ReadCore(buffer.AsSpan(offset, count));
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer,
+            CancellationToken cancellationToken = default) => ValueTask.FromResult(ReadCore(buffer.Span));
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+            CancellationToken cancellationToken) => Task.FromResult(ReadCore(buffer.AsSpan(offset, count)));
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        private int ReadCore(Span<byte> destination)
+        {
+            int count = Math.Min(destination.Length, bytes.Length - TotalRead);
+            bytes.AsSpan(TotalRead, count).CopyTo(destination);
+            TotalRead += count;
+            return count;
+        }
+    }
+
     private static BinancePublicRestClient CreateClient(FixtureHandler handler,
         TimeProvider? timeProvider = null)
     {

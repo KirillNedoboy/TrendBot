@@ -238,9 +238,10 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         SetupCandidate[] candidates = ConfirmedCandidates(evaluation);
         if (candidates.Length == 0)
         {
+            string code = evaluation.LaneA.SetupObservations.IsComplete
+                ? "no-confirmed-setup" : "signal-evaluation-unknown";
             CommitDiagnostic(inputEventId, inputHash, eventTime, availabilityTime,
-                receipt.IntakeSequence, "no-confirmed-setup",
-                EvaluationReasons(evaluation).Append("no-confirmed-setup"));
+                receipt.IntakeSequence, code, EvaluationReasons(evaluation).Append(code));
             return;
         }
 
@@ -463,7 +464,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         receipt.RevisionHash ?? Convert.ToHexString(SHA256.HashData(
             Encoding.UTF8.GetBytes(receipt.PayloadJson))).ToLowerInvariant();
 
-    private static string SourceEventId(string inputEventId)
+    internal static string SourceEventId(string inputEventId)
     {
         const string prefix = "scenario-confirm:";
         if (!inputEventId.StartsWith(prefix, StringComparison.Ordinal))

@@ -169,3 +169,145 @@ atomic outcome ledger stores the canonical hash and separate identity material;
 exact restart retries deduplicate, changed path content under the same identity
 conflicts. The signal and delivery journals are not modified. These outcomes
 are research observations, not fills, P/L, OOS evidence or order authority.
+
+## P15-M03-T017 opportunity report (SR-05.3)
+
+`signal-only opportunity-report --capture <coverage-report.json> --ledger
+<native-bars.sqlite> --manifest <signal-study.json> [--journal
+<signal-journal.sqlite> --symbol <symbol> --profile <profile.json>
+--declaration <predeclared-run.json> --freeze <frozen-journal.json>
+[--outcomes <directory>]]` reads existing files only. The dataset, PIT universe
+and configuration hashes must match the frozen signal-study manifest. With a
+journal, the declaration and freeze bind the exact capture report, input ledger,
+signal profile, scenario policies, manifest and journal hashes; an uncheckpointed
+SQLite WAL or changed input is rejected. These hashes establish content
+identity, not independent proof of when a file was created.
+
+Every expected eligible 15m symbol/time interval stays in the table, with
+historical modeled-REST and prospective recorded-WS availability distinguished.
+Missing capture or absent signal journal is Unknown, not NoSignal; only an
+explicit committed `no-confirmed-setup` diagnostic proves NoSignal. Other
+committed diagnostics retain blocked/unknown reasons. Signal IDs are unique
+within the common universe, multiple families in one interval retain overlap,
+and unmatched signal/outcome/public-input identities remain visible. Committed
+diagnostics must match their accepted bar revision; signals must match the
+profile and accepted public-input provenance; outcomes must match their signal
+and evidence hashes. Conflicts fail closed.
+
+
+Denominators and exclusions separate expected/covered, no-signal, blocked,
+unknown, signaled cells, overlap, and complete decision/published outcomes.
+Frequency per covered interval is unknown when any covered decision is Unknown;
+the denominator remains visible and `signalFrequencyUnknownReason` explains the
+missing value. A covered bar without a decision is not a zero-signal decision.
+Directional positive/negative/tie counts, signed-return mean, publication
+delays, MAE/MFE and first-passage bounds are observations only; null metrics
+carry reasons. MA-only control requires frozen kind/period/seed/warmup, and the
+price-volume control requires frozen source/formula/normalization; neither is
+evaluated by this report. Hypothetical net expectancy stays null without
+usable fee/spread/slippage, latency, funding and non-fill inputs; no actual
+profitability or OOS comparison is claimed.
+
+The T008 BTCUSDT capture has 99/99 accepted expected 15m intervals across
+modeled historical and recorded prospective windows. An authorized exploratory
+offline replay produced three committed Unknown diagnostics, no signals or
+outbox entries, and no publication or outcome records. The other 96 historical
+REST intervals were warmup, not retrospective decisions. Two CLI reports over
+the frozen journal and manifest produced identical bytes; all 99 decisions
+remain Unknown, with null frequency and hypothetical net expectancy. This is
+not evidence of signal readiness or performance.
+
+## T017 exploratory BTCUSDT replay profile
+
+The user authorized a **new** research-only profile after the T008 capture and
+before replay. It was not predeclared when those market data were collected, is
+not an OOS study, and is not evidence of predictive power. The write-once
+`predeclared-run.json`, canonical `profile.json` and `scenario-policies.json`
+are in `artifacts/P15-M03-T017/research-t008-c0f7b3bc869f459583f7df9975e09488/`.
+Profile SHA-256:
+`bff10263128caf7775250527cdf4a7902f5b1190293852c9fe029b367b1bc3a4`;
+scenario-policy SHA-256:
+`d7221f5953fa5e39641874a278ec00ed9687049feb201b14f58a022ba03f81f6`.
+
+The fixed PIT universe is BTCUSDT; setup/context are native 15m/1h from the
+T008 recorded history start. EMA20 and ATR14 are historical examples in
+canonical source §16, not validated defaults; HTF 21 and two confirmations are
+research seeds in §8. The HTF fast period 9, 2/2 pivots, RMA ATR, unit channel
+and level multipliers, 21/23-bar warmups, and two-interval freshness limits are
+explicit software-replay choices, not optimised or validated strategy settings.
+The Boundary minimum full-channel width is 0.10 price units, derived from the
+BTCUSDT `PRICE_FILTER.tickSize` in the frozen T008 point-in-time snapshot. The
+24-hour expiry, zero-delay rearm requiring a new anchor, and explicit/opposite
+invalidation are research-only policy choices. Historical REST availability
+remains modeled; only recorded closed WebSocket 15m receipts trigger journal
+decisions. No signal, publication, outcome, fill or performance result is
+assumed by this declaration.
+
+### Extended public capture and the initial v2 blocker
+
+An explicitly authorized extension predeclared the same numerical profile and
+policies before capture; only the profile version and recorded history
+provenance changed. Capture
+`20261112T184159Z-107922243e1b4a54b7b867df9c41850f` covered 338/338 historical
+15m and 84/84 historical 1h intervals with modeled REST availability, plus
+2/2 prospective 15m and 1/1 prospective 1h intervals with recorded WebSocket
+availability. A third 15m close was accepted immediately before its nominal
+close time, so it is retained as an unmatched public input rather than added
+to the declared coverage denominator.
+
+The manifest was frozen before offline replay. The replay checked every input
+against the original event/close/availability/sequence cut and produced three
+committed Unknown diagnostics, no signals and no outbox entries; reopening
+preserved journal bytes and semantic state with zero network attempts. Two
+CLI runs over the frozen inputs produced identical canonical JSON SHA-256
+`77bde54d5edcd25065e4558899124b1dbf857d14518df6c45588fdcbb7a5cd5c`:
+340 expected/covered, 340 Unknown, 0 NoSignal, 340 exclusions, and null
+frequency and hypothetical net expectancy.
+
+At the last trigger, 341 setup and 85 context bars were available, but both
+setup structure and HTF remained `UnknownWarmup`. One early setup pivot lacked
+confirmation-time ATR even though 95 later setup pivots had ATR.
+`CalculateStructuralLevels` accumulates `atrWarmup` for any such earlier pivot
+and does not clear it when later levels appear. The contract also allows
+levels to reverse roles on breaks, so discarding the early unknown level or
+inventing a reset could produce a false Ready/NoSignal. At that point T017
+remained blocked pending a causally justified recovery and regression proof.
+
+An investigated sufficient reset would replace both structural slots with
+ATR-backed pivots at the same causal cut and restart HTF confirmation; this
+does not require deciding what an unknown earlier level did. A read-only scan
+of the captured closed-bar windows found two 15m double pivots but no 1h double
+pivot after the nominal ATR14 seed; individual ATR availability for the 15m
+pivots was not checked. This condition therefore cannot unblock the observed
+HTF decisions. More general recovery must conservatively account
+for uncertain breaks and role reversals; changing the fixed
+`price-context-v2` behavior without versioned replay semantics would alter
+the meaning of existing frozen evidence.
+
+### Versioned recovery and T017 software acceptance
+
+The explicit v3 recovery tracks uncertain slots conservatively; on the
+captured data it recovered setup structure but not HTF. V4 retains a set of
+correlated possible level pairs, branching on a missing buffer only when a
+break is possible. It becomes Ready only when every branch converges to the
+same fully known pair, then requires fresh HTF confirmation. V2 and v3 reopen
+without changing their frozen journal bytes. No past journal was rewritten.
+
+The v4 profile and formula were developed after inspecting earlier results;
+they were frozen before this replay, not before market-data capture. This is
+exploratory software evidence, not a predeclared OOS study. The frozen v4
+manifest identity is
+`46c8e103de18ae9bbeed4c2ba908ea0c52ea2bfa081e84ca9d4e6afb95e35fa8`.
+Offline replay of three recorded triggers produced one genuine committed
+signal and output-only outbox row and two committed NoSignal diagnostics;
+there was no delivery, publication, outcome or network request. The third
+trigger is outside the declared coverage window.
+
+Two CLI runs over the frozen journal and manifest produced identical canonical
+JSON SHA-256
+`cb74a791e3c350ef2085554e41691e57bb5da09d9ba69a4971efe41c5100b6f2`:
+340 expected/covered, 338 Unknown warmup cells, one NoSignal, one signaled
+cell, 338 exclusions and one unmatched public input. Frequency and hypothetical
+net expectancy remain null. The signal-study manifest remains Unknown for
+undeclared research criteria; T017 acceptance is software/reporting only and
+does not establish performance, promotion or execution authority.

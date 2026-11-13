@@ -1,9 +1,12 @@
-# Price-context v2
+# Price-context versions
 
 `TradingBot.Core.PriceContextFeatureCalculator` exposes a pure
-`Calculate(input, cursor, configuration)` contract. The fixed algorithm
-version is `price-context-v2`. It reads no clock, network, persistence, or
-strategy state and produces only deterministic feature values and provenance.
+`Calculate(input, cursor, configuration)` contract. The original
+`price-context-v2` remains supported with unchanged replay behavior.
+`price-context-v3` and `price-context-v4` are explicit alternatives for
+conservative structural warmup recovery; neither is a default or a
+strategy-validation result. All versions read no clock, network, persistence,
+or execution state.
 
 ## Causal histories and provenance
 
@@ -73,6 +76,30 @@ Structural transitions, channel inputs, and ATR windows are ordered by causal
 availability and stable sequence. A delayed bar enters the numeric series when
 it becomes available; it is not inserted into an earlier point in the series
 or used to rewrite an already replayed transition.
+
+### Versioned structural warmup recovery
+
+In v2, an early pivot without confirmation-time ATR leaves the structural
+result `UnknownWarmup` for the entire replayed history. In v3, each affected
+slot remains explicitly uncertain, with bounds on possible anchors. A later
+closed bar that could break an uncertain level also makes the opposite slot
+uncertain, because a break reverses the level's role. A known break or a new
+ATR-backed pivot can replace a slot only when the transition is causally
+determinate. Structural state becomes Ready only when neither slot remains
+uncertain; no missing buffer is assigned a value.
+
+In v4, alternatives retain correlated support/resistance identities rather
+than merging each slot independently. An unknown buffer branches only where
+a break is possible; a closed bar or confirmed pivot can make alternatives
+converge. Ready requires every remaining alternative to be the same fully
+known pair. With P confirmed pivots there are at most `(P + 1)^2` pairs; this
+is a computational bound, not a trading threshold.
+
+While HTF structure is uncertain, both recovery versions discard pending and
+confirmed HTF regime state and require fresh confirmation after recovery.
+Historical uncertainty is retained in pivot evidence. Each changed formula
+requires new profile and manifest identities; previous frozen journals and
+reports are not rewritten.
 
 ## Local channel and trend
 

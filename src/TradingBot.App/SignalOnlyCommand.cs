@@ -31,6 +31,29 @@ public static class SignalOnlyCommand
             return await RenderJournalAsync(args, output, error).ConfigureAwait(false);
         }
 
+        if (args.Length >= 2
+            && StringComparer.Ordinal.Equals(args[0], CommandName)
+            && StringComparer.Ordinal.Equals(args[1], "opportunity-report"))
+        {
+            return SignalOpportunityReportCommand.Run(args, output, error);
+        }
+
+        if (args.Length >= 2
+            && StringComparer.Ordinal.Equals(args[0], CommandName)
+            && StringComparer.Ordinal.Equals(args[1], "preflight"))
+        {
+            return await SignalOnlyBoundedPreflight.RunAsync(args, output, error,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2
+            && StringComparer.Ordinal.Equals(args[0], CommandName)
+            && StringComparer.Ordinal.Equals(args[1], "bounded-run"))
+        {
+            return await SignalOnlyBoundedRun.RunAsync(args, output, error,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (args.Length != 3
             || !StringComparer.OrdinalIgnoreCase.Equals(args[0], CommandName)
             || !StringComparer.Ordinal.Equals(args[1], "--config")

@@ -45,6 +45,8 @@ public sealed class PublicSignalProfileConfigurationTests
         Assert.Contains("setup-history-start-unknown", profile.UnknownReasons);
         Assert.Contains("channel-width-value-unit-unknown", profile.UnknownReasons);
         Assert.Contains("pivot-left-bars-unknown", profile.UnknownReasons);
+        Assert.Contains("boundary-minimum-channel-width-unknown", profile.UnknownReasons);
+        Assert.Contains("boundary-minimum-channel-width-unit-unknown", profile.UnknownReasons);
         Assert.Contains("universe-minimum-symbols-unknown", profile.UnknownReasons);
     }
 

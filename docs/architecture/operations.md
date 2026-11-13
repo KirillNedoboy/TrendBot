@@ -165,3 +165,72 @@ committed journal checkpoint prevents a duplicate signal/outbox on restart. This
 path has no private transport, signer, executor, risk authorization, order intent,
 position, or portfolio dependency. The existing `shadow` command and its gates are
 unchanged. Public live connectivity and Linux/systemd operation remain unverified.
+
+## P15-M03-T018 bounded public-run preflight
+
+`signal-only preflight --envelope <file>` checks a strict, versioned declaration
+without opening a database or contacting an exchange. The declaration binds the
+complete signal profile and scenario policies, public symbol universe, UTC start
+window, time and resource limits, isolated storage, freshness and retry policies,
+observed outputs, and the required disconnect, gap, database-failure, restart,
+and graceful-stop drills. Unknown mandatory values, unsupported policies,
+private settings, inconsistent bounds, a nonempty or non-isolated run directory,
+and insufficient currently available disk space block readiness. Cancellation
+does not create the declared stores.
+
+The verdict identifies the exact envelope, configuration, profile and scenario
+policy hashes. `ready` means only that the declaration and the current local
+preflight checks passed: it is not evidence that a bounded runtime has started,
+that disk space will remain available, or that resource limits are enforced.
+The separate `signal-only --config` command is unbounded and must not be used as
+a substitute for the prospective bounded run. T019 must enforce the declared
+limits, check public instrument eligibility, and provide the actual health,
+output, recovery and replay evidence before its own acceptance.
+
+## P15-M03-T019 bounded-run implementation
+
+`signal-only bounded-run --envelope <file> --sha256 <hash>` requires the exact
+preflighted envelope and a fresh, isolated run directory. The first process may
+use `--pause-after-first-close`; `--resume` reopens only the same run, envelope,
+assembly identities and original deadline. An exclusive run lock prevents
+concurrent writers. Unknown or unexpected files and reparse points block
+restart rather than being overwritten. The run declares its assembly hashes,
+decision-clock outcome policy and resource sub-budgets before public requests.
+
+Only the fixed Binance USD-M public REST and market WebSocket clients are
+composed; redirects are disabled and current exchange metadata must admit the
+declared symbol. REST pages and response reads, WebSocket frame/message sizes,
+the number of input receipts and the run deadline are bounded. Only actual
+closed 15m/1h WebSocket observations trigger the serial consumer; open updates
+are not signal inputs. A disconnect, gap, conflicting revision, persistence
+failure or stale required feed stops the run instead of authorizing a signal
+or inventing a backfill. A fresh SQLite input ledger, live journal and replay
+journal use separate page limits and DELETE rollback journals; logs and
+outcomes have separate budgets. The total logical file size is monitored.
+Working set and total files are sampled at the declared health interval and
+again at completion, not enforced as an OS-level instantaneous quota.
+
+Health distinguishes expected and observed prospective close counts and
+reports unknown quality while coverage is unresolved. Planned restart and
+completion wait for both timeframes to cover every interval at the same cutoff,
+including a shared close received in either order; missing input remains subject
+to the declared freshness and deadline bounds. A committed journal is rendered
+locally without an external publication receipt. Only actual
+committed signals can produce an outcome observation: its decision clock,
+15-minute horizon, scenario expiry and available cancellation are declared
+before the public run, with no target or fill assumptions. Completion waits
+for closed, available 15m input through every committed signal horizon; an
+unobserved horizon at the run deadline stops without creating an outcome.
+Native Core bar closes are already end-exclusive and are not extended. Outcome
+usability is the maximum of the original recorded availability, event time and
+bar close: an early closed receipt cannot expose the bar before its close, and
+the original receipt and event timestamps remain unchanged. Missing or
+incomplete future paths remain MissingPath/Censored, not a return. The
+final independent journal replay uses recorded causal inputs and must match the live
+semantic snapshot. Both snapshots use `CoreJsonSerializer`; generic Web JSON
+rejects the immutable required-nullable `SignalRecord.Probability` contract.
+T019 acceptance evidence is recorded in `HANDOFF.md`: a predeclared public-only
+run completed with actual 15m/1h inputs, a committed signal, local output and a
+decision-clock outcome, plus independent causal-prefix and restart parity.
+Earlier failures and NoSetup windows remain retained. No external publication,
+OOS comparison, order or realized-profit claim follows from this evidence.

@@ -185,6 +185,10 @@ public sealed record PublicSignalIndicatorConfiguration
 
     public PublicSignalValueUnit? HtfMovingAverageValueUnit { get; }
 
+    public decimal? BoundaryMinimumChannelWidth { get; }
+
+    public PublicSignalValueUnit? BoundaryMinimumChannelWidthUnit { get; }
+
     [JsonConstructor]
     public PublicSignalIndicatorConfiguration(string? priceContextVersion = null,
         string? featureQualityVersion = null, string? setupFamilyVersion = null,
@@ -203,7 +207,9 @@ public sealed record PublicSignalIndicatorConfiguration
         int? htfFastPeriodBars = null, int? htfSlowPeriodBars = null,
         PriceContextMovingAverageKind? htfMovingAverageKind = null,
         int? htfConfirmationBars = null,
-        PublicSignalValueUnit? htfMovingAverageValueUnit = null)
+        PublicSignalValueUnit? htfMovingAverageValueUnit = null,
+        decimal? boundaryMinimumChannelWidth = null,
+        PublicSignalValueUnit? boundaryMinimumChannelWidthUnit = null)
     {
         ValidateOptionalText(priceContextVersion, nameof(priceContextVersion));
         ValidateOptionalText(featureQualityVersion, nameof(featureQualityVersion));
@@ -229,6 +235,8 @@ public sealed record PublicSignalIndicatorConfiguration
         ValidateDefined(htfMovingAverageKind, nameof(htfMovingAverageKind));
         ValidatePositive(htfConfirmationBars, nameof(htfConfirmationBars));
         ValidateDefined(htfMovingAverageValueUnit, nameof(htfMovingAverageValueUnit));
+        ValidatePositive(boundaryMinimumChannelWidth, nameof(boundaryMinimumChannelWidth));
+        ValidateDefined(boundaryMinimumChannelWidthUnit, nameof(boundaryMinimumChannelWidthUnit));
 
         PriceContextVersion = priceContextVersion;
         FeatureQualityVersion = featureQualityVersion;
@@ -254,6 +262,8 @@ public sealed record PublicSignalIndicatorConfiguration
         HtfMovingAverageKind = htfMovingAverageKind;
         HtfConfirmationBars = htfConfirmationBars;
         HtfMovingAverageValueUnit = htfMovingAverageValueUnit;
+        BoundaryMinimumChannelWidth = boundaryMinimumChannelWidth;
+        BoundaryMinimumChannelWidthUnit = boundaryMinimumChannelWidthUnit;
     }
 
     private static void ValidateOptionalText(string? value, string parameterName)
@@ -464,6 +474,10 @@ public sealed record PublicSignalProfileConfiguration
         AddMissing(reasons, "htf-confirmation-bars", configuration.HtfConfirmationBars is not null);
         AddMissing(reasons, "htf-moving-average-value-unit",
             configuration.HtfMovingAverageValueUnit is not null);
+        AddMissing(reasons, "boundary-minimum-channel-width",
+            configuration.BoundaryMinimumChannelWidth is not null);
+        AddMissing(reasons, "boundary-minimum-channel-width-unit",
+            configuration.BoundaryMinimumChannelWidthUnit is not null);
     }
 
     private static void AddUniverseReasons(List<string> reasons,

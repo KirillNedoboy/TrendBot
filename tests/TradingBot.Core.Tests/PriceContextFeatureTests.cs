@@ -211,6 +211,199 @@ public sealed class PriceContextFeatureTests
         Assert.Null(result.StructuralLevels.Support);
     }
 
+    [Theory]
+    [InlineData("price-context-v3")]
+    [InlineData("price-context-v4")]
+    public void VersionedRecoveryWaitsForKnownReplacementAndKeepsV2Unchanged(string algorithmVersion)
+    {
+        ScreenerBar[] setup =
+        [
+            Bar(0, 10m, 11m, 9m, 10m), Bar(1, 8m, 9m, 5m, 10m),
+            Bar(2, 9m, 10m, 7m, 10m), Bar(3, 10m, 11m, 8m, 10m),
+            Bar(4, 11m, 12m, 9m, 10m), Bar(5, 10m, 11m, 8m, 10m),
+            Bar(6, 9m, 10m, 7m, 10m), Bar(7, 10m, 11m, 8m, 10m),
+            Bar(8, 20m, 21m, 19m, 10m)
+        ];
+        PriceContextFeatureConfiguration recovery = Configuration(
+            atrPeriod: 5, levelBufferMultiplier: 0.1m, algorithmVersion: algorithmVersion);
+        PriceContextFeatureResult before = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(7, 6), recovery);
+        PriceContextFeatureResult after = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(8, 7), recovery);
+        PriceContextFeatureResult prefix = PriceContextFeatureCalculator.Calculate(
+            Input(setup[..8], [], []), Cursor(8, 7), recovery);
+        PriceContextFeatureResult legacy = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(8, 7),
+            Configuration(atrPeriod: 5, levelBufferMultiplier: 0.1m));
+
+        Assert.Equal(PriceContextFeatureState.UnknownWarmup, before.StructuralLevels.State);
+        Assert.Equal(PriceContextFeatureState.Ready, after.StructuralLevels.State);
+        Assert.Equal(7m, after.StructuralLevels.Support!.Anchor);
+        Assert.Equal(prefix.StructuralLevels.State, after.StructuralLevels.State);
+        Assert.Equal(prefix.StructuralLevels.Support, after.StructuralLevels.Support);
+        Assert.Equal(prefix.StructuralLevels.Resistance, after.StructuralLevels.Resistance);
+        Assert.Contains(after.ConfirmedPivots.Pivots, pivot => pivot.AtrAtConfirmation is null);
+        Assert.Equal(PriceContextFeatureState.UnknownWarmup, legacy.StructuralLevels.State);
+        FeatureQualitySnapshot snapshot = FeatureQualitySnapshot.Create(after,
+            new FeatureQualityPolicy(null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), null));
+        FeatureQualitySnapshot restored = CoreJsonSerializer.Deserialize<FeatureQualitySnapshot>(
+            CoreJsonSerializer.Serialize(snapshot));
+        Assert.Equal(snapshot.SnapshotId, restored.SnapshotId);
+    }
+
+    [Theory]
+    [InlineData("price-context-v3")]
+    [InlineData("price-context-v4")]
+    public void VersionedRecoveryRetainsUncertaintyFromPossibleBreakAndRoleReversal(string algorithmVersion)
+    {
+        ScreenerBar[] setup =
+        [
+            Bar(0, 10m, 11m, 9m, 10m), Bar(1, 8m, 9m, 5m, 10m),
+            Bar(2, 9m, 10m, 7m, 10m), Bar(3, 9m, 10m, 7m, 10m),
+            Bar(4, 4m, 5m, 3m, 10m), Bar(5, 6m, 7m, 5m, 10m),
+            Bar(6, 7m, 8m, 6m, 10m), Bar(7, 9m, 10m, 7m, 10m),
+            Bar(8, 8m, 9m, 6m, 10m), Bar(9, 7m, 8m, 5m, 10m),
+            Bar(10, 8m, 9m, 6m, 10m)
+        ];
+        PriceContextFeatureConfiguration recovery = Configuration(
+            atrPeriod: 5, levelBufferMultiplier: 0.1m, algorithmVersion: algorithmVersion);
+        PriceContextFeatureResult possibleBreak = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(6, 5), recovery);
+        PriceContextFeatureResult oneReplacement = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(9, 8), recovery);
+        PriceContextFeatureResult recovered = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(11, 10), recovery);
+
+        Assert.Equal(PriceContextFeatureState.UnknownWarmup, possibleBreak.StructuralLevels.State);
+        Assert.Equal(PriceContextFeatureState.UnknownWarmup, oneReplacement.StructuralLevels.State);
+        Assert.Equal(PriceContextFeatureState.Ready, recovered.StructuralLevels.State);
+        Assert.Equal(5m, recovered.StructuralLevels.Support!.Anchor);
+        Assert.Equal(10m, recovered.StructuralLevels.Resistance!.Anchor);
+    }
+
+    [Fact]
+    public void BranchRecoveryKeepsCorrelatedAlternativesUntilTheyConverge()
+    {
+        ScreenerBar[] setup =
+        [
+            Bar(0, 9m, 11m, 5m, 10m), Bar(1, 13m, 15m, 12m, 10m),
+            Bar(2, 10m, 11m, 7m, 10m), Bar(3, 13m, 16m, 10m, 10m),
+            Bar(4, 18m, 20m, 16m, 10m), Bar(5, 18m, 19m, 15m, 10m),
+            Bar(6, 18m, 19m, 15m, 10m), Bar(7, 10m, 14m, 6m, 10m),
+            Bar(8, 8m, 10m, 7m, 10m), Bar(9, 8m, 10m, 4m, 10m),
+            Bar(10, 10m, 13m, 8m, 10m), Bar(11, 8m, 11m, 5m, 10m),
+            Bar(12, 12m, 13m, 9m, 10m)
+        ];
+        PriceContextFeatureResult conservative = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(13, 12),
+            Configuration(atrPeriod: 5, levelBufferMultiplier: 0.01m, algorithmVersion: "price-context-v3"));
+        PriceContextFeatureResult recovered = PriceContextFeatureCalculator.Calculate(
+            Input(setup, [], []), Cursor(13, 12),
+            Configuration(atrPeriod: 5, levelBufferMultiplier: 0.01m, algorithmVersion: "price-context-v4"));
+
+        Assert.Equal(PriceContextFeatureState.UnknownWarmup, conservative.StructuralLevels.State);
+        Assert.Equal(PriceContextFeatureState.Ready, recovered.StructuralLevels.State);
+        Assert.Equal(5m, recovered.StructuralLevels.Support!.Anchor);
+        Assert.Equal(13m, recovered.StructuralLevels.Resistance!.Anchor);
+    }
+
+    [Theory]
+    [InlineData(false, "price-context-v3")]
+    [InlineData(true, "price-context-v3")]
+    [InlineData(false, "price-context-v4")]
+    [InlineData(true, "price-context-v4")]
+    public void VersionedReadyLevelsAgreeWithPossibleHistoricalBuffers(bool mirror, string algorithmVersion)
+    {
+        ScreenerBar[] original =
+        [
+            Bar(0, 10m, 11m, 9m, 10m), Bar(1, 8m, 9m, 5m, 10m),
+            Bar(2, 9m, 10m, 7m, 10m), Bar(3, 9m, 10m, 7m, 10m),
+            Bar(4, 4m, 5m, 3m, 10m), Bar(5, 6m, 7m, 5m, 10m),
+            Bar(6, 7m, 8m, 6m, 10m), Bar(7, 9m, 10m, 7m, 10m),
+            Bar(8, 8m, 9m, 6m, 10m), Bar(9, 7m, 8m, 5m, 10m),
+            Bar(10, 8m, 9m, 6m, 10m)
+        ];
+        ScreenerBar[] setup = mirror ? original.Select((item, index) => Bar(index,
+            20m - item.Bar.Close.Value, 20m - item.Bar.Low.Value,
+            20m - item.Bar.High.Value, 10m)).ToArray() : original;
+        PriceContextFeatureConfiguration recovery = Configuration(
+            atrPeriod: 5, levelBufferMultiplier: 0.1m, algorithmVersion: algorithmVersion);
+        bool recoveredAfterWarmup = false;
+        for (int count = 1; count <= setup.Length; count++)
+        {
+            PriceContextFeatureResult result = PriceContextFeatureCalculator.Calculate(
+                Input(setup, [], []), Cursor(count, count - 1), recovery);
+            if (result.StructuralLevels.State != PriceContextFeatureState.Ready)
+                continue;
+            recoveredAfterWarmup |= count > 5;
+            foreach (decimal unknownBuffer in new[] { 0.1m, 1m, 3m, 10m, 100m })
+            {
+                PriceContextStructuralLevel? support = null;
+                PriceContextStructuralLevel? resistance = null;
+                foreach (ScreenerBar bar in setup.Take(count))
+                {
+                    if (support is not null && bar.Close.Value < support.Boundary)
+                    {
+                        resistance = new PriceContextStructuralLevel(PriceContextLevelRole.Resistance,
+                            support.Anchor, support.FrozenBuffer, support.Pivot);
+                        support = null;
+                    }
+                    else if (resistance is not null && bar.Close.Value > resistance.Boundary)
+                    {
+                        support = new PriceContextStructuralLevel(PriceContextLevelRole.Support,
+                            resistance.Anchor, resistance.FrozenBuffer, resistance.Pivot);
+                        resistance = null;
+                    }
+                    foreach (PriceContextPivotEvidence pivot in result.ConfirmedPivots.Pivots
+                        .Where(item => item.ConfirmationSequence == bar.StableSequence))
+                    {
+                        PriceContextLevelRole role = pivot.Kind == PriceContextPivotKind.Low
+                            ? PriceContextLevelRole.Support : PriceContextLevelRole.Resistance;
+                        PriceContextStructuralLevel level = new(role, pivot.Anchor,
+                            pivot.FrozenBuffer ?? unknownBuffer, pivot);
+                        if (role == PriceContextLevelRole.Support)
+                            support = level;
+                        else
+                            resistance = level;
+                    }
+                }
+                Assert.Equal(support?.Anchor, result.StructuralLevels.Support?.Anchor);
+                Assert.Equal(support?.FrozenBuffer, result.StructuralLevels.Support?.FrozenBuffer);
+                Assert.Equal(resistance?.Anchor, result.StructuralLevels.Resistance?.Anchor);
+                Assert.Equal(resistance?.FrozenBuffer, result.StructuralLevels.Resistance?.FrozenBuffer);
+            }
+        }
+        Assert.True(recoveredAfterWarmup);
+    }
+
+    [Theory]
+    [InlineData("price-context-v3")]
+    [InlineData("price-context-v4")]
+    public void VersionedHtfRecoveryRequiresFreshConfirmationAfterUnknownStructure(string algorithmVersion)
+    {
+        ScreenerBar[] htf =
+        [
+            HtfBar(0, 10m, 11m, 9m), HtfBar(1, 8m, 9m, 5m),
+            HtfBar(2, 9m, 10m, 7m), HtfBar(3, 10m, 11m, 8m),
+            HtfBar(4, 11m, 12m, 9m), HtfBar(5, 10m, 11m, 8m),
+            HtfBar(6, 9m, 10m, 7m), HtfBar(7, 10m, 11m, 8m),
+            HtfBar(8, 12m, 13m, 9m), HtfBar(9, 14m, 15m, 11m)
+        ];
+        PriceContextFeatureConfiguration recovery = Configuration(
+            atrPeriod: 5, levelBufferMultiplier: 0.1m, htfFastPeriod: 1,
+            htfSlowPeriod: 2, htfConfirmationCount: 2, algorithmVersion: algorithmVersion);
+        PriceContextFeatureResult pending = PriceContextFeatureCalculator.Calculate(
+            Input([], htf, []), Cursor(Time(45), 8), recovery);
+        PriceContextFeatureResult confirmed = PriceContextFeatureCalculator.Calculate(
+            Input([], htf, []), Cursor(Time(50), 9), recovery);
+
+        Assert.Null(pending.HtfContext.ConfirmedRegime);
+        Assert.Equal(PriceContextHtfCandidate.Bull, pending.HtfContext.PendingCandidate);
+        Assert.Equal(1, pending.HtfContext.PendingCount);
+        Assert.Equal(PriceContextFeatureState.Ready, confirmed.HtfContext.State);
+        Assert.Equal(PriceContextHtfRegime.Bull, confirmed.HtfContext.ConfirmedRegime);
+    }
+
     [Fact]
     public void ConfirmedPivotsRemainAvailableWhenLevelBufferConfigurationIsMissing()
     {
@@ -437,8 +630,8 @@ public sealed class PriceContextFeatureTests
         int? htfSlowPeriod = 3,
         PriceContextMovingAverageKind htfMovingAverageKind = PriceContextMovingAverageKind.Ema,
         int? htfConfirmationCount = 2, int? vwapWindow = null, int? pocWindow = null,
-        decimal? pocBinSize = null) => new(
-            setupTimeframe, htfTimeframe, new PriceContextFeatureVersion("price-context-v2"),
+        decimal? pocBinSize = null, string algorithmVersion = "price-context-v2") => new(
+            setupTimeframe, htfTimeframe, new PriceContextFeatureVersion(algorithmVersion),
             pivotLeft, pivotRight, atrPeriod, atrMode, centerKind, centerPeriod,
             hlc3SmoothingKind, widthKind, channelWidthPeriod, channelWidthMultiplier,
             levelBufferMultiplier, htfFastPeriod, htfSlowPeriod, htfMovingAverageKind,

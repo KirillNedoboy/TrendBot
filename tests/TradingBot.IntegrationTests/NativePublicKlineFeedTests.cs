@@ -503,6 +503,33 @@ public sealed class NativePublicKlineFeedTests
                 missing.OpenTimeMilliseconds).EventId);
     }
 
+    [Theory]
+    [InlineData("price-context-v3")]
+    [InlineData("price-context-v4")]
+    public async Task VersionedRecoveryProfileProducesACommittedDecision(string version)
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(3),
+            priceContextVersion: version);
+        using FeedFixture fixture = await CreateFixtureAsync(ledgerPath: inputDatabase.Path,
+            priceContextVersion: version);
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(journalDatabase.Path);
+        using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), fixture.Feed, ledger, journal);
+        BinanceKline trigger = CreateKline(PrimaryOpen, "15m", true);
+        NativePublicKlineFeedUpdate update = await consumer.ProcessAsync(
+            CreateEnvelope(trigger, CoClose.AddMilliseconds(20)), TestContext.Current.CancellationToken);
+
+        NativePublicKlineEvaluation evaluation = Assert.IsType<NativePublicKlineEvaluation>(update.Evaluation);
+        Assert.True(evaluation.IsReady);
+        Assert.NotEqual(BoundaryRejectionSetupState.UnknownConfiguration, evaluation.LaneA.BoundaryRejection.Long.State);
+        string eventId = BinanceKlineIdentity.Create("BTCUSDT", "15m",
+            trigger.OpenTimeMilliseconds).EventId;
+        AssertDurableOutcome(evaluation, journal.Read("binance-usdm-native-kline:BTCUSDT"), eventId);
+    }
+
     [Fact]
     public async Task SignalOnlyConsumerPersistsClosedInputAndReopensWithoutDuplicates()
     {
@@ -533,8 +560,14 @@ public sealed class NativePublicKlineFeedTests
                 Assert.IsType<NativePublicKlineEvaluation>(update.Evaluation);
             Assert.Equal(BinanceKlineIngestionStatus.Accepted, update.Status);
             Assert.True(evaluation.IsReady);
+            Assert.Equal(1m, evaluation.LaneA.BoundaryRejection.Configuration.MinimumChannelWidth);
 
             SignalJournalSnapshot committed = journal.Read(streamId);
+            Assert.False(evaluation.LaneA.SetupObservations.IsComplete);
+            Assert.Empty(committed.Signals);
+            Assert.Contains(committed.Diagnostics, diagnostic =>
+                diagnostic.InputEventId == eventId
+                && diagnostic.Code == "signal-evaluation-unknown");
             AssertDurableOutcome(evaluation, committed, eventId);
             committedJson = CoreJsonSerializer.Serialize(committed);
         }
@@ -742,7 +775,8 @@ public sealed class NativePublicKlineFeedTests
             "Private", "Signer", "Executor", "Risk", "Authorization",
             "OrderIntent", "Position", "Portfolio"
         ];
-        Type[] roots = [typeof(SignalOnlyCommand), typeof(SignalOnlyInstrumentConsumer)];
+        Type[] roots = [typeof(SignalOnlyCommand), typeof(SignalOnlyInstrumentConsumer),
+            typeof(SignalOnlyBoundedPreflight), typeof(SignalOnlyBoundedRun)];
         Type[] implementationTypes = roots.Concat(roots.SelectMany(type =>
             type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))).ToArray();
         Type[] dependencyTypes = implementationTypes.SelectMany(DeclaredTypes)
@@ -800,9 +834,10 @@ public sealed class NativePublicKlineFeedTests
         Add(projection.CenterRetestShortStatus, SetupType.CenterRetest, Direction.Short);
         if (confirmedInputs.Count == 0)
         {
+            string expectedCode = projection.IsComplete
+                ? "no-confirmed-setup" : "signal-evaluation-unknown";
             Assert.Contains(snapshot.Diagnostics, diagnostic =>
-                diagnostic.InputEventId == sourceEventId
-                && diagnostic.Code == "no-confirmed-setup");
+                diagnostic.InputEventId == sourceEventId && diagnostic.Code == expectedCode);
             return;
         }
 
@@ -840,7 +875,8 @@ public sealed class NativePublicKlineFeedTests
     private static async Task<FeedFixture> CreateFixtureAsync(int setupSeedBars = 1,
         int setupWarmupBars = 1, int? missingSetupIndex = null,
         TimeSpan? maximumAge = null, string? ledgerPath = null,
-        bool rejectRestRequests = false)
+        bool rejectRestRequests = false,
+        string priceContextVersion = PriceContextFeatureCalculator.CurrentAlgorithmVersion)
     {
         FixedTimeProvider timeProvider = new(WarmupAt);
         BinanceKline[] bars = CreateRestBars(missingSetupIndex);
@@ -849,7 +885,7 @@ public sealed class NativePublicKlineFeedTests
         BinancePublicRestClient rest = new(httpClient,
             new BinanceRestOptions(new Uri("https://fixture.test")), timeProvider);
         PublicSignalProfileConfiguration profile = CreateProfile(setupSeedBars,
-            setupWarmupBars, maximumAge ?? TimeSpan.FromHours(3));
+            setupWarmupBars, maximumAge ?? TimeSpan.FromHours(3), priceContextVersion: priceContextVersion);
         SqliteNativeBarInputLedger? ledger = ledgerPath is null
             ? null : SqliteNativeBarInputLedger.Open(ledgerPath);
         NativePublicKlineFeed feed = ledger is null
@@ -861,7 +897,8 @@ public sealed class NativePublicKlineFeedTests
 
     private static PublicSignalProfileConfiguration CreateProfile(int setupSeedBars,
         int setupWarmupBars, TimeSpan maximumAge, int htfSlowPeriodBars = 1,
-        DateTimeOffset? contextHistoryStart = null, int channelCenterPeriodBars = 1)
+        DateTimeOffset? contextHistoryStart = null, int channelCenterPeriodBars = 1,
+        string priceContextVersion = PriceContextFeatureCalculator.CurrentAlgorithmVersion)
     {
         PublicSignalTimeframeConfiguration Timeframe(string timeframe, int seedBars,
             int warmupBars, DateTimeOffset? historyStart = null) => new(timeframe,
@@ -871,7 +908,7 @@ public sealed class NativePublicKlineFeedTests
             maximumAge, maximumAge);
 
         PublicSignalIndicatorConfiguration indicators = new(
-            priceContextVersion: PriceContextFeatureCalculator.CurrentAlgorithmVersion,
+            priceContextVersion: priceContextVersion,
             featureQualityVersion: FeatureQualityEvaluation.CurrentAlgorithmVersion,
             setupFamilyVersion: "lane-a-v1", pivotLeftBars: 1, pivotRightBars: 1,
             atrPeriodBars: 1, atrMode: PriceContextAtrMode.Sma,
@@ -889,7 +926,9 @@ public sealed class NativePublicKlineFeedTests
             htfFastPeriodBars: 1, htfSlowPeriodBars: htfSlowPeriodBars,
             htfMovingAverageKind: PriceContextMovingAverageKind.Ema,
             htfConfirmationBars: 1,
-            htfMovingAverageValueUnit: PublicSignalValueUnit.Price);
+            htfMovingAverageValueUnit: PublicSignalValueUnit.Price,
+            boundaryMinimumChannelWidth: 1m,
+            boundaryMinimumChannelWidthUnit: PublicSignalValueUnit.Price);
         return new PublicSignalProfileConfiguration(1, "test-profile-v1",
             Timeframe("15m", setupSeedBars, setupWarmupBars),
             Timeframe("1h", 1, 1, contextHistoryStart), indicators,

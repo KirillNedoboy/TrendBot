@@ -55,6 +55,40 @@ public sealed class SqliteSignalJournalStoreTests
     }
 
     [Fact]
+    public void BoundedSignalJournalReopensWithoutChangingCommittedOutput()
+    {
+        using TemporaryDatabase database = new();
+        ScenarioFixture fixture = new();
+        SignalJournalCommit first = fixture.FirstCommit();
+        const long maximumBytes = 2 * 1024 * 1024;
+        using (SqliteSignalJournalStore store = SqliteSignalJournalStore.OpenBounded(database.Path, maximumBytes))
+        {
+            Assert.True(store.Append(first));
+        }
+
+        using SqliteSignalJournalStore reopened = SqliteSignalJournalStore.OpenBounded(database.Path, maximumBytes);
+        Assert.False(reopened.Append(first));
+        Assert.Equal(first.SignalRecord, Assert.Single(reopened.Read(StreamId).Signals).Signal);
+        Assert.True(new FileInfo(database.Path).Length <= maximumBytes);
+    }
+
+    [Fact]
+    public void BoundedSignalJournalRefusesExistingWalDatabaseWithoutMutation()
+    {
+        using TemporaryDatabase database = new();
+        ScenarioFixture fixture = new();
+        SignalJournalCommit first = fixture.FirstCommit();
+        using (SqliteSignalJournalStore store = SqliteSignalJournalStore.Open(database.Path))
+        {
+            Assert.True(store.Append(first));
+        }
+
+        Assert.Throws<InvalidOperationException>(() => SqliteSignalJournalStore.OpenBounded(database.Path, 2 * 1024 * 1024));
+        using SqliteSignalJournalStore reopened = SqliteSignalJournalStore.OpenReadOnly(database.Path);
+        Assert.Equal(first.SignalRecord, Assert.Single(reopened.Read(StreamId).Signals).Signal);
+    }
+
+    [Fact]
     public void LateInputAddsDiagnosticWithoutChangingCommittedSignalOrScenario()
     {
         using TemporaryDatabase database = new();

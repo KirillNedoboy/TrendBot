@@ -1,4 +1,4 @@
-using TradingBot.Backtesting;
+﻿using TradingBot.Backtesting;
 using TradingBot.Core;
 using Xunit;
 
@@ -124,6 +124,117 @@ public sealed class SignalOutcomeObserverTests
         }
         finally { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
     }
+
+    [Fact]
+    public void OpportunityReportKeepsWholeUniverseAndSeparateDirectionalDenominators()
+    {
+        var (first, evidence) = Fixture();
+        var (second, otherEvidence) = Fixture(SetupType.CenterRetest);
+        SignalOutcomePolicy policy = new("label-v1", At(45), null, null, null, null);
+        SignalOutcomeBar[] bars = [Bar(15, 30, 100m, 105m, 98m, 101m),
+            Bar(30, 45, 101m, 103m, 99m, 102m)];
+        SignalObservedOutcome decision = Observe(first, evidence, policy, bars);
+        SignalObservedOutcome published = SignalOutcomeObserver.Observe(first, evidence,
+            SignalObservationClock.ChannelPublished, "telegram", At(22), policy, bars, At(90));
+        SignalObservedOutcome secondDecision = Observe(second, otherEvidence, policy, bars);
+        SignalStudyManifest manifest = ReportManifest();
+        SignalOpportunityInput[] cells =
+        [
+            new("BINANCE_USDM", "BTCUSDT", At(0), At(15), true,
+                SignalOpportunityState.Signaled, null,
+                [first.Identity.SignalId, second.Identity.SignalId], "recorded"),
+            new("BINANCE_USDM", "BTCUSDT", At(15), At(30), true,
+                SignalOpportunityState.NoSignal, null, [], "recorded"),
+            new("BINANCE_USDM", "BTCUSDT", At(30), At(45), true,
+                SignalOpportunityState.Blocked, "stale-context", [], "recorded"),
+            new("BINANCE_USDM", "BTCUSDT", At(45), At(60), false,
+                SignalOpportunityState.Unknown, "missing-public-bar", [], "recorded")
+        ];
+        SignalOpportunityReport report = SignalOpportunityReporter.Create(manifest,
+            "dataset-v1", "run-v1", new string('a', 64), new string('b', 64),
+            new string('c', 64), cells.Reverse(),
+            [first.Identity.SignalId, second.Identity.SignalId], ["unmatched-public-event"],
+            [secondDecision, published, decision]);
+        SignalOpportunityReport repeated = SignalOpportunityReporter.Create(manifest,
+            "dataset-v1", "run-v1", new string('a', 64), new string('b', 64),
+            new string('c', 64), cells,
+            [second.Identity.SignalId, first.Identity.SignalId], ["unmatched-public-event"],
+            [decision, secondDecision, published]);
+        Assert.Equal(report.CanonicalJson, repeated.CanonicalJson);
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+            report.CanonicalJson);
+        var root = document.RootElement;
+        var counts = root.GetProperty("denominators");
+        Assert.Equal(4, counts.GetProperty("expected").GetInt32());
+        Assert.Equal(3, counts.GetProperty("covered").GetInt32());
+        Assert.Equal(2m / 3m, counts.GetProperty("signalFrequencyPerCoveredInterval").GetDecimal());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null,
+            counts.GetProperty("signalFrequencyUnknownReason").ValueKind);
+        Assert.Equal(1, counts.GetProperty("overlapCells").GetInt32());
+        Assert.Equal(1, counts.GetProperty("noSignal").GetInt32());
+        Assert.Equal(1, counts.GetProperty("blocked").GetInt32());
+        Assert.Equal(1, counts.GetProperty("unknown").GetInt32());
+        var exclusions = root.GetProperty("exclusions");
+        Assert.Equal(2, exclusions.GetArrayLength());
+        Assert.Equal("stale-context", exclusions[0].GetProperty("reason").GetString());
+        Assert.Equal("missing-public-bar", exclusions[1].GetProperty("reason").GetString());
+        Assert.Equal(2, counts.GetProperty("decision").GetProperty("complete").GetInt32());
+        Assert.Equal(1, counts.GetProperty("published").GetProperty("complete").GetInt32());
+        Assert.Equal("unmatched-public-event",
+            root.GetProperty("unmatchedPublicInputIds")[0].GetString());
+        Assert.Equal(1, counts.GetProperty("coverageByAvailabilityModel").GetArrayLength());
+        Assert.Equal(7 * 60, counts.GetProperty("publicationDelaysSeconds")[0].GetDecimal());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null,
+            root.GetProperty("hypotheticalNetExpectancy").ValueKind);
+        Assert.Equal(2, root.GetProperty("controls").GetArrayLength());
+        Assert.Throws<ArgumentException>(() => SignalOpportunityReporter.Create(manifest,
+            "dataset-v1", "run-v1", new string('d', 64), new string('b', 64),
+            new string('c', 64), cells, [], [], []));
+    }
+
+    [Fact]
+    public void OpportunityFrequencyIsUnknownWhenCoveredDecisionsAreUnknown()
+    {
+        SignalOpportunityInput[] cells =
+        [
+            new("BINANCE_USDM", "BTCUSDT", At(0), At(15), true,
+                SignalOpportunityState.Unknown, "signal-journal-unavailable", [], "recorded"),
+            new("BINANCE_USDM", "BTCUSDT", At(15), At(30), true,
+                SignalOpportunityState.NoSignal, null, [], "recorded")
+        ];
+        SignalOpportunityReport report = SignalOpportunityReporter.Create(ReportManifest(),
+            "dataset-v1", "run-v1", new string('a', 64), new string('b', 64),
+            new string('c', 64), cells, [], [], []);
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+            report.CanonicalJson);
+        var root = document.RootElement;
+        var counts = root.GetProperty("denominators");
+        Assert.Equal(2, counts.GetProperty("covered").GetInt32());
+        Assert.Equal(1, counts.GetProperty("unknown").GetInt32());
+        Assert.Equal(1, counts.GetProperty("noSignal").GetInt32());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null,
+            counts.GetProperty("signalFrequencyPerCoveredInterval").ValueKind);
+        Assert.Equal("unresolved-covered-intervals",
+            counts.GetProperty("signalFrequencyUnknownReason").GetString());
+        Assert.Equal(2, root.GetProperty("frequencyDenominator").GetInt32());
+    }
+
+    private static SignalStudyManifest ReportManifest() =>
+        SignalStudyManifest.Create("report-fixture",
+            Enum.GetValues<SignalStudyInputKind>().Select(kind => kind switch
+            {
+                SignalStudyInputKind.Dataset => SignalStudyHashDeclaration.Declared(
+                    kind, new string('a', 64)),
+                SignalStudyInputKind.PointInTimeUniverse => SignalStudyHashDeclaration.Declared(
+                    kind, new string('b', 64)),
+                SignalStudyInputKind.Configuration => SignalStudyHashDeclaration.Declared(
+                    kind, new string('c', 64)),
+                _ => SignalStudyHashDeclaration.Unknown(kind, "not-declared-for-fixture")
+            }),
+            Enum.GetValues<SignalStudyCriterionKind>().Select(kind =>
+                SignalStudyCriterionDeclaration.Unknown(kind, "not-declared-for-fixture")),
+            SignalStudyTemporalSplitPlan.Unknown("not-declared-for-fixture"),
+            SignalStudyTrialRegistry.Unknown("not-declared-for-fixture"));
 
     private static SignalObservedOutcome Observe(SignalRecord signal,
         SignalEvidenceRecord evidence, SignalOutcomePolicy policy,

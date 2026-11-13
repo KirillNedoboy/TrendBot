@@ -46,6 +46,33 @@ public sealed class SqliteNativeBarInputLedgerTests
     }
 
     [Fact]
+    public void BoundedLedgerRejectsOversizedAppendWithoutAdvancingCheckpoint()
+    {
+        using TemporaryDatabase database = new();
+        const long maximumBytes = 64 * 1024;
+        using SqliteNativeBarInputLedger ledger =
+            SqliteNativeBarInputLedger.OpenBounded(database.Path, maximumBytes);
+        NativeBarInputLedgerReceipt first = Receipt(1, "event-1", 'a',
+            NativeBarInputReceiptStatus.Accepted);
+        Assert.True(ledger.Append("BTCUSDT", first));
+        NativeBarInputLedgerReceipt tooLarge = Receipt(2, "event-2", 'b',
+            NativeBarInputReceiptStatus.Accepted) with
+        {
+            PayloadJson = new string('x', 256 * 1024),
+            TriggerEventId = null,
+            TriggerEventTime = null
+        };
+
+        SqliteException error = Assert.Throws<SqliteException>(() => ledger.Append("BTCUSDT", tooLarge));
+        Assert.Equal(13, error.SqliteErrorCode);
+        Assert.Equal(1, ledger.Read("BTCUSDT").Checkpoint.LastIntakeSequence);
+        Assert.True(new FileInfo(database.Path).Length <= maximumBytes);
+        using SqliteNativeBarInputLedger reopened =
+            SqliteNativeBarInputLedger.OpenBounded(database.Path, maximumBytes);
+        Assert.Equal(first, Assert.Single(reopened.Read("BTCUSDT").Receipts));
+    }
+
+    [Fact]
     public void ReceiptAndCheckpointRollBackTogetherWhenCheckpointWriteFails()
     {
         using TemporaryDatabase database = new();

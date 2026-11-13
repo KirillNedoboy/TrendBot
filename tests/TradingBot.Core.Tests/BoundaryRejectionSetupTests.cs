@@ -238,7 +238,7 @@ public sealed class BoundaryRejectionSetupTests
             negativeWidth.Long.State);
 
         PriceContextFeatureResult wrongContextVersion = ManualContext(
-            priceContextVersion: "price-context-v3");
+            priceContextVersion: "price-context-v5");
         BoundaryRejectionSetupResult wrongVersion = EvaluateManual(wrongContextVersion);
         Assert.Equal(BoundaryRejectionSetupState.UnknownConfiguration,
             wrongVersion.Long.State);

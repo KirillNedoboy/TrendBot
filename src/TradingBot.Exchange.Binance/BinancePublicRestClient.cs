@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System.Buffers;
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -469,14 +470,35 @@ public sealed class BinancePublicRestClient : IBinancePublicRestClient, IBinance
             throw new InvalidOperationException("The Binance response exceeds the configured size limit.");
         }
 
-        byte[] bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken)
+        await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (bytes.LongLength > _options.MaxResponseBytes)
+        using MemoryStream body = new();
+        byte[] buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(81920L, _options.MaxResponseBytes));
+        try
         {
-            throw new InvalidOperationException("The Binance response exceeds the configured size limit.");
-        }
+            while (true)
+            {
+                long remaining = _options.MaxResponseBytes - body.Length;
+                int count = (int)(Math.Min(remaining, buffer.Length - 1L) + 1);
+                int read = await source.ReadAsync(buffer.AsMemory(0, count), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return System.Text.Encoding.UTF8.GetString(body.GetBuffer().AsSpan(0, checked((int)body.Length)));
+                }
 
-        return System.Text.Encoding.UTF8.GetString(bytes);
+                if (read > remaining)
+                {
+                    throw new InvalidOperationException("The Binance response exceeds the configured size limit.");
+                }
+
+                body.Write(buffer, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     private static BinanceApiException CreateApiException(HttpResponseMessage response,

@@ -138,9 +138,21 @@ public sealed record FeatureQualitySnapshot
 
         ValidateFormula(rollingFormulaVersion, RollingIndicatorCalculator.CurrentAlgorithmVersion,
             rollingResult is not null, nameof(rollingFormulaVersion));
-        ValidateFormula(priceContextFormulaVersion,
-            PriceContextFeatureCalculator.CurrentAlgorithmVersion,
-            priceContextResult is not null, nameof(priceContextFormulaVersion));
+        if (priceContextResult is null)
+        {
+            ValidateFormula(priceContextFormulaVersion,
+                PriceContextFeatureCalculator.CurrentAlgorithmVersion, false,
+                nameof(priceContextFormulaVersion));
+        }
+        else
+        {
+            string expectedFormula = ResolvePriceContextFormula(priceContextResult)!;
+            if (!PriceContextFeatureCalculator.IsSupportedAlgorithmVersion(expectedFormula))
+                throw new ArgumentException("The persisted price-context formula version is unsupported.",
+                    nameof(priceContextFormulaVersion));
+            ValidateFormula(priceContextFormulaVersion, expectedFormula, true,
+                nameof(priceContextFormulaVersion));
+        }
 
         FeatureQualityEvaluation expected = Evaluate(rollingResult, priceContextResult, policy);
         if (!StringComparer.Ordinal.Equals(quality.AlgorithmVersion, CurrentAlgorithmVersion)

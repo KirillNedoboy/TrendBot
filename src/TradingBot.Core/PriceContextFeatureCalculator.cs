@@ -12,6 +12,13 @@ public static class PriceContextFeatureCalculator
 {
     public const string CurrentAlgorithmVersion = "price-context-v2";
 
+    public const string RecoveryAlgorithmVersion = "price-context-v3";
+
+    public const string BranchRecoveryAlgorithmVersion = "price-context-v4";
+
+    public static bool IsSupportedAlgorithmVersion(string? version) =>
+        version is CurrentAlgorithmVersion or RecoveryAlgorithmVersion or BranchRecoveryAlgorithmVersion;
+
     public static PriceContextFeatureResult Calculate(PriceContextFeatureInput input,
         CausalEventCursor cursor, PriceContextFeatureConfiguration configuration)
     {
@@ -127,8 +134,7 @@ public static class PriceContextFeatureCalculator
         {
             reasons.Add("configuration-algorithm-version-missing");
         }
-        else if (!StringComparer.Ordinal.Equals(configuration.AlgorithmVersion.Value,
-                     CurrentAlgorithmVersion))
+        else if (!IsSupportedAlgorithmVersion(configuration.AlgorithmVersion.Value))
         {
             reasons.Add("configuration-algorithm-version-unsupported"
                 + $":{configuration.AlgorithmVersion.Value}");
@@ -566,6 +572,11 @@ public static class PriceContextFeatureCalculator
         List<PriceContextPivotEvidence> pivots = [];
         bool atrWarmup = false;
         bool atrOverflow = false;
+        bool recoveryEnabled = StringComparer.Ordinal.Equals(
+            configuration.AlgorithmVersion?.Value, RecoveryAlgorithmVersion);
+        BranchingLevels? alternatives = StringComparer.Ordinal.Equals(
+            configuration.AlgorithmVersion?.Value, BranchRecoveryAlgorithmVersion)
+            ? new BranchingLevels(pivots) : null;
         ScreenerBar[] orderedBars = OrderByCausalClose(bars);
         int nextCandidate = 0;
 
@@ -588,10 +599,33 @@ public static class PriceContextFeatureCalculator
                         out decimal computedBuffer) ? computedBuffer : null;
                 PriceContextPivotEvidence evidence = CreateEvidence(candidate, atr, buffer);
                 pivots.Add(evidence);
-                if (!buffer.HasValue)
+                if (alternatives is not null)
                 {
-                    atrWarmup |= !atr.HasValue;
-                    atrOverflow |= atr.HasValue;
+                    alternatives.Register(pivots.Count - 1, !atr.HasValue, atr.HasValue);
+                    active = alternatives.Snapshot();
+                }
+                else if (!buffer.HasValue)
+                {
+                    if (recoveryEnabled)
+                    {
+                        UncertainLevel uncertain = new(evidence.Anchor, evidence.Anchor,
+                            Warmup: !atr.HasValue, Overflow: atr.HasValue);
+                        if (candidate.Kind == PriceContextPivotKind.Low)
+                        {
+                            active.Support = null;
+                            active.UncertainSupport = uncertain;
+                        }
+                        else
+                        {
+                            active.Resistance = null;
+                            active.UncertainResistance = uncertain;
+                        }
+                    }
+                    else
+                    {
+                        atrWarmup |= !atr.HasValue;
+                        atrOverflow |= atr.HasValue;
+                    }
                 }
                 else if (candidate.Kind == PriceContextPivotKind.Low)
                 {
@@ -599,6 +633,8 @@ public static class PriceContextFeatureCalculator
                         PriceContextLevelRole.Support, evidence.Anchor,
                         evidence.FrozenBuffer.GetValueOrDefault(),
                         evidence);
+                    if (recoveryEnabled)
+                        active.UncertainSupport = null;
                 }
                 else
                 {
@@ -606,6 +642,8 @@ public static class PriceContextFeatureCalculator
                         PriceContextLevelRole.Resistance, evidence.Anchor,
                         evidence.FrozenBuffer.GetValueOrDefault(),
                         evidence);
+                    if (recoveryEnabled)
+                        active.UncertainResistance = null;
                 }
 
                 nextCandidate++;
@@ -617,7 +655,15 @@ public static class PriceContextFeatureCalculator
             ScreenerBar bar = orderedBars[barIndex];
             RegisterCandidates(CausalKey.ForBar(bar), includeEqual: false);
             ActiveLevels before = active.Clone();
-            ApplyBreak(bar, active);
+            if (alternatives is not null)
+            {
+                alternatives.ApplyBreak(bar);
+                active = alternatives.Snapshot();
+            }
+            else if (recoveryEnabled)
+                ApplyBreakWithUncertainty(bar, active);
+            else
+                ApplyBreak(bar, active);
             steps.Add(new StructuralStep(bar, before, active.Clone()));
 
             if (barIndex + 1 < orderedBars.Length)
@@ -636,6 +682,19 @@ public static class PriceContextFeatureCalculator
         {
             reasons.Add("no-strict-pivot");
         }
+        if (alternatives is not null)
+        {
+            atrWarmup = !active.IsCertain && alternatives.HadWarmup;
+            atrOverflow = !active.IsCertain && alternatives.HadOverflow;
+        }
+        else if (recoveryEnabled)
+        {
+            atrWarmup = active.UncertainSupport?.Warmup == true
+                || active.UncertainResistance?.Warmup == true;
+            atrOverflow = active.UncertainSupport?.Overflow == true
+                || active.UncertainResistance?.Overflow == true;
+        }
+
 
         PriceContextFeatureState state = active.IsInverted
             ? PriceContextFeatureState.UnknownQuality
@@ -849,6 +908,14 @@ public static class PriceContextFeatureCalculator
             rawSupport = step.Before.Support?.Anchor;
             rawResistance = step.Before.Resistance?.Anchor;
             seenCloses = seenCloses.Append(closeValue).ToArray();
+            if (!step.Before.IsCertain)
+            {
+                hadUnknown = true;
+                pendingCandidate = null;
+                pendingCount = 0;
+                confirmed = null;
+                continue;
+            }
             if (!TryMovingAverage(seenCloses, fastPeriod, htfMovingAverageKind,
                     out decimal fastValue)
                 || !TryMovingAverage(seenCloses, slowPeriod, htfMovingAverageKind,
@@ -1299,6 +1366,74 @@ public static class PriceContextFeatureCalculator
         }
     }
 
+    private static void ApplyBreakWithUncertainty(ScreenerBar bar, ActiveLevels active)
+    {
+        decimal close = bar.Close.Value;
+        PriceContextStructuralLevel? support = active.Support;
+        PriceContextStructuralLevel? resistance = active.Resistance;
+        UncertainLevel? uncertainSupport = active.UncertainSupport;
+        UncertainLevel? uncertainResistance = active.UncertainResistance;
+        if (uncertainSupport is null && support is not null && close < support.Boundary)
+        {
+            active.Support = null;
+            active.Resistance = new PriceContextStructuralLevel(
+                PriceContextLevelRole.Resistance, support.Anchor, support.FrozenBuffer, support.Pivot);
+            active.UncertainResistance = null;
+            return;
+        }
+
+        bool possibleSupportBreak = uncertainSupport is { } unknownSupport
+            && close < unknownSupport.MaximumAnchor;
+        bool knownResistanceBreak = uncertainResistance is null && resistance is not null
+            && close > resistance.Boundary;
+        if (knownResistanceBreak && !possibleSupportBreak)
+        {
+            active.Resistance = null;
+            active.Support = new PriceContextStructuralLevel(
+                PriceContextLevelRole.Support, resistance!.Anchor, resistance.FrozenBuffer, resistance.Pivot);
+            active.UncertainSupport = null;
+            return;
+        }
+
+        UncertainLevel? nextSupport = uncertainSupport;
+        UncertainLevel? nextResistance = uncertainResistance;
+        if (possibleSupportBreak)
+            nextResistance = MergeUncertain(uncertainSupport!.Value, uncertainResistance, resistance);
+        if (uncertainResistance is { } unknownResistance && close > unknownResistance.MinimumAnchor)
+            nextSupport = MergeUncertain(unknownResistance, uncertainSupport, support);
+        if (knownResistanceBreak && possibleSupportBreak)
+            nextSupport = MergeUncertain(uncertainSupport!.Value, nextSupport, resistance);
+
+        active.UncertainSupport = nextSupport;
+        active.UncertainResistance = nextResistance;
+        if (nextSupport is not null)
+            active.Support = null;
+        if (nextResistance is not null)
+            active.Resistance = null;
+    }
+
+    private static UncertainLevel MergeUncertain(UncertainLevel source,
+        UncertainLevel? other, PriceContextStructuralLevel? known)
+    {
+        decimal minimum = source.MinimumAnchor;
+        decimal maximum = source.MaximumAnchor;
+        bool warmup = source.Warmup;
+        bool overflow = source.Overflow;
+        if (other is { } value)
+        {
+            minimum = Math.Min(minimum, value.MinimumAnchor);
+            maximum = Math.Max(maximum, value.MaximumAnchor);
+            warmup |= value.Warmup;
+            overflow |= value.Overflow;
+        }
+        if (known is not null)
+        {
+            minimum = Math.Min(minimum, known.Anchor);
+            maximum = Math.Max(maximum, known.Anchor);
+        }
+        return new UncertainLevel(minimum, maximum, warmup, overflow);
+    }
+
     private static bool TryAtrAt(ScreenerBar[] bars, UtcTimestamp visibleAt,
         long maxSequence, int period, PriceContextAtrMode mode, out decimal value)
     {
@@ -1624,11 +1759,125 @@ public static class PriceContextFeatureCalculator
 
         public PriceContextStructuralLevel? Resistance { get; set; }
 
+        public UncertainLevel? UncertainSupport { get; set; }
+
+        public UncertainLevel? UncertainResistance { get; set; }
+
+        public bool AlternativesCertain { get; set; } = true;
+
+        public bool IsCertain => AlternativesCertain
+            && UncertainSupport is null && UncertainResistance is null;
+
         public bool IsInverted => Support is not null && Resistance is not null
             && Support.Anchor >= Resistance.Anchor;
 
-        public ActiveLevels Clone() => new() { Support = Support, Resistance = Resistance };
+        public ActiveLevels Clone() => new()
+        {
+            Support = Support,
+            Resistance = Resistance,
+            UncertainSupport = UncertainSupport,
+            UncertainResistance = UncertainResistance,
+            AlternativesCertain = AlternativesCertain
+        };
     }
+
+    private sealed class BranchingLevels
+    {
+        private readonly List<PriceContextPivotEvidence> _pivots;
+        private readonly Dictionary<(int Index, PriceContextLevelRole Role), PriceContextStructuralLevel> _levels = [];
+        private HashSet<LevelIndices> _states = [new LevelIndices(-1, -1)];
+        private HashSet<LevelIndices> _next = [];
+
+        public BranchingLevels(List<PriceContextPivotEvidence> pivots) => _pivots = pivots;
+
+        public bool HadWarmup { get; private set; }
+
+        public bool HadOverflow { get; private set; }
+
+        public void Register(int index, bool warmup, bool overflow)
+        {
+            PriceContextPivotEvidence pivot = _pivots[index];
+            if (pivot.FrozenBuffer is null)
+            {
+                HadWarmup |= warmup;
+                HadOverflow |= overflow;
+            }
+            _next.Clear();
+            foreach (LevelIndices state in _states)
+                _next.Add(pivot.Kind == PriceContextPivotKind.Low
+                    ? new LevelIndices(index, state.Resistance)
+                    : new LevelIndices(state.Support, index));
+            Swap();
+        }
+
+        public void ApplyBreak(ScreenerBar bar)
+        {
+            decimal close = bar.Close.Value;
+            _next.Clear();
+            foreach (LevelIndices state in _states)
+            {
+                PriceContextPivotEvidence? support = Pivot(state.Support);
+                bool supportCanBreak = support is not null
+                    && (support.FrozenBuffer is { } buffer
+                        ? close < support.Anchor - buffer : close < support.Anchor);
+                bool supportCanStay = support is null || support.FrozenBuffer is null || !supportCanBreak;
+                if (supportCanBreak)
+                    _next.Add(new LevelIndices(-1, state.Support));
+                if (!supportCanStay)
+                    continue;
+                PriceContextPivotEvidence? resistance = Pivot(state.Resistance);
+                bool resistanceCanBreak = resistance is not null
+                    && (resistance.FrozenBuffer is { } resistanceBuffer
+                        ? close > resistance.Anchor + resistanceBuffer : close > resistance.Anchor);
+                bool resistanceCanStay = resistance is null || resistance.FrozenBuffer is null || !resistanceCanBreak;
+                if (resistanceCanBreak)
+                    _next.Add(new LevelIndices(state.Resistance, -1));
+                if (resistanceCanStay)
+                    _next.Add(state);
+            }
+            Swap();
+        }
+
+        public ActiveLevels Snapshot()
+        {
+            if (_states.Count != 1)
+                return new ActiveLevels { AlternativesCertain = false };
+            LevelIndices state = _states.First();
+            if (!IsKnown(state.Support) || !IsKnown(state.Resistance))
+                return new ActiveLevels { AlternativesCertain = false };
+            HadWarmup = false;
+            HadOverflow = false;
+            return new ActiveLevels
+            {
+                Support = Level(state.Support, PriceContextLevelRole.Support),
+                Resistance = Level(state.Resistance, PriceContextLevelRole.Resistance)
+            };
+        }
+
+        private PriceContextPivotEvidence? Pivot(int index) => index < 0 ? null : _pivots[index];
+
+        private bool IsKnown(int index) => index < 0 || _pivots[index].FrozenBuffer is not null;
+
+        private PriceContextStructuralLevel? Level(int index, PriceContextLevelRole role)
+        {
+            if (index < 0)
+                return null;
+            if (!_levels.TryGetValue((index, role), out PriceContextStructuralLevel? level))
+            {
+                PriceContextPivotEvidence pivot = _pivots[index];
+                level = new PriceContextStructuralLevel(role, pivot.Anchor, pivot.FrozenBuffer!.Value, pivot);
+                _levels.Add((index, role), level);
+            }
+            return level;
+        }
+
+        private void Swap() => (_states, _next) = (_next, _states);
+    }
+
+    private readonly record struct LevelIndices(int Support, int Resistance);
+
+    private readonly record struct UncertainLevel(decimal MinimumAnchor, decimal MaximumAnchor,
+        bool Warmup, bool Overflow);
 
     private readonly record struct CausalKey(DateTimeOffset Time, long Sequence)
         : IComparable<CausalKey>

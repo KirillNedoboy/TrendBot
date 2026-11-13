@@ -63,10 +63,8 @@ public static class CenterRetestSetupEvaluator
             reasons.Add("configuration-algorithm-version-unsupported");
         }
 
-        bool priceContextVersionValid = priceContext.Configuration.AlgorithmVersion is
-        { } contextVersion
-            && StringComparer.Ordinal.Equals(contextVersion.Value,
-                PriceContextFeatureCalculator.CurrentAlgorithmVersion);
+        bool priceContextVersionValid = PriceContextFeatureCalculator.IsSupportedAlgorithmVersion(
+            priceContext.Configuration.AlgorithmVersion?.Value);
         if (!priceContextVersionValid)
         {
             reasons.Add("price-context-algorithm-version-unsupported");

@@ -202,7 +202,7 @@ public sealed record SignalOnlyConfiguration
         return document.RootElement.Clone();
     }
 
-    private static void RejectDuplicateProperties(JsonElement element)
+    internal static void RejectDuplicateProperties(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {

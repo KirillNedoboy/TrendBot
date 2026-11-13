@@ -17,22 +17,35 @@ public sealed class SqliteSignalJournalStore : IDisposable
     private readonly string _databasePath;
     private readonly int _commandTimeoutSeconds;
     private readonly bool _readOnly;
+    private readonly long? _maximumDatabaseBytes;
 
     private SqliteSignalJournalStore(string databasePath, int commandTimeoutSeconds,
-        bool readOnly)
+        bool readOnly, long? maximumDatabaseBytes)
     {
         _databasePath = databasePath;
         _commandTimeoutSeconds = commandTimeoutSeconds;
         _readOnly = readOnly;
+        _maximumDatabaseBytes = maximumDatabaseBytes;
     }
 
     public static SqliteSignalJournalStore Open(string databasePath,
         int commandTimeoutSeconds = 30)
+        => OpenCore(databasePath, commandTimeoutSeconds, null);
+
+    public static SqliteSignalJournalStore OpenBounded(string databasePath,
+        long maximumDatabaseBytes, int commandTimeoutSeconds = 30)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDatabaseBytes);
+        return OpenCore(databasePath, commandTimeoutSeconds, maximumDatabaseBytes);
+    }
+
+    private static SqliteSignalJournalStore OpenCore(string databasePath,
+        int commandTimeoutSeconds, long? maximumDatabaseBytes)
     {
         string fullPath = ValidatePath(databasePath, commandTimeoutSeconds);
-        Initialize(fullPath, commandTimeoutSeconds);
+        Initialize(fullPath, commandTimeoutSeconds, maximumDatabaseBytes);
         return new SqliteSignalJournalStore(fullPath, commandTimeoutSeconds,
-            readOnly: false);
+            readOnly: false, maximumDatabaseBytes);
     }
 
     public static SqliteSignalJournalStore OpenReadOnly(string databasePath,
@@ -56,7 +69,7 @@ public sealed class SqliteSignalJournalStore : IDisposable
 
         ValidateSchema(connection);
         return new SqliteSignalJournalStore(fullPath, commandTimeoutSeconds,
-            readOnly: true);
+            readOnly: true, maximumDatabaseBytes: null);
     }
 
     private static string ValidatePath(string databasePath,
@@ -337,11 +350,15 @@ public sealed class SqliteSignalJournalStore : IDisposable
         }
     }
 
-    private static void Initialize(string databasePath, int commandTimeoutSeconds)
+    private static void Initialize(string databasePath, int commandTimeoutSeconds, long? maximumDatabaseBytes)
     {
         using SqliteConnection connection = OpenRawConnection(databasePath,
             commandTimeoutSeconds);
         connection.Open();
+        if (maximumDatabaseBytes is { } maximum)
+        {
+            SqliteBoundedStorage.Configure(connection, maximum);
+        }
         long version = ReadUserVersion(connection);
         if (version == 0)
         {
@@ -374,7 +391,10 @@ public sealed class SqliteSignalJournalStore : IDisposable
             ValidateSchema(connection);
         }
 
-        ConfigureDurability(connection);
+        if (maximumDatabaseBytes is null)
+        {
+            ConfigureDurability(connection);
+        }
     }
 
     private static SqliteConnection OpenRawConnection(string databasePath,
@@ -401,7 +421,14 @@ public sealed class SqliteSignalJournalStore : IDisposable
             connection.Open();
             if (!_readOnly)
             {
-                ConfigureDurability(connection);
+                if (_maximumDatabaseBytes is { } maximum)
+                {
+                    SqliteBoundedStorage.Configure(connection, maximum);
+                }
+                else
+                {
+                    ConfigureDurability(connection);
+                }
             }
 
             return connection;

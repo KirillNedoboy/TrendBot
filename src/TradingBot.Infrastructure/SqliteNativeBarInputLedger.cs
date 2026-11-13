@@ -44,15 +44,29 @@ public sealed class SqliteNativeBarInputLedger : IDisposable
     private const int SchemaVersion = 1;
     private readonly string _databasePath;
     private readonly int _commandTimeoutSeconds;
+    private readonly long? _maximumDatabaseBytes;
 
-    private SqliteNativeBarInputLedger(string databasePath, int commandTimeoutSeconds)
+    private SqliteNativeBarInputLedger(string databasePath, int commandTimeoutSeconds,
+        long? maximumDatabaseBytes)
     {
         _databasePath = databasePath;
         _commandTimeoutSeconds = commandTimeoutSeconds;
+        _maximumDatabaseBytes = maximumDatabaseBytes;
     }
 
     public static SqliteNativeBarInputLedger Open(string databasePath,
         int commandTimeoutSeconds = 30)
+        => OpenCore(databasePath, commandTimeoutSeconds, null);
+
+    public static SqliteNativeBarInputLedger OpenBounded(string databasePath,
+        long maximumDatabaseBytes, int commandTimeoutSeconds = 30)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDatabaseBytes);
+        return OpenCore(databasePath, commandTimeoutSeconds, maximumDatabaseBytes);
+    }
+
+    private static SqliteNativeBarInputLedger OpenCore(string databasePath,
+        int commandTimeoutSeconds, long? maximumDatabaseBytes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(commandTimeoutSeconds);
@@ -63,8 +77,8 @@ public sealed class SqliteNativeBarInputLedger : IDisposable
         }
 
         string fullPath = Path.GetFullPath(databasePath);
-        Initialize(fullPath, commandTimeoutSeconds);
-        return new SqliteNativeBarInputLedger(fullPath, commandTimeoutSeconds);
+        Initialize(fullPath, commandTimeoutSeconds, maximumDatabaseBytes);
+        return new SqliteNativeBarInputLedger(fullPath, commandTimeoutSeconds, maximumDatabaseBytes);
     }
 
     /// <summary>Reads and validates the complete append-only stream snapshot.</summary>
@@ -130,11 +144,15 @@ public sealed class SqliteNativeBarInputLedger : IDisposable
     {
     }
 
-    private static void Initialize(string databasePath, int commandTimeoutSeconds)
+    private static void Initialize(string databasePath, int commandTimeoutSeconds, long? maximumDatabaseBytes)
     {
         using SqliteConnection connection = OpenRawConnection(databasePath,
             commandTimeoutSeconds);
         connection.Open();
+        if (maximumDatabaseBytes is { } maximum)
+        {
+            SqliteBoundedStorage.Configure(connection, maximum);
+        }
         long version = ReadUserVersion(connection);
         if (version == 0)
         {
@@ -167,7 +185,10 @@ public sealed class SqliteNativeBarInputLedger : IDisposable
             ValidateSchema(connection);
         }
 
-        ConfigureDurability(connection);
+        if (maximumDatabaseBytes is null)
+        {
+            ConfigureDurability(connection);
+        }
     }
 
     private static SqliteConnection OpenRawConnection(string databasePath,
@@ -190,7 +211,14 @@ public sealed class SqliteNativeBarInputLedger : IDisposable
         try
         {
             connection.Open();
-            ConfigureDurability(connection);
+            if (_maximumDatabaseBytes is { } maximum)
+            {
+                SqliteBoundedStorage.Configure(connection, maximum);
+            }
+            else
+            {
+                ConfigureDurability(connection);
+            }
             return connection;
         }
         catch
