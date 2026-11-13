@@ -392,13 +392,9 @@ public sealed class BinanceLocalOrderBookRecovery
 
     private bool IsGap(BinanceDepthUpdateEvent update)
     {
-        if (update.PreviousUpdateId is long previous
-            && previous != _currentUpdateId)
-        {
-            return true;
-        }
-
-        return update.FirstUpdateId > checked(_currentUpdateId + 1);
+        return update.PreviousUpdateId is long previous
+            ? previous != _currentUpdateId
+            : update.FirstUpdateId > checked(_currentUpdateId + 1);
     }
 
     private void ResetForRecovery(BinanceOrderBookRecoveryDiagnosticKind kind,

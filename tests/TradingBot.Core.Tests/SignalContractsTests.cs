@@ -98,7 +98,7 @@ public sealed class SignalContractsTests
         Assert.Throws<ArgumentException>(() => Provenance(higherTimeframeCut: afterDecision));
         Assert.Throws<ArgumentException>(() => new SignalInputReference(
             "binance-public", "native-kline-v1", "context-event",
-            new string('c', 64), SignalInputRole.HigherTimeframe, "15m",
+            new string('c', 64), SignalInputRole.HigherTimeframe, "30m",
             ContextClose, ContextClose, 10));
 
         SignalIdentity identity = Identity();
@@ -203,6 +203,69 @@ public sealed class SignalContractsTests
         alteredOutcome["outcomeId"] = new string('0', 64);
         Assert.Throws<JsonException>(() =>
             CoreJsonSerializer.Deserialize<SignalOutcomeRecord>(alteredOutcome.ToJsonString()));
+    }
+
+    [Theory]
+    [InlineData("5m", "15m")]
+    [InlineData("30m", "1h")]
+    [InlineData("1h", "4h")]
+    public void SignalProvenancePreservesAndValidatesItsTimeframePair(string setup, string context)
+    {
+        SignalIdentity identity = SignalIdentity.Create(new InstrumentId("BTCUSDT"), "BINANCE_USDM",
+            setup, Direction.Long, SetupType.BoundaryRejection, "multi-v1",
+            "boundary-v1", "anchor");
+        SignalInputReference anchor = new("public", "v1", "anchor", new string('a', 64),
+            SignalInputRole.Setup, setup, ContextClose, ContextClose, 1);
+        SignalInputReference higher = new("public", "v1", "higher", new string('b', 64),
+            SignalInputRole.HigherTimeframe, context, ContextClose, ContextClose, 0);
+        CausalEventCursor cut = new(SetupClose, 2);
+        SignalProvenance provenance = SignalProvenance.Create("multi-v1", new string('c', 64),
+            cut, cut, [anchor, higher]);
+        SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(identity, provenance,
+            SignalEvidenceState.Complete, []);
+        SignalRecord signal = SignalRecord.Create(identity, evidence,
+            SignalAssessmentState.ConfirmedOnClosedBar, BarInterval(), SetupClose,
+            new SignalReferencePrice("public", "v1", "anchor", ContextClose, new Price(100m)));
+
+        Assert.Equal(SignalIdentity.MultiTimeframeFormatVersion, identity.FormatVersion);
+        Assert.Equal(SignalProvenance.MultiTimeframeFormatVersion, provenance.FormatVersion);
+        Assert.Equal(signal, CoreJsonSerializer.Deserialize<SignalRecord>(
+            CoreJsonSerializer.Serialize(signal)));
+        Assert.Equal(evidence, CoreJsonSerializer.Deserialize<SignalEvidenceRecord>(
+            CoreJsonSerializer.Serialize(evidence)));
+        SignalInputReference wrongContext = new("public", "v1", "wrong", new string('d', 64),
+            SignalInputRole.HigherTimeframe, setup == "5m" ? "1h" : "15m",
+            ContextClose, ContextClose, 0);
+        Assert.Throws<ArgumentException>(() => SignalProvenance.Create("multi-v1",
+            new string('c', 64), cut, cut, [anchor, wrongContext]));
+    }
+
+    [Fact]
+    public void OptionalMarketContextIsVersionedAndBoundToTheSignalDecision()
+    {
+        SignalIdentity identity = Identity();
+        SignalEvidenceRecord legacy = Evidence(identity, "legacy");
+        string legacyJson = CoreJsonSerializer.Serialize(legacy);
+        SignalSessionVwap vwap = new(SetupOpen, SetupClose, 100m, 2m, 200m, 1, null);
+        SignalObservedPoc poc = new(new UtcTimestamp(SetupClose.Value.AddMinutes(-1)),
+            SetupClose, 0.1m, 100m, 1, null);
+        SignalMarketContext context = SignalMarketContext.Create(identity.InstrumentId,
+            SetupClose, vwap, poc, null);
+        SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(identity, Provenance(),
+            SignalEvidenceState.Complete, ["fixture"], marketContext: context);
+        SignalRecord signal = SignalRecord.Create(identity, evidence,
+            SignalAssessmentState.ConfirmedOnClosedBar, BarInterval(), SetupClose, ReferencePrice());
+
+        Assert.Equal(SignalEvidenceRecord.MarketContextFormatVersion, evidence.FormatVersion);
+        Assert.Equal(evidence, CoreJsonSerializer.Deserialize<SignalEvidenceRecord>(
+            CoreJsonSerializer.Serialize(evidence)));
+        Assert.Equal(legacyJson, CoreJsonSerializer.Serialize(
+            CoreJsonSerializer.Deserialize<SignalEvidenceRecord>(legacyJson)));
+        signal.ValidateEvidence(evidence);
+        SignalMarketContext wrongInstrument = SignalMarketContext.Create(
+            new InstrumentId("ETHUSDT"), SetupClose, vwap, poc, null);
+        Assert.Throws<ArgumentException>(() => SignalEvidenceRecord.Create(identity, Provenance(),
+            SignalEvidenceState.Complete, ["fixture"], marketContext: wrongInstrument));
     }
 
     private static SignalRecord CreateSignal()

@@ -30,6 +30,13 @@ Probability and calibration version are both absent/unknown or both explicitly p
 
 Each persisted top-level contract has an explicit format version; nested value contracts inherit their containing schema. Constructors validate required fields, enum values, lower-case SHA-256 forms, local content hashes, cut eligibility, and temporal ordering. Factories and `ValidateFor` methods verify cross-record links when related records are joined. `CoreJsonSerializer` rejects unknown properties, including execution/activation fields. The contracts have no file, network, database, credential, or trading side effects.
 
+Evidence format v3 optionally binds `public-market-context-v1` to the signal's
+decision time and instrument: UTC-session VWAP, recent observed-trade POC and an
+optional sampled liquidation snapshot. Each retains its window and unknown
+state; these values are not admission rules. Formats v1/v2 keep their prior
+serialized form and hashes. The source, formulas and incomplete liquidation
+coverage are described in [operations](operations.md#p15-m03-t011-public-only-signal-runtime).
+
 ## Local journal rendering
 
 `signal-only render --journal <file> --symbol <symbol> --format <json|console>` reads and validates one committed stream through a read-only SQLite connection. Cards retain the stored signal/evidence hashes, 15m interval, decision and 1h cuts, input provenance, scenario anchor/alert links, current episode state, and quality reasons. The reference is marked `scenario-reference-only`; the card says `ConfirmedOnClosedBar` separately from `RESEARCH` and statistical validation `UNKNOWN`. JSON includes no channel receipt or `publishedAt` unless a receipt is actually present; the current journal has no persisted delivery-receipt rows, so both are null. Diagnostics are separate records without a direction or signal-ready state. Rendering does not claim delivery, validation, fills, or execution authority.

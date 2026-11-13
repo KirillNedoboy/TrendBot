@@ -32,7 +32,8 @@ public static class LaneCFeatureEvaluator
         Dictionary<decimal, decimal> bids = [];
         Dictionary<decimal, decimal> asks = [];
         List<BookView> bookViews = [];
-        List<Trade> trades = [];
+        List<(Trade Trade, long StableSequence)> trades = [];
+        Dictionary<Trade, CaptureEnvelope> latestTradeEnvelopes = [];
         bool bookReady = false;
         bool sequenceGap = false;
         bool conflict = false;
@@ -62,6 +63,11 @@ public static class LaneCFeatureEvaluator
                 continue;
             }
 
+            if (payload is Trade observedTrade)
+            {
+                latestTradeEnvelopes[observedTrade] = envelope;
+            }
+
             string eventIdentity = $"{payload.GetType().Name}|{payload.InstrumentId.Value}|{payload.EventId}";
             if (seenEvents.TryGetValue(eventIdentity, out MarketEvent? previousEvent))
             {
@@ -83,7 +89,7 @@ public static class LaneCFeatureEvaluator
             {
                 if (trade.EventTime.Value >= windowStart)
                 {
-                    trades.Add(trade);
+                    trades.Add((trade, envelope.StableSequence));
                 }
 
                 continue;
@@ -179,15 +185,15 @@ public static class LaneCFeatureEvaluator
         }
 
         Trade[] windowTrades = trades
-            .Where(trade => trade.EventTime.Value >= windowStart
-                && trade.EventTime.Value <= input.Cursor.AsOf.Value)
-            .OrderBy(static trade => trade.EventTime.Value)
-            .ThenBy(trade => eligible.First(envelope => envelope.Payload == trade).StableSequence)
+            .Where(item => item.Trade.EventTime.Value >= windowStart
+                && item.Trade.EventTime.Value <= input.Cursor.AsOf.Value)
+            .OrderBy(static item => item.Trade.EventTime.Value)
+            .ThenBy(static item => item.StableSequence)
+            .Select(static item => item.Trade)
             .ToArray();
         if (windowTrades.Length > 0)
         {
-            CaptureEnvelope latestTradeEnvelope = eligible.Last(envelope =>
-                envelope.Payload == windowTrades[^1]);
+            CaptureEnvelope latestTradeEnvelope = latestTradeEnvelopes[windowTrades[^1]];
             if (input.Cursor.AsOf.Value - latestTradeEnvelope.AvailabilityTime.Value
                 > configuration.MaximumTradeAge)
             {

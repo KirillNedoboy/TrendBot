@@ -408,12 +408,14 @@ public sealed record BinanceMarkPriceEvent : BinanceWebSocketEvent
 
 public sealed record BinanceLiquidationEvent : BinanceWebSocketEvent
 {
-    public BinanceLiquidationEvent(string symbol, long eventTimeMilliseconds, long orderId,
+    public BinanceLiquidationEvent(string symbol, long eventTimeMilliseconds, long? orderId,
         TradeSide side, decimal originalQuantity, decimal price, decimal averagePrice,
         decimal lastFilledQuantity, decimal accumulatedQuantity, string orderStatus,
         long orderTimeMilliseconds, string streamName)
         : base(BinanceWebSocketEventKind.Liquidation,
-            $"liquidation:{symbol}:{orderId}", symbol, eventTimeMilliseconds, streamName,
+            orderId is { } id ? $"liquidation:{symbol}:{id}"
+                : $"liquidation:{symbol}:snapshot:{eventTimeMilliseconds}:{orderTimeMilliseconds}",
+            symbol, eventTimeMilliseconds, streamName,
             orderTimeMilliseconds)
     {
         OrderId = orderId;
@@ -427,7 +429,7 @@ public sealed record BinanceLiquidationEvent : BinanceWebSocketEvent
         OrderTimeMilliseconds = orderTimeMilliseconds;
     }
 
-    public long OrderId { get; }
+    public long? OrderId { get; }
 
     public TradeSide Side { get; }
 

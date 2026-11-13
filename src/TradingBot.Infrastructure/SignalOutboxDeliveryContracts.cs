@@ -80,17 +80,19 @@ public sealed record SignalOutboxLease
     public string StreamId { get; }
     public SignalJournalOutboxItem Item { get; }
     public SignalRecord Signal { get; }
+    public SignalEvidenceRecord Evidence { get; }
     public string LeaseToken { get; }
     public DateTimeOffset LeaseExpiresAt { get; }
     public int NextAttemptNumber { get; }
 
     internal SignalOutboxLease(string streamId, SignalJournalOutboxItem item,
-        SignalRecord signal, string leaseToken, DateTimeOffset leaseExpiresAt,
+        SignalRecord signal, SignalEvidenceRecord evidence, string leaseToken, DateTimeOffset leaseExpiresAt,
         int nextAttemptNumber)
     {
         StreamId = streamId;
         Item = item;
         Signal = signal;
+        Evidence = evidence;
         LeaseToken = leaseToken;
         LeaseExpiresAt = leaseExpiresAt;
         NextAttemptNumber = nextAttemptNumber;

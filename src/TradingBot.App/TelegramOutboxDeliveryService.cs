@@ -68,9 +68,115 @@ public sealed class TelegramOutboxDeliveryService
 
         TelegramSendResult result = await TelegramBotApiClient.SendMessageAsync(
             _httpClient, _botToken, _chatId,
-            TelegramSignalMessageFormatter.Format(lease.Item, lease.Signal),
+            TelegramSignalMessageFormatter.Format(lease.Item, lease.Signal, lease.Evidence),
             cancellationToken).ConfigureAwait(false);
-        DateTimeOffset completedAt = _timeProvider.GetUtcNow();
+        RecordResult(lease, result, _timeProvider.GetUtcNow());
+        return FindDelivery(lease.StreamId, lease.Item.OutboxId);
+    }
+
+    internal async Task<IReadOnlyList<SignalOutboxDeliverySnapshot>> DispatchTimeframesAsync(
+        IReadOnlyList<string> streamIds, TimeSpan groupingDelay,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(streamIds);
+        if (groupingDelay < TimeSpan.Zero || groupingDelay >= _policy.LeaseDuration
+            || streamIds.Count > 4
+            || streamIds.Distinct(StringComparer.Ordinal).Count() != streamIds.Count)
+        {
+            throw new ArgumentException("The timeframe streams or grouping delay are invalid.", nameof(streamIds));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        SignalOutboxLease? first = null;
+        foreach (string streamId in streamIds)
+        {
+            first = _deliveryStore.ClaimNext(_signalJournal, streamId, _policy,
+                _timeProvider.GetUtcNow());
+            if (first is not null)
+            {
+                break;
+            }
+        }
+        if (first is null)
+        {
+            return [];
+        }
+
+        List<SignalOutboxLease> leases = [first];
+        if (streamIds.Count > 1
+            && first.Item.ScenarioEvent.Kind == SignalScenarioEventKind.AlertCreated)
+        {
+            TimeSpan remaining = first.Signal.BarInterval.CloseTime.Value
+                + groupingDelay - _timeProvider.GetUtcNow();
+            if (remaining > TimeSpan.Zero)
+            {
+                await Task.Delay(remaining > groupingDelay ? groupingDelay : remaining,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            foreach (string streamId in streamIds)
+            {
+                if (StringComparer.Ordinal.Equals(streamId, first.StreamId))
+                {
+                    continue;
+                }
+                SignalOutboxLease? lease = _deliveryStore.ClaimNext(_signalJournal,
+                    streamId, _policy, _timeProvider.GetUtcNow());
+                if (lease is not null)
+                {
+                    leases.Add(lease);
+                }
+            }
+        }
+
+        List<SignalOutboxDeliverySnapshot> snapshots = [];
+        var groups = leases.GroupBy(static lease => (
+            Instrument: lease.Signal.Identity.InstrumentId.Value,
+            lease.Signal.Identity.Direction,
+            Close: lease.Signal.BarInterval.CloseTime.Value,
+            Unique: lease.Item.ScenarioEvent.Kind == SignalScenarioEventKind.AlertCreated
+                ? string.Empty : lease.Item.OutboxId));
+        foreach (IGrouping<(string Instrument, Direction Direction, DateTimeOffset Close, string Unique),
+                     SignalOutboxLease> group in groups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            List<SignalOutboxLease> started = [];
+            foreach (SignalOutboxLease lease in group)
+            {
+                if (_deliveryStore.BeginAttempt(lease, _policy, _timeProvider.GetUtcNow()))
+                {
+                    started.Add(lease);
+                }
+            }
+            TelegramSendResult? result = null;
+            if (started.Count != 0)
+            {
+                string message = TelegramSignalMessageFormatter.FormatGroup(started);
+                result = await TelegramBotApiClient.SendMessageAsync(_httpClient, _botToken,
+                    _chatId, message, cancellationToken).ConfigureAwait(false);
+                DateTimeOffset completedAt = _timeProvider.GetUtcNow();
+                foreach (SignalOutboxLease lease in started)
+                {
+                    RecordResult(lease, result, completedAt);
+                }
+            }
+            foreach (SignalOutboxLease lease in group)
+            {
+                if (FindDelivery(lease.StreamId, lease.Item.OutboxId) is { } snapshot)
+                {
+                    snapshots.Add(snapshot);
+                }
+            }
+            if (result?.Kind == TelegramSendResultKind.RateLimited)
+            {
+                break;
+            }
+        }
+        return snapshots;
+    }
+
+    private void RecordResult(SignalOutboxLease lease, TelegramSendResult result,
+        DateTimeOffset completedAt)
+    {
         switch (result.Kind)
         {
             case TelegramSendResultKind.Acknowledged:
@@ -92,8 +198,6 @@ public sealed class TelegramOutboxDeliveryService
                 throw new InvalidOperationException(
                     "The Telegram sender returned an unsupported result.");
         }
-
-        return FindDelivery(lease.StreamId, lease.Item.OutboxId);
     }
 
     private SignalOutboxDeliverySnapshot? FindDelivery(string streamId,
@@ -115,29 +219,62 @@ public sealed class TelegramOutboxDeliveryService
 
 internal static class TelegramSignalMessageFormatter
 {
-    public static string Format(SignalJournalOutboxItem item, SignalRecord signal)
+    public static string FormatGroup(IReadOnlyList<SignalOutboxLease> leases)
+    {
+        ArgumentNullException.ThrowIfNull(leases);
+        if (leases.Count == 0)
+        {
+            throw new ArgumentException("A Telegram message requires a committed signal.", nameof(leases));
+        }
+        string message = string.Join("\n\n", leases.Select(static lease =>
+            Format(lease.Item, lease.Signal, lease.Evidence)));
+        if (message.Length > 4096)
+        {
+            throw new InvalidDataException(
+                "The grouped Telegram signal exceeds the Bot API text limit.");
+        }
+        return message;
+    }
+
+    public static string Format(SignalJournalOutboxItem item, SignalRecord signal,
+        SignalEvidenceRecord evidence)
     {
         ArgumentNullException.ThrowIfNull(item);
         ArgumentNullException.ThrowIfNull(signal);
+        ArgumentNullException.ThrowIfNull(evidence);
         if (!StringComparer.Ordinal.Equals(item.ScenarioEvent.SignalId,
                 signal.Identity.SignalId)
-            || !StringComparer.Ordinal.Equals(item.SignalRecordHash,
-                signal.RecordHash))
+            || !StringComparer.Ordinal.Equals(item.SignalRecordHash, signal.RecordHash)
+            || !StringComparer.Ordinal.Equals(signal.EvidenceHash, evidence.RecordHash))
         {
             throw new InvalidDataException(
                 "The Telegram message does not match its committed signal record.");
         }
 
-        string message = string.Join('\n',
+        List<string> lines =
+        [
             "RESEARCH signal (not an order)",
             $"Instrument: {signal.Identity.InstrumentId.Value}",
             $"Direction: {signal.Identity.Direction}",
             $"Setup: {signal.Identity.Family}",
+            $"Timeframe: {signal.Identity.SetupTimeframe}",
             $"Assessment: {signal.AssessmentState}",
+            $"Decision time (UTC): {signal.DecisionAt.Value.ToUniversalTime():O}",
+            $"Scenario time (UTC): {item.ScenarioEvent.AvailabilityTime.Value.ToUniversalTime():O}",
             $"Scenario event: {item.ScenarioEvent.Kind}",
-            "Statistical validation: UNKNOWN",
-            $"Signal ID: {signal.Identity.SignalId}",
-            $"Delivery ID: {item.OutboxId}");
+            "Statistical validation: UNKNOWN"
+        ];
+        if (evidence.MarketContext is { } context)
+        {
+            lines.Add($"UTC-session VWAP: {context.Vwap.Value?.ToString(CultureInfo.InvariantCulture) ?? context.Vwap.UnknownReason}");
+            lines.Add($"Observed-trade POC bin: {context.Poc.Price?.ToString(CultureInfo.InvariantCulture) ?? context.Poc.UnknownReason} (bin {context.Poc.BinSize.ToString(CultureInfo.InvariantCulture)}, {context.Poc.TradeCount} trades)");
+            lines.Add(context.LatestLiquidation is { } liquidation
+                ? $"Sampled liquidation: {liquidation.Side} {liquidation.Quantity.ToString(CultureInfo.InvariantCulture)} @ {liquidation.Price.ToString(CultureInfo.InvariantCulture)} (incomplete feed)"
+                : "Sampled liquidations: none observed in the window (incomplete feed)");
+        }
+        lines.Add($"Signal ID: {signal.Identity.SignalId}");
+        lines.Add($"Delivery ID: {item.OutboxId}");
+        string message = string.Join('\n', lines);
         if (message.Length > 4096)
         {
             throw new InvalidDataException(

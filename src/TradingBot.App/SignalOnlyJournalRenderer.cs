@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TradingBot.Core;
 using TradingBot.Infrastructure;
 
@@ -48,6 +49,29 @@ internal static class SignalOnlyJournalRenderer
                 $"  Scenario reference only: {card.ReferencePrice.Price} from {card.ReferencePrice.SourceId}/{card.ReferencePrice.EventId} at {card.ReferencePrice.ObservedAt}");
             output.AppendLine(CultureInfo.InvariantCulture,
                 $"  Quality reasons: {(card.QualityReasons.Length == 0 ? "none" : string.Join(", ", card.QualityReasons))}");
+            if (card.MultiLane is { } lanes)
+            {
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  Lane B: {lanes.LaneB}; Lane C: {lanes.LaneC}; policy: {lanes.AlgorithmVersion}");
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  Lane reasons: {string.Join(", ", lanes.Reasons)}");
+            }
+            if (card.MarketContext is { } context)
+            {
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  UTC-session VWAP: {context.Vwap.Value?.ToString(CultureInfo.InvariantCulture) ?? context.Vwap.UnknownReason}; through {Iso(context.Vwap.WindowEnd)}");
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  Observed-trade POC bin: {context.Poc.Price?.ToString(CultureInfo.InvariantCulture) ?? context.Poc.UnknownReason}; bin size: {context.Poc.BinSize}; trades: {context.Poc.TradeCount}");
+                if (context.LatestLiquidation is { } liquidation)
+                {
+                    output.AppendLine(CultureInfo.InvariantCulture,
+                        $"  Sampled liquidation: {liquidation.Side} {liquidation.Quantity} @ {liquidation.Price}; event: {Iso(liquidation.EventTime)}; not complete market flow");
+                }
+                else
+                {
+                    output.AppendLine("  Sampled liquidations: none observed in the POC window; coverage is incomplete");
+                }
+            }
             output.AppendLine("  Output receipt: none; publishedAt: —");
         }
 
@@ -138,7 +162,19 @@ internal static class SignalOnlyJournalRenderer
                 signal.ReferencePrice.Price.Value),
             provenance.InputReferences.Select(CreateInputReference).ToArray(),
             item.Evidence.QualityReasons.ToArray(),
-            episode is null ? null : CreateEpisode(episode), null, null);
+            episode is null ? null : CreateEpisode(episode), null, null,
+            CreateMultiLaneView(item.Evidence.MultiLaneInput), item.Evidence.MarketContext);
+    }
+
+    private static SignalOnlyMultiLaneView? CreateMultiLaneView(SignalMultiLaneInput? input)
+    {
+        if (input is null)
+        {
+            return null;
+        }
+        SignalMultiLaneAssessment result = SignalMultiLaneResearchEvaluator.Evaluate(input);
+        return new SignalOnlyMultiLaneView(input.Policy.AlgorithmVersion, Iso(input.DecisionAt),
+            result.LaneB.ToString(), result.LaneC.ToString(), result.Reasons.ToArray());
     }
 
     private static SignalOnlyInputReferenceView FindAnchor(
@@ -201,7 +237,14 @@ internal sealed record SignalOnlySignalCard(string SignalId, string RecordHash,
     SignalOnlyReferenceView ReferencePrice,
     SignalOnlyInputReferenceView[] InputReferences, string[] QualityReasons,
     SignalOnlyScenarioEpisodeView? Scenario,
-    SignalOnlyDeliveryReceiptView? OutputReceipt, string? PublishedAt);
+    SignalOnlyDeliveryReceiptView? OutputReceipt, string? PublishedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SignalOnlyMultiLaneView? MultiLane,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SignalMarketContext? MarketContext);
+
+internal sealed record SignalOnlyMultiLaneView(string AlgorithmVersion, string DecisionAt,
+    string LaneB, string LaneC, string[] Reasons);
 
 internal sealed record SignalOnlyIntervalView(string Timeframe, string OpenTime,
     string CloseTime);

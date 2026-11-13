@@ -257,10 +257,11 @@ public static class BinanceKlineIngestionBoundary
 
         BinanceKlineIdentity identity = BinanceKlineIdentity.Create(symbol, kline.Timeframe,
             kline.OpenTimeMilliseconds);
-        if (!TryGetDurationMilliseconds(kline.Timeframe, out long durationMilliseconds))
+        if (!PublicSignalTimeframes.TryGetDurationMilliseconds(kline.Timeframe,
+                out long durationMilliseconds))
         {
             return Invalid(identity, sourceMetadata, "unsupported-timeframe",
-                "Only the native 15m and 1h UTC intervals are Core-ready.");
+                "The native UTC interval is unsupported.");
         }
 
         if (kline.OpenTimeMilliseconds < 0)
@@ -363,16 +364,6 @@ public static class BinanceKlineIngestionBoundary
         new(BinanceKlineIngestionStatus.Invalid, identity, sourceMetadata, null, null,
             null, null, new BinanceKlineIngestionDiagnostic(code, message), null);
 
-    private static bool TryGetDurationMilliseconds(string timeframe, out long durationMilliseconds)
-    {
-        durationMilliseconds = timeframe switch
-        {
-            "15m" => 900_000,
-            "1h" => 3_600_000,
-            _ => 0
-        };
-        return durationMilliseconds > 0;
-    }
 
     private static bool TryGetEndExclusive(long openTimeMilliseconds,
         long durationMilliseconds, out long endExclusiveMilliseconds)

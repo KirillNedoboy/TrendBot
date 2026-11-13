@@ -6,6 +6,15 @@ The startup selector chooses the first `READY` task in document order whose depe
 
 Every replay-facing milestone preserves the causal tuple of event time, exchange time when available, receive/availability time, and stable processing sequence. Shared risk math is kept separate from fill simulation. Private execution, local paper simulation, exchange test execution, and real-money activation are separate gates.
 
+## Multi-timeframe public research amendment — 2026-11-13
+
+The user subsequently authorized the four setup/context profiles documented in
+[PROJECT_SPEC](PROJECT_SPEC.md#approved-multi-timeframe-amendment--2026-11-13).
+The following 15m-only plan describes the historical baseline, not a prohibition
+on the additional public profiles. Their implementation does not accept T022 or
+other blocked tasks and does not authorize OOS comparison, private execution or
+orders. Current evidence and operational limits are in [HANDOFF](../HANDOFF.md).
+
 ## Current planning priority — 2026-11-06
 
 The user requests **15-minute primary signals without opening orders**, not continuation of limited-live work. Follow the revised [signal-only research plan](../additional-strategy-research-plan.md): public 15-minute/1-hour data → existing Lane A setups → durable signals → output-only notifications → prospective outcome evaluation. Additional MA/structure/Lane B/C hypotheses are separate comparisons, not prerequisites for delivering the baseline signal system.

@@ -437,7 +437,8 @@ public sealed class BinanceMarketWebSocketClient : IDisposable
             "SELL" => TradeSide.Sell,
             _ => throw new JsonException($"Unknown Binance liquidation side '{side}'.")
         };
-        return new BinanceLiquidationEvent(symbol, eventTime, ReadInt64(order, "i"), tradeSide,
+        long? orderId = order.TryGetProperty("i", out _) ? ReadInt64(order, "i") : null;
+        return new BinanceLiquidationEvent(symbol, eventTime, orderId, tradeSide,
             ReadDecimal(order, "q"), ReadDecimal(order, "p"), ReadDecimal(order, "ap"),
             ReadDecimal(order, "l"), ReadDecimal(order, "z"), ReadString(order, "X"),
             ReadInt64(order, "T"), streamName ?? new BinanceSubscription(symbol,

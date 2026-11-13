@@ -285,6 +285,35 @@ public sealed class BinanceWebSocketClientTests
     }
 
     [Fact]
+    public async Task OfficialLiquidationSnapshotWithoutOrderIdIsAcceptedAndDeduplicated()
+    {
+        const string first = "{\"e\":\"forceOrder\",\"E\":1700000000123,\"o\":{\"s\":\"BTCUSDT\",\"S\":\"SELL\",\"o\":\"LIMIT\",\"f\":\"IOC\",\"q\":\"1\",\"p\":\"100\",\"ap\":\"99\",\"X\":\"FILLED\",\"l\":\"1\",\"z\":\"1\",\"T\":1700000000122}}";
+        const string second = "{\"e\":\"forceOrder\",\"E\":1700000001123,\"o\":{\"s\":\"BTCUSDT\",\"S\":\"BUY\",\"o\":\"LIMIT\",\"f\":\"IOC\",\"q\":\"2\",\"p\":\"101\",\"ap\":\"100\",\"X\":\"FILLED\",\"l\":\"2\",\"z\":\"2\",\"T\":1700000001122}}";
+        FakeTransport transport = new([Text(first), Text(first), Text(second), Close()]);
+        using BinanceMarketWebSocketClient client = CreateClient(transport,
+            new BinanceWebSocketOptions
+            {
+                AutoReconnect = false,
+                ReceiveTimeout = Timeout.InfiniteTimeSpan,
+                HeartbeatInterval = Timeout.InfiniteTimeSpan,
+                SessionLifetime = Timeout.InfiniteTimeSpan,
+                StaleAfter = Timeout.InfiniteTimeSpan
+            });
+
+        List<BinanceStreamEnvelope> events = await ReadAsync(client,
+            [BinanceSubscription.Liquidation("BTCUSDT")]);
+
+        Assert.Equal(2, events.Count);
+        BinanceLiquidationEvent snapshot = Assert.IsType<BinanceLiquidationEvent>(events[0].Payload);
+        Assert.Null(snapshot.OrderId);
+        Assert.Equal(TradeSide.Sell, snapshot.Side);
+        Assert.Equal(1m, snapshot.AccumulatedQuantity);
+        Assert.NotEqual(events[0].Payload.EventId, events[1].Payload.EventId);
+        Assert.Contains(client.Diagnostics, item => item.Kind == BinanceStreamDiagnosticKind.Duplicate);
+        Assert.DoesNotContain(client.Diagnostics, item => item.Kind == BinanceStreamDiagnosticKind.ParseError);
+    }
+
+    [Fact]
     public async Task HeartbeatAndSessionLifetimePoliciesAreConfigurable()
     {
         AdvancingTimeProvider heartbeatTime = new(DateTimeOffset.FromUnixTimeMilliseconds(1700000000000));

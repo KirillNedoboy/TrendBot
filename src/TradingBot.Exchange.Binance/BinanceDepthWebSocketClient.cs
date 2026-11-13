@@ -244,7 +244,7 @@ public class BinanceDepthWebSocketClient : IDisposable
 
                         string rawJson = Encoding.UTF8.GetString(messageBuffer);
                         messageBuffer = [];
-                        BinanceDepthUpdateEvent depth;
+                        BinanceDepthUpdateEvent? depth;
                         try
                         {
                             depth = ParseEvent(rawJson);
@@ -257,6 +257,11 @@ public class BinanceDepthWebSocketClient : IDisposable
                                 null, null, exception.Message, stableSequence);
                             continue;
                         }
+                        if (depth is null)
+                        {
+                            continue;
+                        }
+
 
                         DateTimeOffset receiveTime = _timeProvider.GetUtcNow();
                         long eventSequence = stableSequence++;
@@ -450,7 +455,7 @@ public class BinanceDepthWebSocketClient : IDisposable
         _activeTransport = null;
     }
 
-    private static BinanceDepthUpdateEvent ParseEvent(string rawJson)
+    private static BinanceDepthUpdateEvent? ParseEvent(string rawJson)
     {
         using JsonDocument document = JsonDocument.Parse(rawJson);
         JsonElement root = document.RootElement;
@@ -464,6 +469,13 @@ public class BinanceDepthWebSocketClient : IDisposable
         {
             streamName = ReadString(root, "stream");
             root = combinedData;
+        }
+
+        if (root.TryGetProperty("result", out _)
+            && root.TryGetProperty("id", out JsonElement requestId)
+            && requestId.ValueKind == JsonValueKind.Number)
+        {
+            return null;
         }
 
         string eventType = ReadString(root, "e");

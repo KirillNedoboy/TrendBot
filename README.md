@@ -1,28 +1,89 @@
 ﻿# TradingBot
 
-Greenfield C#/.NET 10 modular monolith for deterministic, multi-lane Binance USD-M perpetual futures research and trading. The repository contains the Phase 0–3 project memory, passive Core contracts, and an SQLite event journal. Exchange calls, strategies, risk calculations, and order execution begin in later phases.
+Public-only Binance USD-M signal research in a .NET 10 modular monolith. The
+scanner can evaluate closed 5m/15m, 15m/1h, 30m/1h and 1h/4h setup/context
+profiles, commits signals locally, and can deliver them to Telegram. It does
+not place orders. The supplied profiles are exploratory: profitability and
+statistical validation are unknown.
+
+## Start the public signal bot
+
+From the repository root in PowerShell, with the pinned .NET SDK installed:
+
+```powershell
+$dotnet = Join-Path $env:USERPROFILE ".dotnet\dotnet.exe"
+& $dotnet restore .\src\TradingBot.App\TradingBot.App.csproj --locked-mode
+if ($LASTEXITCODE -ne 0) { throw "Restore failed." }
+& $dotnet build .\src\TradingBot.App\TradingBot.App.csproj -c Release --no-restore --warnaserror
+if ($LASTEXITCODE -ne 0) { throw "Build failed." }
+New-Item -ItemType Directory -Force .\artifacts\signal-only-public | Out-Null
+$app = ".\src\TradingBot.App\bin\Release\net10.0\TradingBot.App.dll"
+& $dotnet $app signal-only --config .\signal-only.public.example.json
+```
+
+Run only one process against those state files. `public-stream-receiving`
+means a public stream update was received, not that a signal was generated.
+Closed candles and real committed signals appear in the console. In another
+terminal, inspect the journal without publishing:
+
+```powershell
+$dotnet = Join-Path $env:USERPROFILE ".dotnet\dotnet.exe"
+$app = ".\src\TradingBot.App\bin\Release\net10.0\TradingBot.App.dll"
+& $dotnet $app signal-only render --journal .\artifacts\signal-only-public\signal-journal.sqlite --symbol BTCUSDT --format console
+```
+
+Telegram is optional and explicitly enabled; see the
+[operating instructions](docs/architecture/operations.md#public-signal-bot).
+No OOS comparison is required to run this public research path. The process is
+unbounded and has no installed supervisor or automatic startup; observe its
+diagnostics, preserve its state files, and restart it if it exits.
+
+The 12-symbol multi-timeframe profile is
+[`signal-only.multitimeframe.example.json`](signal-only.multitimeframe.example.json):
+it combines Lane A candidates with public Lane B/C evidence and vetoes for
+each profile. After the build above, start it **instead of** the BTC-only
+example, and stop any older process using the same state files first:
+
+```powershell
+New-Item -ItemType Directory -Force .\artifacts\signal-only-12 | Out-Null
+& $dotnet $app signal-only --config .\signal-only.multitimeframe.example.json
+```
+
+Inspect one pair and setup timeframe without sending messages (`5m`, `15m`,
+`30m`, or `1h`); omitting `--timeframe` retains the existing 15m behavior:
+
+```powershell
+& $dotnet $app signal-only render --journal .\artifacts\signal-only-12\signal-journal.sqlite --symbol ETHUSDT --format console --timeframe 5m
+```
+
+Its state is isolated under `artifacts/signal-only-12/`; do not run two writers
+against the same state files. OI and trade-window warmup are required. Missing or
+stale B/C evidence blocks that candidate rather than confirming it. The profile
+is experimental, not statistically validated; see the [runtime details](docs/architecture/operations.md#p15-m03-t011-public-only-signal-runtime).
+
+Each new signal can include a UTC-session VWAP, a POC for the observed
+one-minute trade window, and the latest observed Binance liquidation snapshot.
+They are context only, not extra entry filters. The liquidation stream is
+sampled and a missing snapshot does not mean there were no liquidations.
 
 ## Current state
 
-- SDK: .NET 10.0.401, pinned in [`global.json`](global.json).
-- Runtime target: `net10.0`.
-- Solution: [`TradingBot.slnx`](TradingBot.slnx).
-- P03-M01-T001 is complete; the next ready implementation task is `P03-M01-T002` (versioned deterministic replay envelope).
-- Planning invariants: causal replay keeps event/receive/availability/stable-sequence fields distinct; shared risk math is separate from fill simulation; private execution, local paper, exchange test, and real-money activation are separate gates.
-- Bounded Lane C/research capture and data-quality observability begin before private execution. Current Binance Algo Service and `ALGO_UPDATE` details remain a future official-source verification task.
+- SDK: .NET 10.0.401, pinned in [`global.json`](global.json); target `net10.0`.
+- Research evidence, task status, and remaining gates are in [`HANDOFF.md`](HANDOFF.md) and [`docs/TASKS.md`](docs/TASKS.md).
+- Public signal generation, research validation, and private/real-order authorization are separate.
 - `graft/` is local service state and is ignored by Git.
 
 ## Project map
 
 ```text
 src/TradingBot.Core              BCL-only shared kernel
-src/TradingBot.Exchange.Binance  Exchange boundary, currently empty scaffold
-src/TradingBot.Infrastructure    File-backed SQLite journal and persistence boundary
-src/TradingBot.Backtesting        Replay/backtest boundary, scaffold only
-src/TradingBot.App                Inert application entry point
-tools/TradingBot.DataTool         Inert data-tool entry point
-tests/*                           Architecture and startup smoke tests
-docs/                             Specification, plan, backlog, decisions, Phase 0 notes
+src/TradingBot.Exchange.Binance  Binance public and private exchange boundaries
+src/TradingBot.Infrastructure    File-backed SQLite journals and persistence
+src/TradingBot.Backtesting       Replay and research reporting
+src/TradingBot.App               Public signal and other explicit application modes
+tools/TradingBot.DataTool        Data-tool entry point
+tests/*                           Unit and integration tests
+docs/                             Specification, plan, backlog, and decisions
 tools/tests/                      Built-in PowerShell validator fixtures
 ```
 

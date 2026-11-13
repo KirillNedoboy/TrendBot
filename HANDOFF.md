@@ -1,5 +1,135 @@
 # Current checkpoint
 
+## Public market context (2026-11-13)
+
+- User-authorized explanatory context adds UTC-session VWAP, a recent
+  observed-trade POC and sampled Binance liquidation snapshots to the 12-symbol,
+  four-timeframe public scanner. None changes Lane A/B/C admission. VWAP uses
+  exchange quote/base volumes from contiguous closed bars; POC uses the covered
+  one-minute Lane C window and configured per-symbol price increment. Missing
+  inputs remain unknown. The POC is not a full-session volume profile.
+- The separate public liquidation stream is Binance's incomplete snapshot, not
+  total liquidations or a heatmap. No observed snapshot is not a zero count.
+  Its outage clears this optional context without resetting the B/C feeds.
+  Event, exchange-trade and availability timestamps are checked at the decision
+  cut. Evidence v3 commits the context with a new signal; v1/v2 remain readable.
+- An isolated real run exposed a bar closing between initial REST warmup and
+  WebSocket subscription. The first open update now backfills this gap; a close
+  received before recovery remains unknown and history never creates a
+  retrospective signal. The isolated BTC 5m ledger subsequently recovered the
+  missing 18:30 UTC bar from public REST. The old T019 journal remained readable.
+- At the next actual 5m close in the isolated run, all 12 symbols had known
+  VWAP and POC; observed liquidation snapshots were present for BTC, ETH and
+  XRP. These observations do not establish future feed availability or trading
+  effectiveness.
+- Persistent session process `signal_12_context_v5` uses the existing
+  `artifacts/signal-only-12/` state and multi-timeframe configuration; all 48
+  symbol/profile streams reported receiving. The BTC 15m journal retained
+  checkpoint 9, zero signals and nine diagnostics through the cutover. The
+  process is not installed as a supervised service.
+- Targeted checks passed: Core 26/26, Binance 11/11 and integration 70/70;
+  Release builds had zero warnings/errors and scoped whitespace verification
+  passed. Telegram formatting used a fake HTTP handler; no external send, order,
+  private execution or OOS comparison was performed.
+
+## Four-timeframe public research scanner (2026-11-13)
+
+- The user authorized 5m/15m, 15m/1h, 30m/1h and 1h/4h setup/context
+  profiles on all 12 configured USD-M symbols. The v4 example retains the
+  original 15m/1h identity and settings and adds separately versioned profiles,
+  cursors, scenarios and journal streams. Kline subscriptions are deduplicated;
+  trade, depth, mark and OI sources are shared per symbol. All three lanes
+  participate, with missing/stale or vetoed B/C inputs blocking a candidate.
+- New profile values are explicit exploratory assumptions: indicator periods
+  remain bar-relative, freshness is two bars, scenario expiry is 96 setup bars,
+  and the existing one-minute B/C observations are reused at each decision.
+  This does not establish equivalence between timeframes, statistical validity,
+  or profitability. The fixed history start implies growing warmup/storage; no
+  24/7 soak, resource quota or installed supervisor is claimed.
+- On isolated real state, all 12 symbols reached all four public streams and
+  observed trade, mark, recovered depth, a complete trade window and two OI
+  observations. The next actual 5m close yielded 12 ready `no-confirmed-setup`
+  diagnostics and no fabricated signal. An actual restart recovered the four
+  stream histories and resumed their public subscriptions. The other new
+  timeframes had not yet reached a live decision close in that isolated run.
+- The previous v3 process was stopped after the isolated run. The subsequent
+  `signal_12_multitimeframe_v4` session used the existing
+  `artifacts/signal-only-12/` state and `signal-only.multitimeframe.example.json`;
+  all 48 symbol/profile streams reported receiving. That process was stopped
+  for the context cutover above. The BTC 15m journal retained
+  its prior checkpoint 5 and five diagnostics across the cutover. At the next
+  common close all 48 setup inputs were accepted with ready price evaluation:
+  46 `no-confirmed-setup` diagnostics and two `multi-lane-blocked` candidates
+  (XRP 30m and SUI 5m; B inputs and C coverage were not yet ready), no signals.
+  This process is not installed or supervised and Telegram was not enabled.
+  After that initial close, the running process observed a complete trade window
+  and an OI pair for all 12 symbols; arrival does not guarantee future freshness.
+- Targeted checks passed: Core 37/37, Binance 18/18 and integration 81/81.
+  Fixtures cover signal identity/provenance, all new timeframe boundaries,
+  confirmed/veto/unknown lane decisions, duplicate and restart handling, both
+  co-close arrival orders, shared subscription routing, and grouped Telegram
+  acknowledgment, ambiguity and rate limiting. Grouped delivery uses only fake
+  HTTP in tests. Scoped C# formatting and the docs validator were run; no
+  external Telegram send, OOS comparison, order or private execution was made.
+
+## Twelve-symbol public research scanner (2026-11-13)
+
+- The user requested 12 symbols and participation by all three lanes. Format-v3
+  `signal-only.12.example.json` configures BTC, ETH, SOL, BNB, XRP, LINK, AVAX,
+  ADA, SUI, HYPE, DOGE and 1000PEPE USDT perpetuals with isolated state.
+  All 12 were publicly observed as Binance TRADING/PERPETUAL. The per-symbol
+  minimum channel widths are the observed one-tick increments, not validated
+  strategy parameters or automatically refreshed exchange filters.
+- Lane A supplies a candidate; Lane B compares two causal OI/mark-price pairs;
+  Lane C compares the recovered top-10 book and observed aggregate-trade flow.
+  Both B/C must be Confirm or Neutral. Veto, missing, stale or incomplete
+  evidence blocks the candidate; future observations are ineligible. Funding is
+  contextual, not directional proof.
+  The policy, event and availability times, and evidence for admitted signals
+  are persisted in the same journal transaction. The explicit rules and source
+  limitations are in the [runbook](docs/architecture/operations.md#p15-m03-t011-public-only-signal-runtime);
+  this is an exploratory hypothesis, not validated profitability or OOS evidence.
+- Public smoke runs observed price, mark, trade, recovered depth and OI for all
+  12 symbols, including two OI observations per symbol. A previous run stopped
+  on `BinanceApiException` without recording its status or endpoint. Temporary
+  public REST failures now invalidate the affected input and retry; non-transient
+  API failures stop with a sanitized status and endpoint. Subscription and
+  heartbeat acknowledgments no longer falsely invalidate the depth book.
+  A real USD-M stream showed consecutive events whose `pu` matched the prior
+  `u` while `U` was greater than `u + 1`; recovery had incorrectly rejected
+  these events. Recovery now follows the venue's `pu` linkage, retaining the
+  numeric-range fallback only when `pu` is absent. A mismatched `pu` still
+  invalidates the book. Recovered checkpoints use the post-diff ID and causal
+  times; old captures were not rewritten and future events remain ineligible.
+- After the fix, all 12 live streams reported a complete trade-window observation
+  with two causally visible recovered books and two OI observations each. These
+  are source-arrival observations, not proof of continued health or of a
+  prospective multi-lane signal. An earlier real 15m close recorded 11
+  `no-confirmed-setup`, one `signal-evaluation-unknown`, zero signals and zero
+  outbox rows across the 12 symbols; it preceded the book fix and was not rewritten.
+- The live close diagnostics also report missing VWAP/POC window configuration
+  and a missing price-volume scenario TTL. Those price-volume inputs remain
+  Unknown; the separate boundary and center setup families can still be assessed.
+- Targeted tests: Core 30/30, Integration 77/77 and Binance 18/18; Release
+  test builds had zero warnings/errors and scoped whitespace verification passed.
+  Restart, unavailable-input, linked book updates and bounded trade-buffer
+  behavior have deterministic fixture coverage; no 24/7 soak has been performed.
+- The corrected format-v3 scanner ran as a persistent session process using
+  `artifacts/signal-only-12/`; it was stopped for the v4 cutover above. Its
+  journal and the obsolete BTC-only process's state files were preserved.
+  Neither process was an installed or automatically restarted service.
+  No Telegram send, private execution, order, paper/testnet operation or OOS
+  comparison was performed. No commit or push.
+
+## Public signal runtime integration (2026-11-13)
+
+- The user requested an operating bot rather than treating optional OOS research as a startup prerequisite. The public-only BTCUSDT signal path is independent of T022; research validation remains `UNKNOWN`. No task status or OOS criteria were changed.
+- `signal-only --config` now supports explicit optional `--telegram-state <file>` in the same process. The existing committed-outbox sender and durable delivery state are reused; ambiguous delivery remains terminal, existing outbox rows cannot be paired with a missing state file, and no Telegram credentials are stored in configuration or logs. Signal and scenario times are included in messages.
+- The live consumer ignores open-candle updates, waits for the nominal close, reports actual public stream/close/signal events, and backfills incomplete native histories after restart or a recoverable stream interruption. Backfilled receipt hashes are refreshed before a later signal can use them as provenance; history backfill does not create retrospective signals.
+- Actual public CLI start and restart with `signal-only.public.example.json` both reached `public-stream-receiving` after loading 517 real native input receipts. The restarted process then accepted an actual closed 15m input with readiness `ready`; the local journal recorded one `no-confirmed-setup` diagnostic, zero signals and zero pending outputs. No signal or publication was invented. The persistent local process uses `artifacts/signal-only-public/`; it is not an installed or automatically restarted service.
+- Targeted Integration tests passed 44/44, including recovery with a backfilled signal-provenance bar, public stream interruption, committed local output, continuous delivery, cancellation and ambiguous-delivery idempotency. The final Release App build passed with zero warnings/errors and scoped C# whitespace verification passed. A separate CLI check using a copy of the actual T019 journal refused a missing delivery-state file before creating one or sending. Documentation validation passed: 19 phases, 43 milestones, 152 tasks, zero READY with explicit blockers.
+- Telegram environment settings were absent; no Telegram message, order, private execution, paper/testnet operation or OOS comparison was performed. The process has bounded WebSocket reconnect attempts and no 24/7 soak, supervisor, storage quota or profitability claim. Preserve the state files and follow the [public signal bot runbook](docs/architecture/operations.md#public-signal-bot). No commit or push.
+
 ## P15-M03-T021 (SR-08.2) — DONE (2026-11-13)
 
 - Began only after T020 acceptance. Added the operator runbook in [operations baseline](docs/architecture/operations.md#p15-m03-t021-public-only-start-recovery-and-verdict): pinned SDK/locked restore and Release build, preflight/hash checks, public-only bounded start and planned restart, exact-identity resume, read-only local rendering and fail-closed recovery guidance. `preflight ready` is not runtime readiness.
@@ -286,6 +416,7 @@ pwsh -NoProfile -Command '$ErrorActionPreference = "Stop"; Add-Type -Path "src/T
 - **Next:** Separately authorize P15-M03-T004 (SR-02.1). Do not start it under T003 authorization.
 
 ## Previous checkpoint: P15-M03-T002 (SR-01.2) — DONE (2026-11-09)
+
 
 - **Scope/authorization:** P15-M03-T001 is DONE. User explicitly authorized only P15-M03-T002; P15-M03-T003 and all other tasks were not started. T003 remains BLOCKED pending separate SR-01.3 implementation authorization.
 - **Deliverable:** Added immutable BCL-only public signal contracts in `src/TradingBot.Core/SignalContracts.cs`: logical `SignalId` excludes mutable evidence/card content; evidence provenance has public 15m/1h inputs, payload hashes, event/availability times, stable sequence, and decision/HTF cuts; evidence and signal records have independent content hashes; a delivery receipt binds to exact `SignalId`/`SignalRecordHash`; an outcome additionally binds `EvidenceRecordHash`. Unknown evidence needs reasons; `ConfirmedOnClosedBar` requires complete evidence and does not mean validation or order authority. Optional probability/calibration remain both null; strict schema rejects unknown fields. No I/O, secrets, persistence, or trading effects.

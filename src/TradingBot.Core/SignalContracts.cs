@@ -50,6 +50,7 @@ public enum SignalOutcomeKind
 public sealed record SignalIdentity
 {
     public const int CurrentFormatVersion = 1;
+    public const int MultiTimeframeFormatVersion = 2;
 
     public int FormatVersion { get; }
 
@@ -77,7 +78,7 @@ public sealed record SignalIdentity
         string profileVersion, string familyAlgorithmVersion, string setupEventId,
         string signalId)
     {
-        if (formatVersion != CurrentFormatVersion)
+        if (formatVersion is not (CurrentFormatVersion or MultiTimeframeFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The signal identity format version is unsupported.");
@@ -86,9 +87,10 @@ public sealed record SignalIdentity
         ArgumentNullException.ThrowIfNull(instrumentId);
         ContractGuard.RequireText(venue, nameof(venue));
         ContractGuard.RequireText(setupTimeframe, nameof(setupTimeframe));
-        if (!StringComparer.Ordinal.Equals(setupTimeframe, "15m"))
+        if (PublicSignalTimeframes.ContextForSetup(setupTimeframe) is null
+            || formatVersion == CurrentFormatVersion && setupTimeframe != "15m")
         {
-            throw new ArgumentException("Signal setup identity must use native 15m bars.",
+            throw new ArgumentException("Signal identity has an unsupported setup timeframe.",
                 nameof(setupTimeframe));
         }
 
@@ -125,10 +127,11 @@ public sealed record SignalIdentity
         string setupTimeframe, Direction direction, SetupType family,
         string profileVersion, string familyAlgorithmVersion, string setupEventId)
     {
-        string signalId = ComputeSignalId(CurrentFormatVersion, instrumentId, venue,
+        int version = setupTimeframe == "15m" ? CurrentFormatVersion : MultiTimeframeFormatVersion;
+        string signalId = ComputeSignalId(version, instrumentId, venue,
             setupTimeframe, direction, family, profileVersion,
             familyAlgorithmVersion, setupEventId);
-        return new SignalIdentity(CurrentFormatVersion, instrumentId, venue,
+        return new SignalIdentity(version, instrumentId, venue,
             setupTimeframe, direction, family, profileVersion,
             familyAlgorithmVersion, setupEventId, signalId);
     }
@@ -179,8 +182,10 @@ public sealed record SignalInputReference
         SignalContractHash.RequireSha256(payloadHash, nameof(payloadHash));
         ContractGuard.RequireDefined(role, nameof(role));
         ContractGuard.RequireText(timeframe, nameof(timeframe));
-        string expectedTimeframe = role == SignalInputRole.Setup ? "15m" : "1h";
-        if (!StringComparer.Ordinal.Equals(timeframe, expectedTimeframe))
+        bool supported = role == SignalInputRole.Setup
+            ? PublicSignalTimeframes.ContextForSetup(timeframe) is not null
+            : timeframe is "15m" or "1h" or "4h";
+        if (!supported)
         {
             throw new ArgumentException(
                 "The input timeframe does not match its signal provenance role.",
@@ -210,6 +215,7 @@ public sealed record SignalInputReference
 public sealed record SignalProvenance
 {
     public const int CurrentFormatVersion = 1;
+    public const int MultiTimeframeFormatVersion = 2;
 
     public int FormatVersion { get; }
 
@@ -229,7 +235,7 @@ public sealed record SignalProvenance
         CausalEventCursor higherTimeframeCut,
         ImmutableValueList<SignalInputReference> inputReferences)
     {
-        if (formatVersion != CurrentFormatVersion)
+        if (formatVersion is not (CurrentFormatVersion or MultiTimeframeFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The signal provenance format version is unsupported.");
@@ -257,6 +263,8 @@ public sealed record SignalProvenance
 
         bool hasSetupInput = false;
         bool hasHigherTimeframeInput = false;
+        string? setupTimeframe = null;
+        string? contextTimeframe = null;
         foreach (SignalInputReference reference in inputReferences)
         {
             CausalEventCursor cut = reference.Role == SignalInputRole.Setup
@@ -271,6 +279,24 @@ public sealed record SignalProvenance
 
             hasSetupInput |= reference.Role == SignalInputRole.Setup;
             hasHigherTimeframeInput |= reference.Role == SignalInputRole.HigherTimeframe;
+            if (reference.Role == SignalInputRole.Setup)
+            {
+                setupTimeframe ??= reference.Timeframe;
+                if (setupTimeframe != reference.Timeframe)
+                {
+                    throw new ArgumentException("Setup references use different timeframes.",
+                        nameof(inputReferences));
+                }
+            }
+            else
+            {
+                contextTimeframe ??= reference.Timeframe;
+                if (contextTimeframe != reference.Timeframe)
+                {
+                    throw new ArgumentException("Context references use different timeframes.",
+                        nameof(inputReferences));
+                }
+            }
         }
 
         if (!hasSetupInput || !hasHigherTimeframeInput)
@@ -279,6 +305,14 @@ public sealed record SignalProvenance
                 "Signal provenance requires setup and higher-timeframe input references.",
                 nameof(inputReferences));
         }
+        if (PublicSignalTimeframes.ContextForSetup(setupTimeframe) != contextTimeframe
+            || formatVersion == CurrentFormatVersion
+                && (setupTimeframe != "15m" || contextTimeframe != "1h"))
+        {
+            throw new ArgumentException("The setup and context timeframes are inconsistent.",
+                nameof(inputReferences));
+        }
+
 
         FormatVersion = formatVersion;
         ProfileVersion = profileVersion;
@@ -291,10 +325,15 @@ public sealed record SignalProvenance
     public static SignalProvenance Create(string profileVersion,
         string profileConfigurationHash, CausalEventCursor decisionCut,
         CausalEventCursor higherTimeframeCut,
-        IEnumerable<SignalInputReference> inputReferences) =>
-        new(CurrentFormatVersion, profileVersion, profileConfigurationHash,
-            decisionCut, higherTimeframeCut,
-            new ImmutableValueList<SignalInputReference>(inputReferences));
+        IEnumerable<SignalInputReference> inputReferences)
+    {
+        ImmutableValueList<SignalInputReference> references = new(inputReferences);
+        int version = references.All(reference => reference.Role == SignalInputRole.Setup
+                ? reference.Timeframe == "15m" : reference.Timeframe == "1h")
+            ? CurrentFormatVersion : MultiTimeframeFormatVersion;
+        return new SignalProvenance(version, profileVersion, profileConfigurationHash,
+            decisionCut, higherTimeframeCut, references);
+    }
 
     private static bool IsEligible(SignalInputReference reference,
         CausalEventCursor cut) =>
@@ -312,6 +351,8 @@ public sealed record SignalProvenance
 public sealed record SignalEvidenceRecord
 {
     public const int CurrentFormatVersion = 1;
+    public const int MultiLaneFormatVersion = 2;
+    public const int MarketContextFormatVersion = 3;
 
     public int FormatVersion { get; }
 
@@ -323,14 +364,21 @@ public sealed record SignalEvidenceRecord
 
     public ImmutableValueList<string> QualityReasons { get; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SignalMultiLaneInput? MultiLaneInput { get; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SignalMarketContext? MarketContext { get; }
+
     public string RecordHash { get; }
 
     [JsonConstructor]
     public SignalEvidenceRecord(int formatVersion, string signalId,
         SignalProvenance provenance, SignalEvidenceState state,
-        ImmutableValueList<string> qualityReasons, string recordHash)
+        ImmutableValueList<string> qualityReasons, string recordHash,
+        SignalMultiLaneInput? multiLaneInput = null, SignalMarketContext? marketContext = null)
     {
-        if (formatVersion != CurrentFormatVersion)
+        if (formatVersion is not (CurrentFormatVersion or MultiLaneFormatVersion or MarketContextFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The signal evidence format version is unsupported.");
@@ -340,9 +388,32 @@ public sealed record SignalEvidenceRecord
         ArgumentNullException.ThrowIfNull(provenance);
         ContractGuard.RequireDefined(state, nameof(state));
         ValidateReasons(qualityReasons, state, nameof(qualityReasons));
+        if (formatVersion == CurrentFormatVersion && (multiLaneInput is not null || marketContext is not null)
+            || formatVersion == MultiLaneFormatVersion && (multiLaneInput is null || marketContext is not null)
+            || formatVersion == MarketContextFormatVersion && marketContext is null)
+        {
+            throw new ArgumentException("Signal evidence format and inputs disagree.",
+                nameof(marketContext));
+        }
+        if (multiLaneInput is not null
+            && (state != SignalEvidenceState.Complete
+                || multiLaneInput.DecisionAt.Value < provenance.DecisionCut.AsOf.Value
+                || !SignalMultiLaneResearchEvaluator.Evaluate(multiLaneInput).IsAllowed))
+        {
+            throw new ArgumentException(
+                "A multi-lane signal requires complete, causally allowed evidence.",
+                nameof(multiLaneInput));
+        }
+        if (marketContext is not null
+            && (marketContext.AsOf.Value < provenance.DecisionCut.AsOf.Value
+                || multiLaneInput is not null && marketContext.AsOf != multiLaneInput.DecisionAt))
+        {
+            throw new ArgumentException("The market context does not match the decision cut.",
+                nameof(marketContext));
+        }
         SignalContractHash.RequireSha256(recordHash, nameof(recordHash));
         string expected = SignalContractHash.Compute(new SignalEvidenceMaterial(
-            formatVersion, signalId, provenance, state, qualityReasons));
+            formatVersion, signalId, provenance, state, qualityReasons, multiLaneInput, marketContext));
         if (!StringComparer.Ordinal.Equals(recordHash, expected))
         {
             throw new ArgumentException(
@@ -354,12 +425,15 @@ public sealed record SignalEvidenceRecord
         Provenance = provenance;
         State = state;
         QualityReasons = qualityReasons;
+        MultiLaneInput = multiLaneInput;
+        MarketContext = marketContext;
         RecordHash = recordHash;
     }
 
     public static SignalEvidenceRecord Create(SignalIdentity identity,
         SignalProvenance provenance, SignalEvidenceState state,
-        IEnumerable<string> qualityReasons)
+        IEnumerable<string> qualityReasons, SignalMultiLaneInput? multiLaneInput = null,
+        SignalMarketContext? marketContext = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(provenance);
@@ -373,10 +447,17 @@ public sealed record SignalEvidenceRecord
 
         ImmutableValueList<string> reasons = new(qualityReasons);
         ValidateReasons(reasons, state, nameof(qualityReasons));
-        SignalEvidenceMaterial material = new(CurrentFormatVersion,
-            identity.SignalId, provenance, state, reasons);
-        return new SignalEvidenceRecord(CurrentFormatVersion, identity.SignalId,
-            provenance, state, reasons, SignalContractHash.Compute(material));
+        int formatVersion = marketContext is not null ? MarketContextFormatVersion
+            : multiLaneInput is null ? CurrentFormatVersion : MultiLaneFormatVersion;
+        SignalEvidenceMaterial material = new(formatVersion,
+            identity.SignalId, provenance, state, reasons, multiLaneInput, marketContext);
+        SignalEvidenceRecord result = new(formatVersion, identity.SignalId,
+            provenance, state, reasons, SignalContractHash.Compute(material), multiLaneInput, marketContext);
+        if (multiLaneInput is not null || marketContext is not null)
+        {
+            result.ValidateFor(identity);
+        }
+        return result;
     }
 
     public void ValidateFor(SignalIdentity identity)
@@ -385,10 +466,18 @@ public sealed record SignalEvidenceRecord
         if (!StringComparer.Ordinal.Equals(SignalId, identity.SignalId)
             || !StringComparer.Ordinal.Equals(identity.ProfileVersion,
                 Provenance.ProfileVersion)
+            || Provenance.InputReferences.Any(reference =>
+                reference.Role == SignalInputRole.Setup
+                    ? reference.Timeframe != identity.SetupTimeframe
+                    : reference.Timeframe != PublicSignalTimeframes.ContextForSetup(identity.SetupTimeframe))
             || !Provenance.InputReferences.Any(reference =>
                 reference.Role == SignalInputRole.Setup
                 && StringComparer.Ordinal.Equals(reference.EventId,
-                    identity.SetupEventId)))
+                    identity.SetupEventId))
+            || MultiLaneInput is not null
+                && (MultiLaneInput.InstrumentId != identity.InstrumentId
+                    || MultiLaneInput.Direction != identity.Direction)
+            || MarketContext is not null && MarketContext.InstrumentId != identity.InstrumentId)
         {
             throw new ArgumentException(
                 "The evidence does not match the signal identity and provenance.",
@@ -412,7 +501,11 @@ public sealed record SignalEvidenceRecord
 
     private sealed record SignalEvidenceMaterial(int FormatVersion, string SignalId,
         SignalProvenance Provenance, SignalEvidenceState State,
-        ImmutableValueList<string> QualityReasons);
+        ImmutableValueList<string> QualityReasons,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        SignalMultiLaneInput? MultiLaneInput,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        SignalMarketContext? MarketContext);
 }
 
 /// <summary>Inclusive open/close timestamps for the closed setup bar.</summary>
@@ -618,7 +711,11 @@ public sealed record SignalRecord
         SignalProvenance provenance = evidence.Provenance;
         if (decisionAt.Value.CompareTo(provenance.DecisionCut.AsOf.Value) < 0
             || barInterval.CloseTime.Value.CompareTo(provenance.DecisionCut.AsOf.Value) > 0
-            || barInterval.CloseTime.Value.CompareTo(decisionAt.Value) > 0)
+            || barInterval.CloseTime.Value.CompareTo(decisionAt.Value) > 0
+            || evidence.MultiLaneInput is not null
+                && evidence.MultiLaneInput.DecisionAt.Value > decisionAt.Value
+            || evidence.MarketContext is not null
+                && evidence.MarketContext.AsOf.Value > decisionAt.Value)
         {
             throw new ArgumentException(
                 "The signal bar and decision time are incompatible with the decision cut.",

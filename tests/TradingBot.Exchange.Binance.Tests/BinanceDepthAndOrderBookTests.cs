@@ -82,6 +82,39 @@ public sealed class BinanceDepthAndOrderBookTests
     }
 
     [Fact]
+    public async Task DepthCommandAcknowledgmentsDoNotInvalidateTheBookButErrorsRemainVisible()
+    {
+        FakeTransport transport = new(
+        [
+            Text("{\"result\":null,\"id\":1}"),
+            Text("{\"result\":[\"btcusdt@depth@100ms\"],\"id\":2}"),
+            Text("{\"stream\":\"btcusdt@depth@100ms\",\"data\":{\"e\":\"depthUpdate\",\"E\":1700000000123,\"T\":1700000000119,\"s\":\"BTCUSDT\",\"U\":101,\"u\":102,\"pu\":100,\"b\":[[\"100\",\"2\"]],\"a\":[[\"101\",\"3\"]]}}"),
+            Text("{\"code\":2,\"msg\":\"invalid request\",\"id\":3}"),
+            Close()
+        ]);
+        using BinanceDepthWebSocketClient client = new(transport,
+            new BinanceDepthWebSocketOptions
+            {
+                AutoReconnect = false,
+                ReceiveTimeout = Timeout.InfiniteTimeSpan,
+                HeartbeatInterval = Timeout.InfiniteTimeSpan,
+                SessionLifetime = Timeout.InfiniteTimeSpan
+            }, new FixedTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(1700000001000)));
+
+        List<BinanceStreamEnvelope> envelopes = [];
+        await foreach (BinanceStreamEnvelope envelope in client.ReadAsync(
+            [BinanceDepthSubscription.Diff("BTCUSDT", "100ms")],
+            TestContext.Current.CancellationToken))
+        {
+            envelopes.Add(envelope);
+        }
+
+        Assert.Equal(0, Assert.Single(envelopes).StableSequence);
+        Assert.Single(client.Diagnostics, diagnostic =>
+            diagnostic.Kind == BinanceStreamDiagnosticKind.ParseError);
+    }
+
+    [Fact]
     public async Task RecoveryBuffersThenAlignsSnapshotAndAppliesContiguousDiffs()
     {
         BinanceDepthSnapshot snapshot = Snapshot(100,
@@ -111,6 +144,26 @@ public sealed class BinanceDepthAndOrderBookTests
     }
 
     [Fact]
+    public async Task RecoveryAcceptsPreviousIdLinkWhenUpdateRangesAreNotNumericallyAdjacent()
+    {
+        SnapshotSource source = new(Snapshot(10, bids: [(100m, 1m)], asks: [(101m, 2m)]));
+        BinanceLocalOrderBookRecovery recovery = new(source,
+            new BinanceOrderBookRecoveryOptions { MaxBufferedUpdates = 8 });
+
+        BinanceOrderBookState ready = await recovery.AcceptAsync(Envelope(10, 11, 10,
+            bids: [(100m, 3m)], asks: []), TestContext.Current.CancellationToken);
+        BinanceOrderBookState next = await recovery.AcceptAsync(Envelope(20, 21, 11,
+            bids: [(99m, 5m)], asks: []), TestContext.Current.CancellationToken);
+
+        Assert.Equal(BinanceOrderBookStateKind.Ready, ready.Kind);
+        Assert.Equal(BinanceOrderBookStateKind.Ready, next.Kind);
+        Assert.Equal(21, next.LastUpdateId);
+        Assert.Equal(5m, next.Bids.Single(level => level.Price == 99m).Quantity);
+        Assert.DoesNotContain(recovery.Diagnostics, diagnostic => diagnostic.Kind
+            == BinanceOrderBookRecoveryDiagnosticKind.Gap);
+    }
+
+    [Fact]
     public async Task RecoveryMarksSequenceGapAndNeverPublishesPartiallyAppliedBook()
     {
         SnapshotSource source = new(Snapshot(10, bids: [(100m, 1m)], asks: [(101m, 2m)]));
@@ -122,7 +175,7 @@ public sealed class BinanceDepthAndOrderBookTests
         Assert.Equal(BinanceOrderBookStateKind.Ready, ready.Kind);
         Assert.Equal(3m, ready.Bids.Single().Quantity);
 
-        BinanceOrderBookState recovering = await recovery.AcceptAsync(Envelope(20, 21, 11,
+        BinanceOrderBookState recovering = await recovery.AcceptAsync(Envelope(20, 21, 10,
             bids: [(99m, 5m)], asks: []), TestContext.Current.CancellationToken);
 
         Assert.Equal(BinanceOrderBookStateKind.Recovering, recovering.Kind);

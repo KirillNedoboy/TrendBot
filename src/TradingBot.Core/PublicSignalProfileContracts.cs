@@ -70,10 +70,11 @@ public sealed record PublicSignalTimeframeConfiguration
         ValidateOptionalText(seedVersion, nameof(seedVersion));
         ValidateOptionalText(warmupVersion, nameof(warmupVersion));
         ValidateOptionalText(freshnessVersion, nameof(freshnessVersion));
-        if (timeframe is not null && timeframe is not ("15m" or "1h"))
+        if (timeframe is not null
+            && !PublicSignalTimeframes.TryGetDurationMilliseconds(timeframe, out _))
         {
             throw new ArgumentOutOfRangeException(nameof(timeframe), timeframe,
-                "Only native 15m and 1h public profiles are supported.");
+                "The native public timeframe is unsupported.");
         }
 
         if (source is { } sourceValue)
@@ -350,6 +351,7 @@ public sealed record PublicSignalUniverseConfiguration
 public sealed record PublicSignalProfileConfiguration
 {
     public const int CurrentFormatVersion = 1;
+    public const int MultiTimeframeFormatVersion = 2;
 
     public int FormatVersion { get; }
 
@@ -382,7 +384,7 @@ public sealed record PublicSignalProfileConfiguration
         PublicSignalIndicatorConfiguration? indicators = null,
         PublicSignalUniverseConfiguration? universe = null)
     {
-        if (formatVersion != CurrentFormatVersion)
+        if (formatVersion is not (CurrentFormatVersion or MultiTimeframeFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The public signal profile format version is unsupported.");
@@ -393,8 +395,17 @@ public sealed record PublicSignalProfileConfiguration
             throw new ArgumentException("A declared profile version cannot be blank.", nameof(profileVersion));
         }
 
-        ValidateRoleTimeframe(setup, "15m", nameof(setup));
-        ValidateRoleTimeframe(context, "1h", nameof(context));
+        if (formatVersion == CurrentFormatVersion)
+        {
+            ValidateRoleTimeframe(setup, "15m", nameof(setup));
+            ValidateRoleTimeframe(context, "1h", nameof(context));
+        }
+        else if (setup?.Timeframe is { } setupTimeframe)
+        {
+            string expectedContext = PublicSignalTimeframes.ContextForSetup(setupTimeframe)
+                ?? throw new ArgumentException("The setup timeframe is unsupported.", nameof(setup));
+            ValidateRoleTimeframe(context, expectedContext, nameof(context));
+        }
         FormatVersion = formatVersion;
         ProfileVersion = profileVersion;
         Setup = setup;
@@ -411,18 +422,22 @@ public sealed record PublicSignalProfileConfiguration
     {
         List<string> reasons = [];
         AddMissing(reasons, "profile-version", ProfileVersion is not null);
-        AddTimeframeReasons(reasons, "setup", "15m", Setup);
-        AddTimeframeReasons(reasons, "context", "1h", Context);
+        string? expectedSetup = FormatVersion == CurrentFormatVersion ? "15m" : Setup?.Timeframe;
+        string? expectedContext = FormatVersion == CurrentFormatVersion
+            ? "1h" : PublicSignalTimeframes.ContextForSetup(expectedSetup);
+        AddTimeframeReasons(reasons, "setup", expectedSetup, Setup);
+        AddTimeframeReasons(reasons, "context", expectedContext, Context);
         AddIndicatorReasons(reasons, Indicators);
         AddUniverseReasons(reasons, Universe);
         return reasons;
     }
 
     private static void AddTimeframeReasons(List<string> reasons, string prefix,
-        string expectedTimeframe, PublicSignalTimeframeConfiguration? configuration)
+        string? expectedTimeframe, PublicSignalTimeframeConfiguration? configuration)
     {
         AddMissing(reasons, $"{prefix}-timeframe",
-            StringComparer.Ordinal.Equals(configuration?.Timeframe, expectedTimeframe));
+            expectedTimeframe is not null
+                && StringComparer.Ordinal.Equals(configuration?.Timeframe, expectedTimeframe));
         AddMissing(reasons, $"{prefix}-source", configuration?.Source is not null);
         AddMissing(reasons, $"{prefix}-source-version", configuration?.SourceVersion is not null);
         AddMissing(reasons, $"{prefix}-history-start", configuration?.HistoryStartUtc is not null);

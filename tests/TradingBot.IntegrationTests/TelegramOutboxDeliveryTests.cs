@@ -184,6 +184,207 @@ public sealed class TelegramOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task ContinuousPumpDeliversCommittedRowsOnceAndStopsOnCancellation()
+    {
+        using TemporaryDatabase journalDatabase = new("pump-journal");
+        using TemporaryDatabase deliveryDatabase = new("pump-delivery");
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path,
+            new ScenarioFixture(), includeContinuation: true);
+        using SqliteSignalOutboxDeliveryStore delivery =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        int calls = 0;
+        List<string> posted = [];
+        using HttpClient http = new(new DelegateHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!
+                .ReadAsStringAsync(token));
+            posted.Add(body.RootElement.GetProperty("text").GetString()!);
+            calls++;
+            return JsonResponse(HttpStatusCode.OK,
+                $"{{\"ok\":true,\"result\":{{\"message_id\":{calls}}}}}");
+        }));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http,
+            CreatePolicy(), TestBotToken, TestChatId,
+            new MutableTimeProvider(DeliveryStart.AddMinutes(1)));
+        using CancellationTokenSource stop = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        using CompletionWriter output = new(2);
+
+        Task pump = SignalOnlyTelegramPump.RunAsync(sender, [[StreamId]], output,
+            TimeSpan.FromMilliseconds(10), stop.Token);
+        await output.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        stop.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pump);
+
+        Assert.Equal(2, calls);
+        Assert.All(delivery.Read(StreamId), item =>
+            Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, item.Status));
+        Assert.Equal(2, delivery.Read(StreamId).Count);
+        Assert.All(posted, text =>
+        {
+            Assert.Contains("RESEARCH", text, StringComparison.Ordinal);
+            Assert.Contains("UNKNOWN", text, StringComparison.Ordinal);
+            Assert.Contains("Decision time (UTC):", text, StringComparison.Ordinal);
+            Assert.Contains("Scenario time (UTC):", text, StringComparison.Ordinal);
+        });
+        Assert.DoesNotContain(TestBotToken, output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(TestChatId, output.ToString(), StringComparison.Ordinal);
+        Assert.Null(await sender.DispatchNextAsync(StreamId,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ContinuousPumpDoesNotRetryAmbiguousDelivery()
+    {
+        using TemporaryDatabase journalDatabase = new("pump-unknown-journal");
+        using TemporaryDatabase deliveryDatabase = new("pump-unknown-delivery");
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path,
+            new ScenarioFixture());
+        using SqliteSignalOutboxDeliveryStore delivery =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        int calls = 0;
+        using HttpClient http = new(new DelegateHandler((_, _) =>
+        {
+            calls++;
+            throw new HttpRequestException("delivery is ambiguous");
+        }));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http,
+            CreatePolicy(), TestBotToken, TestChatId, new MutableTimeProvider(DeliveryStart));
+        using CancellationTokenSource stop = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        using CompletionWriter output = new(1);
+
+        Task pump = SignalOnlyTelegramPump.RunAsync(sender, [[StreamId]], output,
+            TimeSpan.FromMilliseconds(10), stop.Token);
+        await output.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        stop.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pump);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(SignalOutboxDeliveryStatus.UnknownDelivery,
+            Assert.Single(delivery.Read(StreamId)).Status);
+        Assert.Contains("UnknownDelivery", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("acknowledged")]
+    [InlineData("unknown")]
+    [InlineData("rate-limited")]
+    public async Task CoClosedTimeframesShareMessageAndKeepIndependentDurableReceipts(string mode)
+    {
+        using TemporaryDatabase journalDatabase = new("group-journal");
+        using TemporaryDatabase deliveryDatabase = new("group-delivery");
+        ScenarioFixture fast = new(closeMinute: 30);
+        ScenarioFixture slow = new("30m", closeMinute: 30);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fast);
+        Assert.True(journal.Append(slow.FirstCommit));
+        using SqliteSignalOutboxDeliveryStore delivery =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        int calls = 0;
+        string? text = null;
+        using HttpClient http = new(new DelegateHandler(async (request, token) =>
+        {
+            calls++;
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            text = body.RootElement.GetProperty("text").GetString();
+            if (mode == "unknown")
+            {
+                throw new HttpRequestException("ambiguous delivery");
+            }
+            if (mode == "rate-limited" && calls == 1)
+            {
+                return JsonResponse(HttpStatusCode.TooManyRequests,
+                    "{\"ok\":false,\"error_code\":429,\"parameters\":{\"retry_after\":120}}");
+            }
+            return JsonResponse(HttpStatusCode.OK,
+                "{\"ok\":true,\"result\":{\"message_id\":41}}");
+        }));
+        MutableTimeProvider clock = new(At(30).AddSeconds(6));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http,
+            CreatePolicy(), TestBotToken, TestChatId, clock);
+        string[] streams = [StreamId, slow.StreamId];
+
+        IReadOnlyList<SignalOutboxDeliverySnapshot> results = await sender.DispatchTimeframesAsync(
+            streams, TimeSpan.Zero, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(2, results.Count);
+        Assert.Contains("Timeframe: 15m", text, StringComparison.Ordinal);
+        Assert.Contains("Timeframe: 30m", text, StringComparison.Ordinal);
+        Assert.Contains(fast.FirstOutboxId, text, StringComparison.Ordinal);
+        Assert.Contains(slow.FirstOutboxId, text, StringComparison.Ordinal);
+        SignalOutboxDeliveryStatus expected = mode switch
+        {
+            "unknown" => SignalOutboxDeliveryStatus.UnknownDelivery,
+            "rate-limited" => SignalOutboxDeliveryStatus.Pending,
+            _ => SignalOutboxDeliveryStatus.Acknowledged
+        };
+        Assert.All(results, item => Assert.Equal(expected, item.Status));
+        if (mode == "acknowledged")
+        {
+            Assert.All(results, item => Assert.Equal("41", item.ExternalReceiptId));
+        }
+        if (mode == "rate-limited")
+        {
+            Assert.All(results, item => Assert.Equal(clock.Now.AddSeconds(120), item.NextAttemptAt));
+            Assert.Empty(await sender.DispatchTimeframesAsync(streams, TimeSpan.Zero,
+                TestContext.Current.CancellationToken));
+            clock.Now = clock.Now.AddSeconds(120);
+            IReadOnlyList<SignalOutboxDeliverySnapshot> retried = await sender.DispatchTimeframesAsync(
+                streams, TimeSpan.Zero, TestContext.Current.CancellationToken);
+            Assert.Equal(2, calls);
+            Assert.All(retried, item => Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, item.Status));
+        }
+        else
+        {
+            Assert.Empty(await sender.DispatchTimeframesAsync(streams, TimeSpan.Zero,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(1, calls);
+        }
+        using SqliteSignalOutboxDeliveryStore reopened =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        Assert.Equal(mode == "rate-limited" ? SignalOutboxDeliveryStatus.Acknowledged : expected,
+            Assert.Single(reopened.Read(StreamId)).Status);
+        Assert.Equal(mode == "rate-limited" ? SignalOutboxDeliveryStatus.Acknowledged : expected,
+            Assert.Single(reopened.Read(slow.StreamId)).Status);
+    }
+
+    [Fact]
+    public async Task OppositeDirectionsAtSameCloseRemainSeparateMessages()
+    {
+        using TemporaryDatabase journalDatabase = new("direction-journal");
+        using TemporaryDatabase deliveryDatabase = new("direction-delivery");
+        ScenarioFixture first = new(closeMinute: 30);
+        ScenarioFixture opposite = new("30m", Direction.Short, 30);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, first);
+        Assert.True(journal.Append(opposite.FirstCommit));
+        using SqliteSignalOutboxDeliveryStore delivery =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        List<string> messages = [];
+        using HttpClient http = new(new DelegateHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            messages.Add(body.RootElement.GetProperty("text").GetString()!);
+            return JsonResponse(HttpStatusCode.OK,
+                $"{{\"ok\":true,\"result\":{{\"message_id\":{messages.Count}}}}}");
+        }));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http,
+            CreatePolicy(), TestBotToken, TestChatId, new MutableTimeProvider(At(30).AddSeconds(6)));
+
+        IReadOnlyList<SignalOutboxDeliverySnapshot> results = await sender.DispatchTimeframesAsync(
+            [StreamId, opposite.StreamId], TimeSpan.Zero, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, messages.Count);
+        Assert.Equal(2, results.Count);
+        Assert.All(results, item => Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, item.Status));
+        Assert.Contains("Direction: Long", messages[0], StringComparison.Ordinal);
+        Assert.Contains("Direction: Short", messages[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RetryAfterBlocksAllRowsUntilItsExactTimeThenRetriesSameStableId()
     {
         using TemporaryDatabase journalDatabase = new("journal");
@@ -351,9 +552,18 @@ public sealed class TelegramOutboxDeliveryTests
         private readonly SignalScenarioProjectionEngine _engine;
         private readonly SignalRecord _signal;
         private readonly string _firstOutboxId;
+        private readonly int _closeMinute;
 
-        public ScenarioFixture()
+        public ScenarioFixture(string setupTimeframe = "15m",
+            Direction direction = Direction.Long, int closeMinute = 15)
         {
+            Assert.True(PublicSignalTimeframes.TryGetDurationMilliseconds(setupTimeframe, out long setupMs));
+            string contextTimeframe = PublicSignalTimeframes.ContextForSetup(setupTimeframe)!;
+            Assert.True(PublicSignalTimeframes.TryGetDurationMilliseconds(contextTimeframe, out long contextMs));
+            int openMinute = closeMinute - (int)(setupMs / 60_000);
+            int contextMinute = openMinute - (int)(contextMs / 60_000);
+            StreamId = SignalOnlyStreamId.For("BTCUSDT", setupTimeframe);
+            _closeMinute = closeMinute;
             SignalScenarioPolicySet policies = new(
                 SignalScenarioPolicySet.CurrentFormatVersion,
                 new SignalScenarioExpiryPolicy(
@@ -367,30 +577,31 @@ public sealed class TelegramOutboxDeliveryTests
                     "invalidation-v1", true, true));
             _engine = new SignalScenarioProjectionEngine(policies);
             _anchor = SignalScenarioAnchor.Create(new InstrumentId("BTCUSDT"),
-                "BINANCE_USDM", "15m", Direction.Long,
+                "BINANCE_USDM", setupTimeframe, direction,
                 SetupType.BoundaryRejection, "profile-v1",
-                "boundary-rejection-v1", "anchor-event", UtcAt(0), 1);
+                "boundary-rejection-v1", "anchor-event", UtcAt(openMinute), 1);
             _firstInput = SignalScenarioInput.Confirm(StreamId,
-                "first-confirmation", _anchor, UtcAt(15), UtcAt(15), 2);
+                "first-confirmation", _anchor, UtcAt(closeMinute), UtcAt(closeMinute), 2);
             _firstTransition = _engine.Apply(_engine.CreateInitialSnapshot(),
                 _firstInput);
             SignalProvenance provenance = SignalProvenance.Create("profile-v1",
-                new string('a', 64), new CausalEventCursor(UtcAt(15), 2),
-                new CausalEventCursor(UtcAt(-60), 0),
+                new string('a', 64), new CausalEventCursor(UtcAt(closeMinute), 2),
+                new CausalEventCursor(UtcAt(contextMinute), 0),
                 [new SignalInputReference("binance-public", "native-kline-v1",
                      "anchor-event", new string('c', 64), SignalInputRole.Setup,
-                     "15m", UtcAt(0), UtcAt(0), 1),
+                     setupTimeframe, UtcAt(openMinute), UtcAt(openMinute), 1),
                  new SignalInputReference("binance-public", "native-kline-v1",
                      "context-event", new string('d', 64),
-                     SignalInputRole.HigherTimeframe, "1h", UtcAt(-60), UtcAt(-60), 0)]);
+                     SignalInputRole.HigherTimeframe, contextTimeframe,
+                     UtcAt(contextMinute), UtcAt(contextMinute), 0)]);
             SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(
                 _anchor.Identity, provenance, SignalEvidenceState.Complete,
                 ["fixture-reviewed"]);
             _signal = SignalRecord.Create(_anchor.Identity, evidence,
                 SignalAssessmentState.ConfirmedOnClosedBar,
-                new SignalBarInterval(UtcAt(0), UtcAt(15)), UtcAt(15),
+                new SignalBarInterval(UtcAt(openMinute), UtcAt(closeMinute)), UtcAt(closeMinute),
                 new SignalReferencePrice("binance-public", "native-kline-v1",
-                    "anchor-event", UtcAt(0), new Price(100m)));
+                    "anchor-event", UtcAt(openMinute), new Price(100m)));
             FirstCommit = new SignalJournalCommit(StreamId, 0, 1,
                 _firstInput.EventId, InputHash, _firstInput.EventTime,
                 _firstInput.AvailabilityTime, _firstInput.StableSequence,
@@ -399,13 +610,14 @@ public sealed class TelegramOutboxDeliveryTests
             _firstOutboxId = _firstTransition.EmittedEvents[0].EventId;
         }
 
+        public string StreamId { get; }
         public SignalJournalCommit FirstCommit { get; }
         public string FirstOutboxId => _firstOutboxId;
 
         public SignalJournalCommit ContinuationCommit()
         {
             SignalScenarioInput input = SignalScenarioInput.Confirm(StreamId,
-                "second-confirmation", _anchor, UtcAt(16), UtcAt(16), 3);
+                "second-confirmation", _anchor, UtcAt(_closeMinute + 1), UtcAt(_closeMinute + 1), 3);
             SignalScenarioProjectionTransition transition = _engine.Apply(
                 _firstTransition.NextSnapshot, input);
             return new SignalJournalCommit(StreamId, 1, 2, input.EventId,
@@ -428,6 +640,23 @@ public sealed class TelegramOutboxDeliveryTests
     {
         public DateTimeOffset Now { get; set; } = now;
         public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class CompletionWriter(int expectedLines) : StringWriter
+    {
+        private int _lines;
+        public TaskCompletionSource Completed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override Task WriteLineAsync(string? value)
+        {
+            WriteLine(value);
+            if (++_lines == expectedLines)
+            {
+                Completed.TrySetResult();
+            }
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TemporaryDatabase(string name) : IDisposable

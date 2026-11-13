@@ -44,11 +44,12 @@ public sealed class LaneCHistoryCaptureTests
                 new[] { snapshotRow.StableSequence, depthRow.StableSequence, tradeRow.StableSequence });
             Assert.Equal(41, depthRow.Provenance.SourceStableSequence);
             Assert.Equal(0, tradeRow.Provenance.SourceStableSequence);
-            Assert.Equal(99, snapshotRow.Provenance.DepthMetadata?.FinalUpdateId);
+            Assert.Equal(100, snapshotRow.Provenance.DepthMetadata?.FinalUpdateId);
             Assert.True(snapshotRow.Provenance.DepthMetadata?.IsSnapshot);
-            Assert.Null(snapshotRow.Provenance.SourceStableSequence);
-            Assert.Equal(time.AddMilliseconds(-1), snapshotRow.EventTime.Value);
-            Assert.Equal(time.AddMilliseconds(-2), snapshotRow.ExchangeTime?.Value);
+            Assert.Equal(5, snapshotRow.Provenance.SourceStableSequence);
+            Assert.Equal("orderbook.recovery", snapshotRow.Provenance.StreamName);
+            Assert.Equal(time.AddMilliseconds(1), snapshotRow.EventTime.Value);
+            Assert.Equal(time.AddMilliseconds(-1), snapshotRow.ExchangeTime?.Value);
             Assert.Equal(101, depthRow.Provenance.DepthMetadata?.FirstUpdateId);
             Assert.Equal(102, depthRow.Provenance.DepthMetadata?.FinalUpdateId);
             Assert.Equal(100, depthRow.Provenance.DepthMetadata?.PreviousUpdateId);
@@ -69,6 +70,68 @@ public sealed class LaneCHistoryCaptureTests
         Assert.Equal(expected, actual);
         Assert.Equal(new long[] { 0, 1, 2 }, actual.Select(static row => row.CaptureSequence));
         Assert.Equal("trade-session", actual[2].Provenance.SessionId);
+    }
+
+    [Theory]
+    [InlineData(2, 3, 10, 11, 9)]
+    [InlineData(10, 11, 2, 3, 1)]
+    public void RecoveredBookIsUnavailableUntilSnapshotAndAppliedUpdateAreBothKnown(
+        int snapshotReceiveMs, int snapshotAvailableMs, int updateReceiveMs,
+        int updateAvailableMs, int updateEventMs)
+    {
+        using TemporaryCapture fixture = new();
+        using ParquetCaptureStore store = ParquetCaptureStore.Open(
+            fixture.DatabasePath, fixture.SegmentDirectory,
+            new CapturePersistenceOptions { StreamId = "lane-c-checkpoint" });
+        LaneCHistoryCapturePipeline pipeline = new(store, "lane-c-checkpoint");
+        BinanceOrderBookState state = new("BTCUSDT", BinanceOrderBookStateKind.Ready,
+            101, 100, [new BinanceDepthLevel(99m, 2m)],
+            [new BinanceDepthLevel(101m, 3m)], 1, 7,
+            ToMillis(BaseTime.AddMilliseconds(updateEventMs)), null,
+            new UtcTimestamp(BaseTime.AddMilliseconds(updateReceiveMs)),
+            new UtcTimestamp(BaseTime.AddMilliseconds(updateAvailableMs)), null,
+            new UtcTimestamp(BaseTime.AddMilliseconds(snapshotReceiveMs)),
+            new UtcTimestamp(BaseTime.AddMilliseconds(snapshotAvailableMs)),
+            ToMillis(BaseTime.AddMilliseconds(snapshotReceiveMs - 1)), null);
+
+        CaptureEnvelope checkpoint = pipeline.CaptureRecoveredSnapshot(state);
+        Assert.Equal(101, checkpoint.Provenance.DepthMetadata?.FinalUpdateId);
+        Assert.Equal(BaseTime.AddMilliseconds(Math.Max(snapshotReceiveMs, updateReceiveMs)),
+            checkpoint.ReceiveTime.Value);
+        Assert.Equal(BaseTime.AddMilliseconds(Math.Max(snapshotAvailableMs, updateAvailableMs)),
+            checkpoint.AvailabilityTime.Value);
+        Assert.Equal(BaseTime.AddMilliseconds(Math.Max(snapshotReceiveMs - 1, updateEventMs)),
+            checkpoint.EventTime.Value);
+        CausalEventCursor earlier = new(new UtcTimestamp(BaseTime.AddMilliseconds(
+            Math.Min(snapshotAvailableMs, updateAvailableMs))), checkpoint.StableSequence);
+        LaneCFeatureResult features = LaneCFeatureEvaluator.Evaluate(
+            new LaneCFeatureInput(new InstrumentId("BTCUSDT"), [checkpoint], earlier, "fixture"),
+            new LaneCFeatureConfiguration("fixture-v1", TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 4));
+        Assert.Equal(LaneCFeatureState.InsufficientData, features.State);
+        Assert.Contains("ready-book-missing", features.Reasons);
+    }
+
+    [Fact]
+    public void RecoveredCheckpointRejectsAnAlreadyAppliedDepthUpdate()
+    {
+        using TemporaryCapture fixture = new();
+        using ParquetCaptureStore store = ParquetCaptureStore.Open(
+            fixture.DatabasePath, fixture.SegmentDirectory,
+            new CapturePersistenceOptions { StreamId = "lane-c-no-duplicate" });
+        LaneCHistoryCapturePipeline pipeline = new(store, "lane-c-no-duplicate");
+        pipeline.CaptureRecoveredSnapshot(ReadyBook(1, 5, BaseTime));
+        BinanceDepthUpdateEvent alreadyApplied = new("BTCUSDT", ToMillis(BaseTime),
+            99, 100, 98, [], [], "btcusdt@depth@100ms");
+        Assert.Throws<InvalidOperationException>(() => pipeline.CaptureStreamEvent(
+            Stream("depth-session", 5, alreadyApplied, BaseTime, BaseTime.AddMilliseconds(1)), 1));
+
+        BinanceDepthUpdateEvent next = new("BTCUSDT", ToMillis(BaseTime.AddMilliseconds(2)),
+            101, 102, 100, [], [], "btcusdt@depth@100ms");
+        CaptureEnvelope captured = Assert.IsType<CaptureEnvelope>(pipeline.CaptureStreamEvent(
+            Stream("depth-session", 6, next, BaseTime.AddMilliseconds(2),
+                BaseTime.AddMilliseconds(3)), 1));
+        Assert.Equal(1, captured.CaptureSequence);
     }
 
     [Fact]

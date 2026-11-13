@@ -91,13 +91,11 @@ public sealed record NativePublicKlineRestHistoryBudget
 /// <summary>
 /// Composes existing public Binance REST/WebSocket clients with the native
 /// timeframe ingestion boundary. A new evaluation is produced only for a newly
-/// accepted closed 15m input; later data never mutates a committed evaluation.
+/// accepted closed setup-timeframe input; later data never mutates a committed evaluation.
 /// </summary>
 public sealed class NativePublicKlineFeed
 {
     private const int RestKlinePageLimit = 1500;
-    private const long FifteenMinuteMilliseconds = 15 * 60 * 1000;
-    private const long OneHourMilliseconds = 60 * 60 * 1000;
     private static readonly JsonSerializerOptions LedgerJsonOptions = CreateLedgerJsonOptions();
 
     private sealed record LedgerKlinePayload
@@ -148,7 +146,7 @@ public sealed class NativePublicKlineFeed
     {
         _restClient = restClient;
         _symbol = symbol.ToUpperInvariant();
-        _sourceId = $"binance-usdm-native-kline:{_symbol}";
+        _sourceId = SignalOnlyStreamId.For(_symbol, profile.Setup?.Timeframe ?? "15m");
         _profile = profile;
         _timeProvider = timeProvider;
         _ledger = ledger;
@@ -157,6 +155,12 @@ public sealed class NativePublicKlineFeed
     }
 
     public string Symbol => _symbol;
+
+    internal string StreamId => _sourceId;
+
+    internal string SetupTimeframe => _profile.Setup?.Timeframe ?? "15m";
+
+    internal string ContextTimeframe => _profile.Context?.Timeframe ?? "1h";
 
     public UtcTimestamp? SetupHistoryStart => ToTimestamp(_profile.Setup?.HistoryStartUtc);
 
@@ -169,6 +173,12 @@ public sealed class NativePublicKlineFeed
     public NativePublicKlineEvaluation? LastEvaluation { get; private set; }
 
     public ImmutableValueList<string> StreamDiagnostics => new(_streamDiagnostics);
+
+    internal bool RequiresStreamRecovery =>
+        _unresolvedStreamDiagnostics.Contains("websocket-gap")
+        || _unresolvedStreamDiagnostics.Contains("websocket-disconnect")
+        || _unresolvedStreamDiagnostics.Contains("websocket-reconnect")
+        || _unresolvedStreamDiagnostics.Contains("websocket-stale");
 
     public int SetupRestPagesRequested { get; private set; }
 
@@ -240,9 +250,9 @@ public sealed class NativePublicKlineFeed
             setupHistoryBudget, contextHistoryBudget);
         feed.RestoreLedger();
         DateTimeOffset requestedAt = clock.GetUtcNow();
-        await feed.LoadHistoryAsync(profile.Setup, "15m", requestedAt,
+        await feed.LoadHistoryAsync(profile.Setup, feed.SetupTimeframe, requestedAt,
             feed._setupHistoryBudget, cancellationToken).ConfigureAwait(false);
-        await feed.LoadHistoryAsync(profile.Context, "1h", requestedAt,
+        await feed.LoadHistoryAsync(profile.Context, feed.ContextTimeframe, requestedAt,
             feed._contextHistoryBudget, cancellationToken).ConfigureAwait(false);
         return feed;
     }
@@ -252,18 +262,25 @@ public sealed class NativePublicKlineFeed
     {
         ThrowIfLedgerFailed();
         DateTimeOffset requestedAt = _timeProvider.GetUtcNow();
-        await LoadHistoryAsync(_profile.Setup, "15m", requestedAt,
+        await LoadHistoryAsync(_profile.Setup, SetupTimeframe, requestedAt,
             _setupHistoryBudget, cancellationToken).ConfigureAwait(false);
-        await LoadHistoryAsync(_profile.Context, "1h", requestedAt,
+        await LoadHistoryAsync(_profile.Context, ContextTimeframe, requestedAt,
             _contextHistoryBudget, cancellationToken).ConfigureAwait(false);
-        if (HasCompleteCoverage(_profile.Setup, "15m", requestedAt)
-            && HasCompleteCoverage(_profile.Context, "1h", requestedAt))
+        if (HasCompleteCoverage(_profile.Setup, SetupTimeframe, requestedAt)
+            && HasCompleteCoverage(_profile.Context, ContextTimeframe, requestedAt))
         {
             _unresolvedStreamDiagnostics.Remove("websocket-gap");
             _unresolvedStreamDiagnostics.Remove("websocket-disconnect");
             _unresolvedStreamDiagnostics.Remove("websocket-reconnect");
             _unresolvedStreamDiagnostics.Remove("websocket-stale");
         }
+    }
+
+    internal bool HasCompleteHistoryNow()
+    {
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        return HasCompleteCoverage(_profile.Setup, SetupTimeframe, now)
+            && HasCompleteCoverage(_profile.Context, ContextTimeframe, now);
     }
 
     private void RestoreLedger()
@@ -360,18 +377,16 @@ public sealed class NativePublicKlineFeed
             $"{klineEvent.StreamName}:{envelope.SessionId}",
             klineEvent.EventTimeMilliseconds, envelope.ReceiveTime,
             envelope.AvailabilityTime, sequence);
-        string expectedStream = kline.Timeframe switch
-        {
-            "15m" => BinanceSubscription.Kline(_symbol, "15m").StreamName,
-            "1h" => BinanceSubscription.Kline(_symbol, "1h").StreamName,
-            _ => string.Empty
-        };
+        string expectedStream = kline.Timeframe == SetupTimeframe
+            || kline.Timeframe == ContextTimeframe
+                ? BinanceSubscription.Kline(_symbol, kline.Timeframe).StreamName
+                : string.Empty;
         if (!StringComparer.Ordinal.Equals(klineEvent.Symbol, _symbol)
             || string.IsNullOrEmpty(expectedStream)
             || !StringComparer.Ordinal.Equals(klineEvent.StreamName, expectedStream))
         {
             NativePublicKlineFeedUpdate invalid = Invalid(null, "unexpected-kline-stream",
-                "The envelope does not match this symbol's native 15m/1h subscriptions.");
+                "The envelope does not match this symbol's configured native subscriptions.");
             RecordReceipt(sequence, null, null, null, null,
                 invalid.DiagnosticCode, invalid.DiagnosticMessage, null);
             AddStreamDiagnostic("native-bar-invalid-input");
@@ -384,13 +399,13 @@ public sealed class NativePublicKlineFeed
         string? diagnosticMessage = ingestion.Diagnostic?.Message;
         if (ingestion.Status == BinanceKlineIngestionStatus.Accepted
             && ingestion.AcceptedRevision is { } revision
-            && StringComparer.Ordinal.Equals(kline.Timeframe, "15m"))
+            && StringComparer.Ordinal.Equals(kline.Timeframe, SetupTimeframe))
         {
             if (_lastCommittedSetupEventTime is { } committed
                 && revision.CoreBar.EventTime.Value <= committed)
             {
                 diagnosticCode = "late-primary-input";
-                diagnosticMessage = "The accepted 15m input is older than an already committed evaluation.";
+                diagnosticMessage = "The accepted setup input is older than an already committed evaluation.";
             }
             else if (SetupHistoryStart is null || ContextHistoryStart is null)
             {
@@ -509,8 +524,8 @@ public sealed class NativePublicKlineFeed
         {
             BinanceSubscription[] subscriptions =
             [
-                BinanceSubscription.Kline(_symbol, "15m"),
-                BinanceSubscription.Kline(_symbol, "1h")
+                BinanceSubscription.Kline(_symbol, SetupTimeframe),
+                BinanceSubscription.Kline(_symbol, ContextTimeframe)
             ];
             await foreach (BinanceStreamEnvelope envelope in marketClient
                 .ReadAsync(subscriptions, cancellationToken).ConfigureAwait(false))
@@ -578,7 +593,7 @@ public sealed class NativePublicKlineFeed
                 pageLimit = Math.Min(RestKlinePageLimit, remainingRows);
             }
 
-            if (expectedTimeframe == "15m")
+            if (expectedTimeframe == SetupTimeframe)
             {
                 SetupRestPagesRequested = checked(SetupRestPagesRequested + 1);
             }
@@ -645,12 +660,9 @@ public sealed class NativePublicKlineFeed
     }
 
     private SortedDictionary<long, ScreenerBar> HistoryFor(string timeframe) =>
-        timeframe switch
-        {
-            "15m" => _setupBars,
-            "1h" => _contextBars,
-            _ => throw new ArgumentOutOfRangeException(nameof(timeframe), timeframe, null)
-        };
+        timeframe == SetupTimeframe ? _setupBars
+            : timeframe == ContextTimeframe ? _contextBars
+            : throw new ArgumentOutOfRangeException(nameof(timeframe), timeframe, null);
 
     private bool HasCompleteCoverage(PublicSignalTimeframeConfiguration? timeframe,
         string expectedTimeframe, DateTimeOffset requestedAt)
@@ -727,12 +739,7 @@ public sealed class NativePublicKlineFeed
             ScreenerBar bar = new(_sourceId, coreBar, kline.QuoteAssetVolume,
                 source.ReceiveTime ?? source.AvailabilityTime!, source.AvailabilityTime
                     ?? source.ReceiveTime!, source.StableSequence ?? 0);
-            SortedDictionary<long, ScreenerBar> history = kline.Timeframe switch
-            {
-                "15m" => _setupBars,
-                "1h" => _contextBars,
-                _ => throw new InvalidOperationException("Unsupported native kline timeframe.")
-            };
+            SortedDictionary<long, ScreenerBar> history = HistoryFor(kline.Timeframe);
             history.Add(kline.OpenTimeMilliseconds, bar);
         }
         else if (result.Status == BinanceKlineIngestionStatus.Duplicate
@@ -768,7 +775,7 @@ public sealed class NativePublicKlineFeed
         ScreenerBar[] contextBars = EligibleBars(_contextBars.Values, triggerEventTime,
             triggerAvailability, sequence);
         PriceContextFeatureInput input = new(_sourceId,
-            new InstrumentId(_symbol), "15m", setupStart, setupBars, "1h", contextStart,
+            new InstrumentId(_symbol), SetupTimeframe, setupStart, setupBars, ContextTimeframe, contextStart,
             contextBars, Array.Empty<PriceVolumeObservation>());
         PriceContextFeatureConfiguration priceConfiguration = CreatePriceConfiguration(
             setup, context, indicators);
@@ -796,8 +803,8 @@ public sealed class NativePublicKlineFeed
         IEnumerable<string> streamDiagnostics)
     {
         List<string> reasons = [.. _profile.UnknownReasons];
-        AddSourceReason(setup, "setup", "15m", reasons);
-        AddSourceReason(context, "context", "1h", reasons);
+        AddSourceReason(setup, "setup", SetupTimeframe, reasons);
+        AddSourceReason(context, "context", ContextTimeframe, reasons);
         AddUnitReasons(indicators, reasons);
         AddMinimumCountReason(setupBars.Length, setup?.SeedHistoryBars,
             "seed-history-incomplete:setup", reasons);
@@ -928,19 +935,25 @@ public sealed class NativePublicKlineFeed
             reasons.Add("setup-history-start-unknown");
             return;
         }
+        if (setup.Timeframe is not { } setupTimeframe)
+        {
+            reasons.Add("setup-timeframe-unknown");
+            return;
+        }
+
 
         long startMilliseconds = start.ToUnixTimeMilliseconds();
+        long interval = IntervalMilliseconds(setupTimeframe);
         long triggerOpen = trigger.OpenTime.Value.ToUnixTimeMilliseconds();
-        if (startMilliseconds < 0 || startMilliseconds % FifteenMinuteMilliseconds != 0
+        if (startMilliseconds < 0 || startMilliseconds % interval != 0
             || triggerOpen < startMilliseconds
-            || (triggerOpen - startMilliseconds) % FifteenMinuteMilliseconds != 0)
+            || (triggerOpen - startMilliseconds) % interval != 0)
         {
             reasons.Add("setup-history-grid-invalid");
             return;
         }
 
-        long expectedCount = (triggerOpen - startMilliseconds)
-            / FifteenMinuteMilliseconds + 1;
+        long expectedCount = (triggerOpen - startMilliseconds) / interval + 1;
         int actualCount = 0;
         foreach (ScreenerBar bar in bars)
         {
@@ -966,9 +979,16 @@ public sealed class NativePublicKlineFeed
             reasons.Add("context-history-start-unknown");
             return;
         }
+        if (context.Timeframe is not { } contextTimeframe)
+        {
+            reasons.Add("context-timeframe-unknown");
+            return;
+        }
+
 
         long startMilliseconds = start.ToUnixTimeMilliseconds();
-        if (startMilliseconds < 0 || startMilliseconds % OneHourMilliseconds != 0
+        long interval = IntervalMilliseconds(contextTimeframe);
+        if (startMilliseconds < 0 || startMilliseconds % interval != 0
             || (bars.Length > 0
                 && bars[0].Bar.OpenTime.Value.ToUnixTimeMilliseconds() != startMilliseconds))
         {
@@ -979,7 +999,7 @@ public sealed class NativePublicKlineFeed
         {
             long gap = bars[index].Bar.OpenTime.Value.ToUnixTimeMilliseconds()
                 - bars[index - 1].Bar.OpenTime.Value.ToUnixTimeMilliseconds();
-            if (gap > OneHourMilliseconds)
+            if (gap > interval)
             {
                 reasons.Add("history-gap:context");
                 break;
@@ -1109,7 +1129,7 @@ public sealed class NativePublicKlineFeed
         return options;
     }
 
-    private void OnStreamDiagnostic(BinanceStreamDiagnostic diagnostic)
+    internal void OnStreamDiagnostic(BinanceStreamDiagnostic diagnostic)
     {
         if (diagnostic.Kind is BinanceStreamDiagnosticKind.IdentityConflict
             or BinanceStreamDiagnosticKind.Late
@@ -1129,21 +1149,15 @@ public sealed class NativePublicKlineFeed
         string code, string message) => new(BinanceKlineIngestionStatus.Invalid,
         identity, null, code, message);
 
-    private static long IntervalMilliseconds(string timeframe) => timeframe switch
-    {
-        "15m" => FifteenMinuteMilliseconds,
-        "1h" => OneHourMilliseconds,
-        _ => throw new ArgumentOutOfRangeException(nameof(timeframe), timeframe, null)
-    };
+    private static long IntervalMilliseconds(string timeframe) =>
+        PublicSignalTimeframes.TryGetDurationMilliseconds(timeframe, out long interval)
+            ? interval
+            : throw new ArgumentOutOfRangeException(nameof(timeframe), timeframe, null);
 
     private long ReserveIntakeSequence() => checked(_nextIntakeSequence + 1);
 
-    private static string Role(string timeframe) => timeframe switch
-    {
-        "15m" => "setup",
-        "1h" => "context",
-        _ => "unknown"
-    };
+    private string Role(string timeframe) => timeframe == SetupTimeframe ? "setup"
+        : timeframe == ContextTimeframe ? "context" : "unknown";
 
     private static UtcTimestamp? ToTimestamp(DateTimeOffset? value) => value is { } time
         ? new UtcTimestamp(time)

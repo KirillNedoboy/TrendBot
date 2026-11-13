@@ -62,7 +62,7 @@ public sealed class LaneCEvidenceReplayTests
             LaneCHistoryCapturePipeline pipeline = new(store, persistence.StreamId);
             CaptureEnvelope snapshot = pipeline.CaptureRecoveredSnapshot(ReadyBook(1, 0,
                 BaseTime));
-            BinanceDepthUpdateEvent firstDepth = Depth(100, 101, 99, BaseTime.AddMilliseconds(1));
+            BinanceDepthUpdateEvent firstDepth = Depth(101, 102, 100, BaseTime.AddMilliseconds(1));
             CaptureEnvelope depth = Assert.IsType<CaptureEnvelope>(pipeline.CaptureStreamEvent(
                 Stream("session-a", 11, firstDepth, BaseTime.AddMilliseconds(2),
                     BaseTime.AddMilliseconds(3)), 1));
@@ -78,7 +78,7 @@ public sealed class LaneCEvidenceReplayTests
                 ReadyBook(2, 1, BaseTime.AddMilliseconds(10)));
             CaptureEnvelope recoveredDepth = Assert.IsType<CaptureEnvelope>(
                 pipeline.CaptureStreamEvent(Stream("session-c", 1,
-                    Depth(200, 201, 199, BaseTime.AddMilliseconds(11)),
+                    Depth(201, 202, 200, BaseTime.AddMilliseconds(11)),
                     BaseTime.AddMilliseconds(12), BaseTime.AddMilliseconds(13)), 2));
             CaptureEnvelope recoveredTrade = Assert.IsType<CaptureEnvelope>(
                 pipeline.CaptureStreamEvent(Stream("session-d", 0,

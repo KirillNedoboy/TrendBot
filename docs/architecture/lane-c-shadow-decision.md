@@ -22,5 +22,15 @@ Decision Engine's existing required-evidence policy blocks Unknown Lane C
 evidence. When the supplied evidence is allowed, the engine may produce a
 Shadow decision, with no order or execution output.
 
+## Recovered book checkpoints
+
+`LaneCHistoryCapturePipeline` records a recovered book as a derived
+`orderbook.recovery` checkpoint, not as the original REST snapshot. Its levels
+include the already-applied depth update, so its depth ID and source sequence
+come from the recovered state. Event, receive, and availability times cannot
+precede the respective known snapshot and update inputs. An update already
+included in the checkpoint is rejected; a recovery gap requires a new checkpoint.
+Old capture files are not rewritten or made causal by this change.
+
 Focused verification is recorded in `docs/TASKS.md` and `HANDOFF.md` for
 P13-M01-T003.

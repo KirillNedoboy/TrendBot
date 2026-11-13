@@ -12,14 +12,19 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
     private readonly SemaphoreSlim _serial = new(1, 1);
     private readonly string _streamId;
     private readonly NativePublicKlineFeed _feed;
+    private readonly SqliteNativeBarInputLedger _inputLedger;
     private readonly SqliteSignalJournalStore _signalJournal;
     private readonly PublicSignalProfileConfiguration _profile;
     private readonly string _profileHash;
+    private readonly ISignalMultiLaneSource? _multiLane;
     private readonly SignalScenarioProjectionEngine _scenarioEngine;
     private readonly Dictionary<string, string> _revisionHashes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _committedInputEventIds = new(StringComparer.Ordinal);
     private SignalJournalCurrentState _currentState;
     private SignalScenarioProjectionSnapshot _scenarioSnapshot;
+    private DateTimeOffset _nextRecoveryAt = DateTimeOffset.MinValue;
+    private bool _receivedInput;
+    private bool _historyBackfillPending = true;
 
     public string Symbol { get; }
 
@@ -27,6 +32,14 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         PublicSignalProfileConfiguration profile, SignalScenarioPolicySet scenarioPolicies,
         NativePublicKlineFeed feed, SqliteNativeBarInputLedger inputLedger,
         SqliteSignalJournalStore signalJournal)
+        : this(symbol, profile, scenarioPolicies, feed, inputLedger, signalJournal, null)
+    {
+    }
+
+    internal SignalOnlyInstrumentConsumer(string symbol,
+        PublicSignalProfileConfiguration profile, SignalScenarioPolicySet scenarioPolicies,
+        NativePublicKlineFeed feed, SqliteNativeBarInputLedger inputLedger,
+        SqliteSignalJournalStore signalJournal, ISignalMultiLaneSource? multiLane)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(profile);
@@ -47,11 +60,13 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
                 "The native feed symbol does not match this serial consumer.", nameof(feed));
         }
 
-        _streamId = $"binance-usdm-native-kline:{Symbol}";
+        _streamId = feed.StreamId;
         _feed = feed;
+        _inputLedger = inputLedger;
         _signalJournal = signalJournal;
         _profile = profile;
-        _profileHash = ComputeProfileHash(profile);
+        _multiLane = multiLane;
+        _profileHash = ComputeProfileHash(profile, multiLane?.Policy);
         _scenarioEngine = new SignalScenarioProjectionEngine(scenarioPolicies);
         SignalJournalSnapshot journalSnapshot = signalJournal.Read(_streamId);
         _currentState = new SignalJournalCurrentState(journalSnapshot.Checkpoint,
@@ -114,16 +129,109 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
     }
 
+    internal async Task BackfillAsync(CancellationToken cancellationToken)
+    {
+        await _serial.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _feed.BackfillAsync(cancellationToken).ConfigureAwait(false);
+            foreach (NativeBarInputLedgerReceipt receipt in _inputLedger.Read(_streamId).Receipts)
+            {
+                RememberRevision(receipt);
+            }
+        }
+        finally
+        {
+            _serial.Release();
+        }
+    }
+
     /// <summary>Reads both public timeframes and awaits each write in instrument order.</summary>
-    public async Task RunAsync(BinanceMarketWebSocketClient marketClient,
-        CancellationToken cancellationToken = default)
+    public Task RunAsync(BinanceMarketWebSocketClient marketClient,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(marketClient, null, null, cancellationToken);
+
+    internal async Task RunAsync(BinanceMarketWebSocketClient marketClient,
+        Func<NativePublicKlineFeedUpdate, Task>? onClose, Func<Task>? onFirstInput,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(marketClient);
         await foreach (BinanceStreamEnvelope envelope in _feed
             .ReadEnvelopesAsync(marketClient, cancellationToken).ConfigureAwait(false))
         {
-            await ProcessAsync(envelope, cancellationToken).ConfigureAwait(false);
+            await ProcessStreamEnvelopeAsync(envelope, onClose, onFirstInput,
+                cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    internal async Task ProcessStreamEnvelopeAsync(BinanceStreamEnvelope envelope,
+        Func<NativePublicKlineFeedUpdate, Task>? onClose, Func<Task>? onFirstInput,
+        CancellationToken cancellationToken)
+    {
+        if (envelope.Payload is BinanceKlineEvent item
+            && StringComparer.Ordinal.Equals(item.Symbol, Symbol)
+            && (item.Kline.Timeframe == _feed.SetupTimeframe
+                || item.Kline.Timeframe == _feed.ContextTimeframe))
+        {
+            if (!_receivedInput)
+            {
+                _receivedInput = true;
+                if (onFirstInput is not null)
+                {
+                    await onFirstInput().ConfigureAwait(false);
+                }
+            }
+            if (!item.Kline.IsClosed)
+            {
+                if ((_historyBackfillPending || _feed.RequiresStreamRecovery)
+                    && DateTimeOffset.UtcNow >= _nextRecoveryAt)
+                {
+                    await BackfillAsync(cancellationToken).ConfigureAwait(false);
+                    _historyBackfillPending = !_feed.HasCompleteHistoryNow();
+                    _nextRecoveryAt = _historyBackfillPending || _feed.RequiresStreamRecovery
+                        ? DateTimeOffset.UtcNow.AddSeconds(30) : DateTimeOffset.MinValue;
+                }
+                return;
+            }
+
+            DateTimeOffset close = DateTimeOffset.FromUnixTimeMilliseconds(
+                checked(item.Kline.CloseTimeMilliseconds + 1));
+            TimeSpan delay = close - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.FromSeconds(30))
+            {
+                throw new InvalidDataException("A public kline closed too far in the future.");
+            }
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        NativePublicKlineFeedUpdate update = await ProcessAsync(envelope,
+            cancellationToken).ConfigureAwait(false);
+        if (update.Evaluation?.ReadinessReasons.Any(static reason =>
+                reason is "history-gap:setup" or "history-gap:context") == true)
+        {
+            _historyBackfillPending = true;
+        }
+        if (onClose is not null)
+        {
+            await onClose(update).ConfigureAwait(false);
+        }
+    }
+
+    internal SignalMarketContext? CaptureLiveMarketContext(NativePublicKlineFeedUpdate update)
+    {
+        if (update.Evaluation is not { } evaluation
+            || _multiLane is not ISignalMarketContextSource source
+            || _profile.Indicators?.BoundaryMinimumChannelWidth is not { } binSize)
+        {
+            return null;
+        }
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset earliest = evaluation.LaneA.SetupObservations.Cursor.AsOf.Value;
+        UtcTimestamp asOf = new(now > earliest ? now : earliest);
+        return SignalMarketContextCapture.FromLive(evaluation, source, binSize, asOf);
     }
 
     public void Dispose() => _serial.Dispose();
@@ -147,7 +255,8 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             NativePublicKlineFeedReplay replay = _feed.ReplayDurableReceipt(receipt);
             if (replay.SourceKind != BinanceKlineSourceKind.WebSocket
                 || !StringComparer.Ordinal.Equals(replay.Symbol, Symbol)
-                || replay.Kline is not { Timeframe: "15m", IsClosed: true }
+                || replay.Kline is not { IsClosed: true }
+                || replay.Kline.Timeframe != _feed.SetupTimeframe
                 || receipt.Status is not (NativeBarInputReceiptStatus.Accepted
                     or NativeBarInputReceiptStatus.Invalid))
             {
@@ -158,7 +267,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
                 ?? throw new InvalidDataException(
                     "A durable public input is missing availability time.");
             ProcessDurableInput(receipt, replay.Update, replay.Symbol,
-                replay.Kline, replay.SourceKind, availabilityTime);
+                replay.Kline, replay.SourceKind, availabilityTime, isRecovery: true);
         }
     }
 
@@ -181,7 +290,8 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
 
     private void ProcessDurableInput(NativeBarInputLedgerReceipt receipt,
         NativePublicKlineFeedUpdate update, string? symbol, BinanceKline kline,
-        BinanceKlineSourceKind? sourceKind, UtcTimestamp availabilityTime)
+        BinanceKlineSourceKind? sourceKind, UtcTimestamp availabilityTime,
+        bool isRecovery = false)
     {
         if (sourceKind != BinanceKlineSourceKind.WebSocket
             || !StringComparer.Ordinal.Equals(symbol, Symbol))
@@ -190,7 +300,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
 
         RememberRevision(receipt);
-        if (!StringComparer.Ordinal.Equals(kline.Timeframe, "15m")
+        if (!StringComparer.Ordinal.Equals(kline.Timeframe, _feed.SetupTimeframe)
             || !kline.IsClosed)
         {
             return;
@@ -207,7 +317,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
 
         string inputEventId = receipt.EventId ?? update.Identity?.EventId
-            ?? BinanceKlineIdentity.Create(Symbol, "15m",
+            ?? BinanceKlineIdentity.Create(Symbol, _feed.SetupTimeframe,
                 kline.OpenTimeMilliseconds).EventId;
         if (_committedInputEventIds.Contains(inputEventId))
         {
@@ -248,13 +358,13 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         foreach (SetupCandidate candidate in candidates)
         {
             CommitCandidate(evaluation, candidate, inputEventId, inputHash,
-                availabilityTime, receipt.IntakeSequence);
+                availabilityTime, receipt.IntakeSequence, isRecovery);
         }
     }
 
     private void CommitCandidate(NativePublicKlineEvaluation evaluation,
         SetupCandidate candidate, string sourceEventId, string inputHash,
-        UtcTimestamp availabilityTime, long intakeSequence)
+        UtcTimestamp availabilityTime, long intakeSequence, bool isRecovery)
     {
         string scenarioEventId = ScenarioInputEventId(sourceEventId, candidate);
         if (_committedInputEventIds.Contains(scenarioEventId))
@@ -280,8 +390,40 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             return;
         }
 
+        SignalMultiLaneInput? multiLaneInput = null;
+        if (_multiLane is not null)
+        {
+            if (isRecovery)
+            {
+                CommitDiagnostic(scenarioEventId, inputHash, candidate.SignalBar.EventTime,
+                    availabilityTime, intakeSequence, "multi-lane-recovery-unavailable",
+                    ["multi-lane-recovery-evidence-unavailable"]);
+                return;
+            }
+            multiLaneInput = _multiLane.Capture(candidate.Direction,
+                evaluation.LaneA.SetupObservations.Cursor.AsOf);
+            if (multiLaneInput.InstrumentId.Value != Symbol
+                || multiLaneInput.Direction != candidate.Direction
+                || multiLaneInput.Policy != _multiLane.Policy
+                || multiLaneInput.DecisionAt.Value < availabilityTime.Value)
+            {
+                throw new InvalidDataException("The multi-lane input does not match its signal.");
+            }
+            SignalMultiLaneAssessment assessment =
+                SignalMultiLaneResearchEvaluator.Evaluate(multiLaneInput);
+            availabilityTime = multiLaneInput.DecisionAt;
+            if (!assessment.IsAllowed)
+            {
+                CommitDiagnostic(scenarioEventId, inputHash, candidate.SignalBar.EventTime,
+                    availabilityTime, intakeSequence, "multi-lane-blocked",
+                    assessment.Reasons.Append($"lane-b-{assessment.LaneB.ToString().ToLowerInvariant()}")
+                        .Append($"lane-c-{assessment.LaneC.ToString().ToLowerInvariant()}"));
+                return;
+            }
+        }
+
         SignalScenarioAnchor anchor = SignalScenarioAnchor.Create(
-            new InstrumentId(Symbol), BinanceKlineIdentity.VenueName, "15m",
+            new InstrumentId(Symbol), BinanceKlineIdentity.VenueName, _feed.SetupTimeframe,
             candidate.Direction, candidate.Family, _profile.ProfileVersion!,
             candidate.AlgorithmVersion, pivot.PivotBar.Bar.EventId,
             pivot.PivotBar.EventTime, pivot.PivotBar.StableSequence);
@@ -304,7 +446,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
 
         (SignalRecord Signal, SignalEvidenceRecord Evidence) signal =
-            CreateSignal(evaluation, candidate, anchor.Identity, pivot.PivotBar);
+            CreateSignal(evaluation, candidate, anchor.Identity, pivot.PivotBar, multiLaneInput);
         SignalScenarioProjectionTransition transition = _scenarioEngine.Apply(
             _scenarioSnapshot, scenarioInput);
         if (transition.Status == SignalScenarioTransitionStatus.IdentityConflict)
@@ -343,7 +485,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
 
     private (SignalRecord Signal, SignalEvidenceRecord Evidence) CreateSignal(
         NativePublicKlineEvaluation evaluation, SetupCandidate candidate,
-        SignalIdentity identity, ScreenerBar anchorBar)
+        SignalIdentity identity, ScreenerBar anchorBar, SignalMultiLaneInput? multiLaneInput)
     {
         ScreenerBar signalBar = candidate.SignalBar;
         string setupVersion = _profile.Setup!.SourceVersion!;
@@ -355,14 +497,14 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             if (setupEventIds.Add(bar.Bar.EventId))
             {
                 references.Add(CreateInputReference(bar, SignalInputRole.Setup,
-                    "15m", setupVersion));
+                    _feed.SetupTimeframe, setupVersion));
             }
         }
 
         foreach (ScreenerBar bar in evaluation.Input.HtfBars)
         {
             references.Add(CreateInputReference(bar, SignalInputRole.HigherTimeframe,
-                "1h", contextVersion));
+                _feed.ContextTimeframe, contextVersion));
         }
 
         if (evaluation.HtfCutEventId is null || evaluation.HtfCutTime is null
@@ -384,12 +526,16 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             .Distinct(StringComparer.Ordinal)
             .OrderBy(static reason => reason, StringComparer.Ordinal)
             .ToArray();
+        SignalMarketContext? marketContext = _multiLane is ISignalMarketContextSource contextSource
+            && multiLaneInput is not null && _profile.Indicators?.BoundaryMinimumChannelWidth is { } binSize
+                ? SignalMarketContextCapture.FromDecision(evaluation, multiLaneInput, contextSource, binSize)
+                : null;
         SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(identity,
-            provenance, SignalEvidenceState.Complete, qualityReasons);
+            provenance, SignalEvidenceState.Complete, qualityReasons, multiLaneInput, marketContext);
         SignalRecord signal = SignalRecord.Create(identity, evidence,
             SignalAssessmentState.ConfirmedOnClosedBar,
             new SignalBarInterval(signalBar.Bar.OpenTime, signalBar.Bar.CloseTime),
-            decisionCut.AsOf,
+            multiLaneInput?.DecisionAt ?? decisionCut.AsOf,
             new SignalReferencePrice(signalBar.SourceId, setupVersion,
                 signalBar.Bar.EventId, signalBar.EventTime, signalBar.Bar.Close));
         return (signal, evidence);
@@ -456,9 +602,13 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
     private long NextStableSequence(long intakeSequence) => checked(Math.Max(
         _currentState.Checkpoint?.StableSequence ?? 0, intakeSequence) + 1);
 
-    private static string ComputeProfileHash(PublicSignalProfileConfiguration profile) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            CoreJsonSerializer.Serialize(profile)))).ToLowerInvariant();
+    private static string ComputeProfileHash(PublicSignalProfileConfiguration profile,
+        SignalMultiLanePolicy? policy)
+    {
+        string json = policy is null ? CoreJsonSerializer.Serialize(profile)
+            : CoreJsonSerializer.Serialize(new { Profile = profile, MultiLanePolicy = policy });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+    }
 
     private static string ReceiptHash(NativeBarInputLedgerReceipt receipt) =>
         receipt.RevisionHash ?? Convert.ToHexString(SHA256.HashData(

@@ -124,6 +124,25 @@ public sealed class BinanceKlineIngestionTests
         Assert.Null(result.CoreBar);
     }
 
+    [Theory]
+    [InlineData("5m", 300_000)]
+    [InlineData("30m", 1_800_000)]
+    [InlineData("4h", 14_400_000)]
+    public void NewNativeIntervalsEnforceTheirUtcGridAndClosedDuration(string timeframe, long duration)
+    {
+        BinanceKlineIngestionResult valid = BinanceKlineIngestionBoundary.Evaluate(
+            "BTCUSDT", Kline(timeframe, duration, 2 * duration - 1), RestSource);
+        BinanceKlineIngestionResult offGrid = BinanceKlineIngestionBoundary.Evaluate(
+            "BTCUSDT", Kline(timeframe, duration + 1, 2 * duration), RestSource);
+        BinanceKlineIngestionResult wrongClose = BinanceKlineIngestionBoundary.Evaluate(
+            "BTCUSDT", Kline(timeframe, duration, 2 * duration - 2), RestSource);
+
+        Assert.Equal(BinanceKlineIngestionStatus.Accepted, valid.Status);
+        Assert.Equal(timeframe, valid.Identity.Timeframe);
+        Assert.Equal("open-time-off-utc-grid", offGrid.Diagnostic!.Code);
+        Assert.Equal("interval-duration-mismatch", wrongClose.Diagnostic!.Code);
+    }
+
     private static BinanceKline Kline(string timeframe, long openTime, long inclusiveCloseTime,
         decimal close = 100m, bool isClosed = true) => new(openTime, 100m,
         Math.Max(101m, close), 99m, close, 1m, inclusiveCloseTime, 100m, 1, 0.5m, 50m,

@@ -1,0 +1,94 @@
+{
+  "formatVersion": 1,
+  "mode": "signal-only-public",
+  "symbols": ["BTCUSDT"],
+  "inputLedgerPath": "artifacts/signal-only-public/native-bars.sqlite",
+  "signalJournalPath": "artifacts/signal-only-public/signal-journal.sqlite",
+  "profile": {
+    "formatVersion": 1,
+    "profileVersion": "t018-btcusdt-public-v4-prospective-v1",
+    "setup": {
+      "timeframe": "15m",
+      "source": "binanceUsdMNativeKlines",
+      "sourceVersion": "binance-usdm-native-kline-v1",
+      "historyStartUtc": "2026-11-09T06:00:00+00:00",
+      "historyVersion": "t017-bounded-history-v1",
+      "seedHistoryBars": 21,
+      "seedVersion": "t017-full-history-v1",
+      "warmupBars": 21,
+      "warmupVersion": "t017-research-warmup-v1",
+      "freshnessVersion": "t017-two-interval-v1",
+      "maximumMarketDataAge": "00:30:00",
+      "maximumAvailabilityAge": "00:30:00"
+    },
+    "context": {
+      "timeframe": "1h",
+      "source": "binanceUsdMNativeKlines",
+      "sourceVersion": "binance-usdm-native-kline-v1",
+      "historyStartUtc": "2026-11-09T06:00:00+00:00",
+      "historyVersion": "t017-bounded-history-v1",
+      "seedHistoryBars": 23,
+      "seedVersion": "t017-full-history-v1",
+      "warmupBars": 23,
+      "warmupVersion": "t017-research-warmup-v1",
+      "freshnessVersion": "t017-two-interval-v1",
+      "maximumMarketDataAge": "02:00:00",
+      "maximumAvailabilityAge": "02:00:00"
+    },
+    "indicators": {
+      "priceContextVersion": "price-context-v4",
+      "featureQualityVersion": "feature-quality-v1",
+      "setupFamilyVersion": "lane-a-v1",
+      "pivotLeftBars": 2,
+      "pivotRightBars": 2,
+      "atrPeriodBars": 14,
+      "atrMode": "rma",
+      "atrValueUnit": "price",
+      "channelCenterKind": "ema",
+      "channelCenterPeriodBars": 20,
+      "hlc3SmoothingKind": "ema",
+      "channelCenterValueUnit": "price",
+      "channelWidthKind": "atr",
+      "channelWidthPeriodBars": 14,
+      "channelWidthMultiplier": 1,
+      "channelWidthValueUnit": "price",
+      "channelWidthMultiplierUnit": "dimensionless",
+      "levelBufferMultiplier": 1,
+      "levelBufferMultiplierUnit": "dimensionless",
+      "htfFastPeriodBars": 9,
+      "htfSlowPeriodBars": 21,
+      "htfMovingAverageKind": "ema",
+      "htfConfirmationBars": 2,
+      "htfMovingAverageValueUnit": "price",
+      "boundaryMinimumChannelWidth": 0.1,
+      "boundaryMinimumChannelWidthUnit": "price"
+    },
+    "universe": {
+      "selectionVersion": "binance-usdm-current-pit-v1",
+      "minimumSymbols": 1,
+      "maximumSymbols": 1
+    }
+  },
+  "scenarioPolicies": {
+    "formatVersion": 1,
+    "expiry": {
+      "formatVersion": 1,
+      "policyVersion": "t017-expiry-24h-v1",
+      "maximumAge": "1.00:00:00"
+    },
+    "rearm": {
+      "formatVersion": 1,
+      "policyVersion": "t017-rearm-new-anchor-v1",
+      "minimumAfterTerminal": "00:00:00",
+      "requiresNewAnchor": true
+    },
+    "invalidation": {
+      "formatVersion": 1,
+      "policyVersion": "t017-invalidation-v1",
+      "cancelOnExplicitInvalidation": true,
+      "cancelOnOppositeDirection": true
+    },
+    "unknownReasons": [],
+    "isReady": true
+  }
+}

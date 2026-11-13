@@ -143,28 +143,129 @@ and long-duration soak remain outside this task.
 ## P15-M03-T011 public-only signal runtime
 
 Start the isolated signal path with `signal-only --config <public-config.json>`.
-The strict format-v1 root requires mode `signal-only-public`, a complete explicit
-Binance USD-M native-kline profile and scenario-policy set, unique symbols within
-the declared universe bounds, and separate file-backed paths for the input ledger
-and signal journal. Unknown or duplicate properties and private transport settings
-are rejected before either database is opened.
+The strict root requires mode `signal-only-public`, a complete explicit Binance
+USD-M native-kline profile and scenario-policy set, unique symbols within the
+declared universe bounds, and separate file-backed input-ledger and journal
+paths. Format v1 uses the profile's common boundary width. Format v2 additionally
+requires a positive, complete `boundaryMinimumChannelWidths` map keyed by the
+exact configured symbols. Format v3 also requires an explicit multi-lane research
+policy. Format v4 adds explicit independent setup/context profiles and scenario
+policies; each symbol's effective profile and its hash use its own width and
+the multi-lane policy. Unknown or duplicate properties and private transport
+settings are rejected before either database is opened.
 
-The command composes the existing public REST and market WebSocket clients. Each
-symbol has one `SignalOnlyInstrumentConsumer` with per-instrument serialization.
-An empty ledger triggers REST warmup; a populated ledger restores feed history and
-replays pending accepted closed 15m receipts in durable intake order. Only a newly
-accepted closed 15m WebSocket input triggers existing Lane A evaluators and the
-scenario/quality projection. Closed 1h WebSocket context is retained with its
-durable payload hash for causal signal provenance.
+`signal-only.12.example.json` is a format-v3 exploratory profile for the 12
+configured perpetual contracts. Its widths are one price tick per symbol
+observed on 2026-11-13; this does not establish strategy equivalence or
+profitability, and the application does not automatically refresh exchange
+filters. Recheck contract eligibility and tick sizes before operation. The
+bounded preflight and bounded run currently accept format v1 only.
+
+The command composes the existing public REST and market WebSocket clients. A
+v4 instrument has one consumer and durable stream per setup timeframe, but one
+deduplicated kline WebSocket and one shared public B/C data source. The v3
+15m/1h stream retains its existing identity. Empty streams warm up from REST;
+populated streams restore their own feed and recover pending receipts in intake
+order. Only newly accepted closed setup bars trigger decisions. Closed, available
+context inputs retain their durable payload hashes for causal provenance.
+
+`signal-only.multitimeframe.example.json` adds 5m/15m, 30m/1h and 1h/4h to
+the original 15m/1h profile on the same 12 symbols. The five native kline
+subscriptions per symbol are shared across profiles. Indicator periods are
+deliberately specified in bars rather than equal wall-clock spans: using the
+baseline counts on another timeframe is an exploratory starting hypothesis,
+not a calibrated equivalence. Freshness is two bars of the relevant timeframe;
+scenario expiry retains the baseline 96 setup bars (8h, 24h, 48h, 96h for
+5m, 15m, 30m, 1h respectively). OI polling and the C trade window remain shared
+one-minute observations at each decision, not timeframe-specific evidence
+of effectiveness. The new profiles start history at 2026-11-09 04:00 UTC;
+the original 15m/1h seed and version are unchanged.
+
+The optional `public-market-context-v1` is explanatory and never changes signal
+admission. UTC-session VWAP is `sum(quoteAssetVolume) / sum(baseVolume)` from
+contiguous closed native setup bars from the start of the UTC day through the
+signal bar. At midnight the just-closed bar belongs to the completed previous
+day. This is exchange-reported volume, not a typical-price OHLCV approximation;
+it is distinct from the existing `PriceContextFeatureCalculator` trade-window
+VWAP. Missing bars, unavailable inputs, zero volume and overflow yield explicit
+unknown values. The older calculator's unconfigured VWAP/POC diagnostics remain
+separate and do not mean that this optional context used a guessed fallback.
+
+Observed POC uses the already configured one-minute Lane C aggregate-trade
+window, price bins anchored at zero with the configured per-symbol minimum
+channel width (one observed tick in the supplied profile), and lower-bin tie
+breaking. Event, exchange and availability times must be
+visible at the cut. Missing window coverage or unavailable source timestamps
+make POC unknown. This is a recent observed-trade profile, not a full-session
+POC or proof of market-wide volume coverage; exchange tick sizes are not refreshed
+automatically.
+
+An independent public `<symbol>@forceOrder` stream supplies optional liquidation
+context. Binance publishes at most the largest snapshot per symbol per 1,000 ms;
+these are not complete liquidation flow or modeled liquidation levels. Only a
+recent snapshot visible at the decision cut is retained. No observation means
+`not observed`, not zero liquidations; disconnect clears the optional snapshot
+without changing the B/C streams. Source:
+[Binance liquidation stream](https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/websocket-market-streams/Liquidation-Order-Streams).
+New signal evidence format v3 binds this context to the decision; old v1/v2
+evidence and hashes remain unchanged. Context is shown in close logs, local cards
+and optional Telegram messages; it is not reconstructed from later data.
+
+
+The v3 and v4 profiles consume public mark-price/funding forecasts, open interest,
+aggregate trades, and a sequence-recovered depth book. Lane B compares two
+distinct OI observations and mark prices visible when those observations arrived:
+rising OI with price moving in the setup direction is `Confirm`, rising OI with
+opposite price movement is `Veto`, and non-rising OI or an unchanged price is
+`Neutral`. Funding is recorded as context, not treated as directional proof.
+Lane C compares displayed top-N book imbalance with aggressor-volume imbalance:
+both aligned are `Confirm`, both opposed are `Veto`, and mixed or zero signs are
+`Neutral`. A Lane A candidate is admitted only when both B/C are Confirm or
+Neutral; Veto, missing or stale observations, incomplete trade-window coverage,
+book recovery and conflicting data block it.
+
+Depth continuation follows Binance USD-M's `pu == previous u` rule; adjacent
+update-ID ranges need not be numerically consecutive. A broken `pu` link
+invalidates the book and requires recovery:
+[Binance local order book procedure](https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly).
+
+The profile explicitly specifies the polling interval, event/availability
+freshness, trade window, depth levels and maximum captured records. These are
+experimental operating values, not inferred profitability or a validated strategy.
+The aggregate-trade stream and book checkpoints are not an event-level OFI
+series or proof of complete market coverage. Research inputs and rule versions
+are retained with successful signal evidence in the same journal transaction.
+The rationale and transfer limits are documented in the repository's
+[literature review](../../additional-strategy-research-plan.md#9-литература-что-перечитано-и-что-действительно-следует):
+Cont–Kukanov–Stoikov study contemporaneous U.S. equity order-flow impact;
+Cartea–Jaimungal–Penalva distinguish displayed liquidity from execution and
+cancellation; Aronson distinguishes objective rules from evidence of their
+predictive value. None validates this Binance 15-minute experiment.
+
+For a crash after price intake but before multi-lane evidence is committed,
+recovery records `multi-lane-recovery-unavailable` rather than constructing an
+old signal from newly observed market data.
+
+Transient public REST failures invalidate the affected OI or book state and
+retry only after the configured polling interval or a longer `Retry-After`;
+other inputs do not become confirmation. Source-observed log entries show
+arrival, not a signal or a guarantee of continued health. Non-transient API
+failures stop the process and report the status/code/path without response bodies.
+The `trade-window-buffer-overflow` diagnostic means the bounded trade buffer was
+cleared and the full observation window must warm again before Lane C can be
+usable. The `trade-window-awaiting-*` and `trade-window-warming` diagnostics
+identify missing warmup prerequisites; they are not confirmations.
+No supervisor, storage quota, 24/7 soak or real-money authorization is implied.
 
 Confirmed setups atomically commit the signal/evidence, scenario checkpoint and
 events, cursor, and output-only outbox through `SqliteSignalJournalStore`;
-non-confirmed inputs commit diagnostics instead. A crash after input-ledger append
-but before journal commit is recovered by replaying the original receipt, while a
-committed journal checkpoint prevents a duplicate signal/outbox on restart. This
-path has no private transport, signer, executor, risk authorization, order intent,
-position, or portfolio dependency. The existing `shadow` command and its gates are
-unchanged. Public live connectivity and Linux/systemd operation remain unverified.
+non-confirmed inputs commit diagnostics instead. Formats v1/v2 recover an input
+appended before journal commit by replaying its original receipt; v3/v4 follow
+the fail-closed multi-lane recovery rule above. A committed checkpoint prevents duplicate
+signal/outbox rows. This path has no private transport, signer, executor, risk
+authorization, order intent, position, or portfolio dependency. The existing
+`shadow` command and its gates are unchanged. Public connectivity was observed
+in bounded runs; Linux/systemd operation and long-duration service remain unverified.
 
 ## P15-M03-T018 bounded public-run preflight
 
@@ -325,3 +426,76 @@ the persisted T019 journal and outcome, and ran the local renderer with zero
 HTTP calls. It verifies offline recovery and local presentation, not a second
 live capture. T019 itself separately records its actual bounded process
 restart. Evidence and exact test counts are in [HANDOFF.md](../../HANDOFF.md) under T020.
+
+## Public signal bot
+
+For the continuously running public-only command, use the quick start and
+exploratory BTCUSDT profile in the [README](../../README.md). Its fixed history
+start is part of the declared profile and its recursive indicator seed; do not
+shift it or change parameters while reusing the same journals. This mode is not
+a bounded T019 acceptance run and does not authorize an OOS verdict or orders.
+
+`public-stream-receiving` records that a matching WebSocket update arrived;
+`public-close` records its ingestion result and, for a setup-timeframe evaluation,
+readiness and unknown reasons. Both close and diagnostic lines include the
+profile's `setupTimeframe`. A committed signal is also written as a `signal` JSON
+line with direction, setup, decision time, signal ID and `RESEARCH` / `UNKNOWN`.
+`public-stream-diagnostic` contains only a diagnostic code, not raw transport
+messages. Open candle updates are not committed as signal inputs. An early
+closed update waits until its nominal close without rewriting its original
+receive or availability time.
+
+On restart, the consumer first recovers any already committed input, then
+backfills missing native history from public REST. The first open update after
+subscription also triggers backfill, covering a bar that closed between REST
+warmup and WebSocket subscription. After a reconnect or a detected history gap,
+recovery is attempted on a subsequent open update; incomplete retries are
+throttled to 30 seconds. Recoverable stream diagnostics clear only when both
+native histories are complete. A close received while recovery is unresolved
+remains unknown; backfilled bars do not retroactively generate signals. An
+unresolved error, missing history or conflicting revision must not be interpreted
+as a valid signal.
+
+The market client has bounded reconnect attempts and the process exits on
+unrecovered failure. There is no installed service, resource limit or long-running
+soak guarantee. Keep one process per state directory, monitor its output and
+restart it when necessary. Preserve the input and signal journals together.
+
+### Explicit Telegram delivery
+
+Telegram delivery is off unless `--telegram-state` is provided. Stop any
+existing process using the same journals before starting this variant. Before
+running it, verify the intended destination: the command sends eligible
+committed outbox messages, including pending messages still within the existing
+24-hour delivery policy. Enter the bot token and destination privately in the
+terminal, not in source files, logs or chat:
+
+```powershell
+$secure = Read-Host "Telegram bot token" -AsSecureString
+$env:TRADINGBOT_TELEGRAM_BOT_TOKEN = [System.Net.NetworkCredential]::new("", $secure).Password
+$secure = Read-Host "Telegram chat ID" -AsSecureString
+$env:TRADINGBOT_TELEGRAM_CHAT_ID = [System.Net.NetworkCredential]::new("", $secure).Password
+Remove-Variable secure
+& $dotnet $app signal-only --config .\signal-only.public.example.json --telegram-state .\artifacts\signal-only-public\telegram-delivery.sqlite
+```
+
+The examples assume the `$dotnet` and `$app` variables from the README in the
+same PowerShell session. Environment values last for that session; use a
+proper secret store for a supervised service. The sender polls committed rows
+and persists attempts and receipts separately. `Acknowledged` means the API
+accepted a message, not that a person read it. `UnknownDelivery` is not retried
+automatically because the message may already have been accepted. Rate limits,
+expiry and permanent failures remain explicit in the delivery journal.
+
+For continuous v4 delivery, newly created alerts for the same instrument,
+direction and exact candle close are grouped when they are available within the
+five-second co-close window. Each signal and outbox item retains its own durable
+attempt and receipt; opposite directions and different closes remain separate.
+Late arrivals may form separate messages. A crash after recording a grouped
+attempt remains ambiguous for the affected items and does not trigger an
+automatic resend. One-shot `telegram-send` still sends one selected stream.
+
+Keep the original delivery state alongside the signal journal. If a journal
+already has outbox rows but its delivery state is missing, the continuous
+command refuses to create a replacement rather than risk duplicate delivery.
+The local journal renderer does not report Telegram receipts as publication.

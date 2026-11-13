@@ -164,6 +164,8 @@ public static class SignalOnlyBoundedPreflight
 
         if (envelope.Configuration is { } configuration)
         {
+            if (configuration.FormatVersion != SignalOnlyConfiguration.CurrentFormatVersion)
+                reasons.Add("bounded-configuration-format-unsupported");
             if (!PriceContextFeatureCalculator.IsSupportedAlgorithmVersion(configuration.Profile.Indicators?.PriceContextVersion))
                 reasons.Add("price-context-version-unsupported");
             if (!StringComparer.Ordinal.Equals(configuration.Profile.Indicators?.FeatureQualityVersion,

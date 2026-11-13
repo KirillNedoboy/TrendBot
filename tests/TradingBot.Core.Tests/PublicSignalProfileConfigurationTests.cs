@@ -71,7 +71,7 @@ public sealed class PublicSignalProfileConfigurationTests
     {
         Assert.Throws<JsonException>(() =>
             CoreJsonSerializer.Deserialize<PublicSignalProfileConfiguration>(
-                "{\"formatVersion\":2}"));
+                "{\"formatVersion\":3}"));
     }
 
     [Theory]
@@ -130,5 +130,28 @@ public sealed class PublicSignalProfileConfigurationTests
 
         Assert.Throws<JsonException>(() =>
             CoreJsonSerializer.Deserialize<PublicSignalProfileConfiguration>(json));
+    }
+
+    [Theory]
+    [InlineData("5m", "15m")]
+    [InlineData("30m", "1h")]
+    [InlineData("1h", "4h")]
+    public void MultiTimeframeProfilesPreserveTheDeclaredPair(string setup, string context)
+    {
+        PublicSignalProfileConfiguration profile = new(
+            PublicSignalProfileConfiguration.MultiTimeframeFormatVersion, "test-v2",
+            new PublicSignalTimeframeConfiguration(setup),
+            new PublicSignalTimeframeConfiguration(context));
+        PublicSignalProfileConfiguration restored =
+            CoreJsonSerializer.Deserialize<PublicSignalProfileConfiguration>(
+                CoreJsonSerializer.Serialize(profile));
+
+        Assert.Equal(setup, restored.Setup!.Timeframe);
+        Assert.Equal(context, restored.Context!.Timeframe);
+        Assert.False(restored.IsReady);
+        Assert.Throws<ArgumentException>(() => new PublicSignalProfileConfiguration(
+            PublicSignalProfileConfiguration.MultiTimeframeFormatVersion, "bad-pair",
+            new PublicSignalTimeframeConfiguration(setup),
+            new PublicSignalTimeframeConfiguration(setup)));
     }
 }

@@ -6,6 +6,29 @@ This document is the indexed product/system specification for TradingBot. The ve
 
 Build a C#/.NET 10 modular monolith for autonomous, deterministic, multi-lane intraday trading research and eventual execution on Binance USD-M perpetual futures. The system must support one Core decision path for replay, backtest, shadow, paper, limited-live, and production modes, with explicit gates before real orders.
 
+## Optional public market context — 2026-11-13
+
+The user authorized UTC-session VWAP, observed-trade POC and sampled Binance
+liquidation snapshots as explanatory context for the existing signal scanner.
+They do not alter Lane A/B/C admission, create signals by themselves, or grant
+trading authority. Missing, stale or incomplete context remains explicitly
+unknown; a lack of liquidation snapshots is not evidence of no liquidations.
+Existing signal IDs, prior evidence hashes, journals and execution gates remain
+unchanged. Formulas and source limitations are documented in
+[operations](architecture/operations.md#p15-m03-t011-public-only-signal-runtime).
+
+## Approved multi-timeframe amendment — 2026-11-13
+
+The user authorized four concurrent public research profiles for the same 12
+USD-M perpetual contracts: 5m/15m, 15m/1h, 30m/1h and 1h/4h (setup/context).
+This supersedes the single-timeframe limitation below without changing the
+immutable canonical source or any existing OOS or execution gate. Each setup
+uses only closed, causally available inputs and has an independent identity,
+cursor, scenario and journal stream; the original 15m stream remains compatible.
+Lane A generates candidates and public Lane B/C can confirm, remain neutral or
+block them. Shared market feeds do not make one timeframe's decision valid for
+another. Profiles and parameter choices are exploratory, not validated edge.
+
 ## Approved current scope — 2026-11-06
 
 The user changed the current target from a 5-minute local setup to **15-minute primary signals**, with **no order opening**. The immediate deliverable is a public-market-data signal system, not limited-live execution. The revised [signal and strategy research plan](../additional-strategy-research-plan.md) defines the proposed implementation sequence and evidence boundaries.

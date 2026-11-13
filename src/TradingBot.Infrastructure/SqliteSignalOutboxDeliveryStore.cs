@@ -56,7 +56,7 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
         EnsureDeliveryRows(connection, transaction, streamId, committed.Outbox,
             signals, policy);
         RecoverExpiredLeases(connection, transaction, streamId, committed.Outbox,
-            signals, utcNow);
+            signals, committed.Signals, utcNow);
         ExpireUnsentRows(connection, transaction, streamId, utcNow);
 
         DateTimeOffset? rateLimitUntil = ReadRateLimit(connection, transaction);
@@ -108,7 +108,9 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
             }
 
             transaction.Commit();
-            return new SignalOutboxLease(streamId, item, signal, leaseToken,
+            SignalEvidenceRecord evidence = committed.Signals.First(entry =>
+                StringComparer.Ordinal.Equals(entry.Signal.Identity.SignalId, signal.Identity.SignalId)).Evidence;
+            return new SignalOutboxLease(streamId, item, signal, evidence, leaseToken,
                 leaseExpiresAt, checked(row.AttemptsStarted + 1));
         }
 
@@ -613,7 +615,8 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
     private static void RecoverExpiredLeases(SqliteConnection connection,
         SqliteTransaction transaction, string streamId,
         IReadOnlyList<SignalJournalOutboxItem> outbox,
-        Dictionary<string, SignalRecord> signals, DateTimeOffset now)
+        Dictionary<string, SignalRecord> signals, IReadOnlyList<SignalJournalSignal> signalEvidence,
+        DateTimeOffset now)
     {
         foreach (SignalJournalOutboxItem item in outbox)
         {
@@ -650,7 +653,9 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
                     AttemptId(item.OutboxId, row.AttemptsStarted),
                     SignalDeliveryChannel.Telegram, SignalDeliveryStatus.Unknown,
                     new UtcTimestamp(now), reason: "delivery-lease-expired-after-send-start");
-                SignalOutboxLease lease = new(streamId, item, signal,
+                SignalEvidenceRecord evidence = signalEvidence.First(entry =>
+                    StringComparer.Ordinal.Equals(entry.Signal.Identity.SignalId, signal.Identity.SignalId)).Evidence;
+                SignalOutboxLease lease = new(streamId, item, signal, evidence,
                     row.LeaseToken!, row.LeaseExpiresAt.Value, row.AttemptsStarted);
                 InsertReceipt(connection, transaction, lease, row.AttemptsStarted,
                     receipt);
@@ -745,6 +750,7 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(lease.StreamId);
         ArgumentNullException.ThrowIfNull(lease.Item);
         ArgumentNullException.ThrowIfNull(lease.Signal);
+        ArgumentNullException.ThrowIfNull(lease.Evidence);
         ArgumentException.ThrowIfNullOrWhiteSpace(lease.LeaseToken);
     }
 
