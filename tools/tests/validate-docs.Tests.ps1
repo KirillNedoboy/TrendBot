@@ -163,6 +163,10 @@ try {
 
     $multipleReady = New-Fixture 'multiple-ready'
     $multipleTasks = Join-Path $multipleReady 'docs/TASKS.md'
+    foreach ($task in @(Get-TaskRows $multipleTasks | Where-Object Status -eq 'READY')) {
+        Set-TaskField $multipleTasks $task.Id 'Status' 'BLOCKED'
+        Set-TaskField $multipleTasks $task.Id 'Blockers / Evidence' 'Unresolved blocker: fixture isolation'
+    }
     Set-TaskField $multipleTasks 'P17-M01-T001' 'Status' 'DONE'
     Set-TaskField $multipleTasks 'P17-M01-T001' 'Blockers / Evidence' 'Evidence: fixture completion'
     Set-TaskField $multipleTasks 'P17-M01-T002' 'Status' 'READY'
@@ -173,7 +177,12 @@ try {
     Invoke-Case 'multiple READY tasks' $multipleReady $true 'ready=P17-M01-T002,P17-M01-T003'
 
     $zeroReady = New-Fixture 'explainable-zero-ready'
-    Invoke-Case 'explainable zero READY' $zeroReady $true ''
+    $zeroReadyTasks = Join-Path $zeroReady 'docs/TASKS.md'
+    foreach ($task in @(Get-TaskRows $zeroReadyTasks | Where-Object Status -eq 'READY')) {
+        Set-TaskField $zeroReadyTasks $task.Id 'Status' 'BLOCKED'
+        Set-TaskField $zeroReadyTasks $task.Id 'Blockers / Evidence' 'Unresolved blocker: fixture isolation'
+    }
+    Invoke-Case 'explainable zero READY' $zeroReady $true 'ready=none \(explicit unresolved blocker\)'
 
     $unexplainedZeroReady = New-Fixture 'unexplained-zero-ready'
     $unexplainedTasks = Join-Path $unexplainedZeroReady 'docs/TASKS.md'
@@ -181,6 +190,11 @@ try {
     $tasksById = @{}
     foreach ($task in $taskRows) { $tasksById[$task.Id] = $task }
     foreach ($task in $taskRows) {
+        if ($task.Status -eq 'READY') {
+            Set-TaskField $unexplainedTasks $task.Id 'Status' 'IN_PROGRESS'
+            Set-TaskField $unexplainedTasks $task.Id 'Blockers / Evidence' 'Evidence: fixture candidate'
+            continue
+        }
         if ($task.Status -ne 'BLOCKED') { continue }
         $dependencies = @([regex]::Matches($task.Dependencies, 'P\d{2}-M\d{2}-T\d{3}') |
             ForEach-Object Value)
@@ -194,10 +208,14 @@ try {
             Set-TaskField $unexplainedTasks $task.Id 'Status' 'IN_PROGRESS'
         }
     }
-    Invoke-Case 'unexplained zero READY' $unexplainedZeroReady $false ''
+    Invoke-Case 'unexplained zero READY' $unexplainedZeroReady $false 'No READY task exists and no explicit unresolved blocker'
 
     $transition = New-Fixture 'next-task-transition'
     $transitionTasks = Join-Path $transition 'docs/TASKS.md'
+    foreach ($task in @(Get-TaskRows $transitionTasks | Where-Object Status -eq 'READY')) {
+        Set-TaskField $transitionTasks $task.Id 'Status' 'BLOCKED'
+        Set-TaskField $transitionTasks $task.Id 'Blockers / Evidence' 'Unresolved blocker: fixture isolation'
+    }
     Set-TaskField $transitionTasks 'P17-M01-T001' 'Status' 'DONE'
     Set-TaskField $transitionTasks 'P17-M01-T001' 'Blockers / Evidence' 'Evidence: transition candidate'
     Set-TaskField $transitionTasks 'P17-M01-T002' 'Status' 'READY'

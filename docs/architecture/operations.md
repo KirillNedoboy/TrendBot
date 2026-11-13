@@ -234,3 +234,94 @@ run completed with actual 15m/1h inputs, a committed signal, local output and a
 decision-clock outcome, plus independent causal-prefix and restart parity.
 Earlier failures and NoSetup windows remain retained. No external publication,
 OOS comparison, order or realized-profit claim follows from this evidence.
+
+## P15-M03-T021 public-only start, recovery and verdict
+
+### Verdict boundaries
+
+| Gate | Verdict | Evidence boundary |
+|---|---|---|
+| Software baseline | PASS for the T020 input-to-outcome, restart, idempotency, failure, local-output and zero-private/order-call checks | Release tests and the isolated real-ledger replay are software evidence, not strategy validation |
+| Research | `RESEARCH`; statistical validation `UNKNOWN` | T019 observed one genuine signal and one decision-clock OHLC outcome over one available bar. No OOS comparison, validated edge, or realized-profit claim follows |
+| Execution authorization | Not granted by this runbook or by software readiness | No private execution, orders, paper/testnet or external publication/send |
+
+T019's outbox entry is a durable local output row; it has no external delivery
+receipt and no publication was observed. T014's Telegram acknowledgment applies
+only to its separate TESTONLY message. It is not T019 publication evidence.
+
+### Operator procedure
+
+Use only a separately authorized, predeclared public envelope with an active
+UTC start window, isolated fresh run directory and frozen profile/policies.
+Do not edit an envelope after preflight, reuse the expired T018/T019 declaration
+for a new run, or treat preflight `ready` as runtime readiness. The public-only
+path needs no exchange credentials. It reads public REST/market-WebSocket data
+and writes only local stores/output.
+
+From the repository root in PowerShell, after building the pinned SDK's Release
+App:
+
+```powershell
+$dotnet = Join-Path $env:USERPROFILE ".dotnet\dotnet.exe"
+& $dotnet restore --locked-mode
+if ($LASTEXITCODE -ne 0) { throw "Locked restore failed." }
+& $dotnet build .\src\TradingBot.App\TradingBot.App.csproj -c Release --no-restore --warnaserror
+if ($LASTEXITCODE -ne 0) { throw "Release App build failed." }
+$app = ".\src\TradingBot.App\bin\Release\net10.0\TradingBot.App.dll"
+$envelope = (Resolve-Path -LiteralPath $env:TRADINGBOT_PUBLIC_ENVELOPE).Path
+$hash = (Get-FileHash -LiteralPath $envelope -Algorithm SHA256).Hash.ToLowerInvariant()
+& $dotnet $app signal-only preflight --envelope $envelope
+if ($LASTEXITCODE -ne 0) { throw "Public envelope preflight failed." }
+```
+
+Read the preflight JSON and require `status` = `ready`; retain its envelope
+hash and reasons with the run evidence. Preflight validates the declaration,
+does not create the stores, contact the exchange, start a process or guarantee
+runtime resource availability.
+
+For a planned restart drill, start with the declared envelope and its exact
+hash:
+
+```powershell
+& $dotnet $app signal-only bounded-run --envelope $envelope --sha256 $hash --pause-after-first-close
+if ($LASTEXITCODE -ne 0) { throw "Bounded public run did not reach its planned stop." }
+```
+
+The planned stop waits until both timeframes cover the same cutoff; it may
+therefore occur after the first 15m close. Resume the same run using the same
+envelope, hash, run directory and identical Release assemblies:
+
+```powershell
+& $dotnet $app signal-only bounded-run --envelope $envelope --sha256 $hash --resume
+```
+
+The run lock prevents concurrent writers. Resume preserves the original
+deadline and refuses changed envelope/assembly identity, unexpected files,
+reparse points or an expired deadline. On disconnect, gap, conflicting
+revision, stale required feed or SQLite failure, stop and preserve the run
+directory and logs; do not edit the declaration, delete evidence, or infer
+missing inputs. Resume only when the original identity/deadline checks pass.
+Otherwise retain the failed run and request a separately authorized, newly
+predeclared public capture if needed.
+
+Inspect local output read-only using the `signalJournalPath` declared inside the
+same envelope:
+
+```powershell
+$wire = Get-Content -LiteralPath $envelope -Raw | ConvertFrom-Json -Depth 64
+$journal = [string]$wire.configuration.signalJournalPath
+& $dotnet $app signal-only render --journal $journal --symbol $wire.configuration.symbols[0] --format console
+```
+
+The renderer does not publish. A pending output is not a delivery receipt;
+`publishedAt` remains null without a separate publication event. `signal-only
+telegram-send` is a different external side effect and is outside this
+runbook; never invoke it without separate explicit authorization. Do not use
+the unbounded `signal-only --config` command as a substitute for bounded run.
+
+The isolated-store smoke for T020/T021 copied the actual T019 native ledger,
+restored the feed/consumer into a fresh local journal, compared the result to
+the persisted T019 journal and outcome, and ran the local renderer with zero
+HTTP calls. It verifies offline recovery and local presentation, not a second
+live capture. T019 itself separately records its actual bounded process
+restart. Evidence and exact test counts are in [HANDOFF.md](../../HANDOFF.md) under T020.
