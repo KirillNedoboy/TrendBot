@@ -87,6 +87,34 @@ public sealed class SignalContractsTests
     }
 
     [Fact]
+    public void VersionedLevelsSurviveRoundTripAndCannotBeTamperedWith()
+    {
+        SignalRecord legacy = CreateSignal();
+        string legacyJson = CoreJsonSerializer.Serialize(legacy);
+        Assert.Equal(SignalRecord.LegacyFormatVersion, legacy.FormatVersion);
+        Assert.False(JsonNode.Parse(legacyJson)!.AsObject().ContainsKey("priceLevels"));
+        Assert.Equal(legacy, CoreJsonSerializer.Deserialize<SignalRecord>(legacyJson));
+
+        SignalIdentity identity = Identity();
+        SignalPriceLevelParameters parameters = new(SetupType.BoundaryRejection, 1.5m, 0.1m, 1m, 2m);
+        SignalPriceLevels levels = new(1, "fixture-levels", SignalPriceLevelPolicy.CurrentFormulaVersion,
+            14, parameters, "15m", Direction.Long, "setup-event", 100m, 99m, 2m,
+            SignalPriceLevelsState.Ready, 97m, 103m, 106m, null);
+        SignalRecord signal = SignalRecord.Create(identity, Evidence(identity, "quality-a"),
+            SignalAssessmentState.ConfirmedOnClosedBar, BarInterval(), SetupClose,
+            ReferencePrice(), priceLevels: levels);
+        Assert.Equal(SignalRecord.CurrentFormatVersion, signal.FormatVersion);
+        string json = CoreJsonSerializer.Serialize(signal);
+        Assert.Equal(signal, CoreJsonSerializer.Deserialize<SignalRecord>(json));
+        JsonObject missingLevels = JsonNode.Parse(json)!.AsObject();
+        missingLevels.Remove("priceLevels");
+        Assert.Throws<JsonException>(() => CoreJsonSerializer.Deserialize<SignalRecord>(missingLevels.ToJsonString()));
+        JsonObject tampered = JsonNode.Parse(json)!.AsObject();
+        tampered["priceLevels"]!["stopLoss"] = 98m;
+        Assert.Throws<JsonException>(() => CoreJsonSerializer.Deserialize<SignalRecord>(tampered.ToJsonString()));
+    }
+
+    [Fact]
     public void ProvenanceRejectsInputBeyondItsCausalCutAndIncompatibleHigherCut()
     {
         SignalInputReference lateInput = Input("setup-event", SignalInputRole.Setup,

@@ -12,6 +12,8 @@ public sealed record SignalOnlyConfiguration
     public const int PerSymbolWidthFormatVersion = 2;
     public const int MultiLaneFormatVersion = 3;
     public const int MultiTimeframeFormatVersion = 4;
+    public const int ResearchStrategiesFormatVersion = 5;
+    public const int PriceLevelsFormatVersion = 6;
     public const string SignalOnlyMode = "signal-only-public";
 
     private static readonly JsonSerializerOptions WireOptions = new()
@@ -43,6 +45,10 @@ public sealed record SignalOnlyConfiguration
 
     public SignalMultiLanePolicy? MultiLanePolicy { get; }
 
+    public SignalResearchStrategyPolicy? ResearchStrategies { get; }
+
+    public SignalPriceLevelPolicy? PriceLevelsPolicy { get; }
+
     internal IReadOnlyList<SignalOnlyTimeframeProfile> AdditionalProfiles { get; }
 
     private readonly Dictionary<string, PublicSignalProfileConfiguration>? _profilesBySymbol;
@@ -69,7 +75,9 @@ public sealed record SignalOnlyConfiguration
         SignalScenarioPolicySet scenarioPolicies,
         IReadOnlyDictionary<string, decimal>? boundaryMinimumChannelWidths,
         SignalMultiLanePolicy? multiLanePolicy,
-        IReadOnlyList<SignalOnlyTimeframeProfile>? additionalProfiles)
+        IReadOnlyList<SignalOnlyTimeframeProfile>? additionalProfiles,
+        SignalResearchStrategyPolicy? researchStrategies = null,
+        SignalPriceLevelPolicy? priceLevelsPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         ArgumentNullException.ThrowIfNull(profile);
@@ -137,6 +145,11 @@ public sealed record SignalOnlyConfiguration
             throw new ArgumentException("Multi-timeframe profiles require multi-lane data.",
                 nameof(additionalProfiles));
         }
+        if (researchStrategies is not null && additional.Length == 0)
+        {
+            throw new ArgumentException("Research strategies require a multi-timeframe profile.",
+                nameof(researchStrategies));
+        }
         HashSet<string> setupTimeframes = new(StringComparer.Ordinal) { profile.Setup!.Timeframe! };
         HashSet<string> profileVersions = new(StringComparer.Ordinal) { profile.ProfileVersion! };
         foreach (SignalOnlyTimeframeProfile item in additional)
@@ -154,7 +167,36 @@ public sealed record SignalOnlyConfiguration
                     nameof(additionalProfiles));
             }
         }
-        FormatVersion = additional.Length > 0 ? MultiTimeframeFormatVersion
+        if (researchStrategies is not null
+            && new[]
+            {
+                researchStrategies.BoundaryTimeframes,
+                researchStrategies.CenterRetestTimeframes,
+                researchStrategies.FailedReclaimTimeframes,
+                researchStrategies.BreakoutRetestTimeframes,
+                researchStrategies.FlowStochasticTimeframes,
+                researchStrategies.FlowRsiTimeframes,
+                researchStrategies.FlowAtrTimeframes,
+                researchStrategies.CompressionTimeframes
+            }.SelectMany(static timeframes => timeframes)
+                .Any(timeframe => !setupTimeframes.Contains(timeframe)))
+        {
+            throw new ArgumentException("Research strategy timeframes require configured profiles.",
+                nameof(researchStrategies));
+        }
+        if (priceLevelsPolicy is not null
+            && (researchStrategies is null || additional.Length == 0
+                || additional.Select(static item => item.Profile).Prepend(profile)
+                    .Any(item => item.Indicators?.ChannelWidthKind != PriceContextChannelWidthKind.Atr
+                        || item.Indicators.AtrMode != PriceContextAtrMode.Rma
+                        || item.Indicators.ChannelWidthPeriodBars != priceLevelsPolicy.AtrPeriodBars)))
+        {
+            throw new ArgumentException("Price-level ATR must match every configured timeframe.",
+                nameof(priceLevelsPolicy));
+        }
+        FormatVersion = priceLevelsPolicy is not null ? PriceLevelsFormatVersion
+            : researchStrategies is not null ? ResearchStrategiesFormatVersion
+            : additional.Length > 0 ? MultiTimeframeFormatVersion
             : multiLanePolicy is not null ? MultiLaneFormatVersion
             : boundaryMinimumChannelWidths is null
                 ? CurrentFormatVersion : PerSymbolWidthFormatVersion;
@@ -165,6 +207,8 @@ public sealed record SignalOnlyConfiguration
         Profile = profile;
         ScenarioPolicies = scenarioPolicies;
         MultiLanePolicy = multiLanePolicy;
+        ResearchStrategies = researchStrategies;
+        PriceLevelsPolicy = priceLevelsPolicy;
         AdditionalProfiles = Array.AsReadOnly(additional);
         if (boundaryMinimumChannelWidths is not null)
         {
@@ -209,15 +253,29 @@ public sealed record SignalOnlyConfiguration
             bool validVersion = wire.FormatVersion switch
             {
                 CurrentFormatVersion => wire.BoundaryMinimumChannelWidths is null
-                    && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null,
+                    && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null
+                    && wire.ResearchStrategies is null && wire.PriceLevelsPolicy is null,
                 PerSymbolWidthFormatVersion => wire.BoundaryMinimumChannelWidths is not null
-                    && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null,
+                    && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null
+                    && wire.ResearchStrategies is null && wire.PriceLevelsPolicy is null,
                 MultiLaneFormatVersion => wire.BoundaryMinimumChannelWidths is not null
                     && wire.MultiLanePolicy is { ValueKind: JsonValueKind.Object }
-                    && wire.AdditionalProfiles is null,
+                    && wire.AdditionalProfiles is null && wire.ResearchStrategies is null
+                    && wire.PriceLevelsPolicy is null,
                 MultiTimeframeFormatVersion => wire.BoundaryMinimumChannelWidths is not null
                     && wire.MultiLanePolicy is { ValueKind: JsonValueKind.Object }
-                    && wire.AdditionalProfiles is { Length: > 0 },
+                    && wire.AdditionalProfiles is { Length: > 0 }
+                    && wire.ResearchStrategies is null && wire.PriceLevelsPolicy is null,
+                ResearchStrategiesFormatVersion => wire.BoundaryMinimumChannelWidths is not null
+                    && wire.MultiLanePolicy is { ValueKind: JsonValueKind.Object }
+                    && wire.AdditionalProfiles is { Length: > 0 }
+                    && wire.ResearchStrategies is { ValueKind: JsonValueKind.Object }
+                    && wire.PriceLevelsPolicy is null,
+                PriceLevelsFormatVersion => wire.BoundaryMinimumChannelWidths is not null
+                    && wire.MultiLanePolicy is { ValueKind: JsonValueKind.Object }
+                    && wire.AdditionalProfiles is { Length: > 0 }
+                    && wire.ResearchStrategies is { ValueKind: JsonValueKind.Object }
+                    && wire.PriceLevelsPolicy is { ValueKind: JsonValueKind.Object },
                 _ => false
             };
             if (!validVersion
@@ -242,9 +300,15 @@ public sealed record SignalOnlyConfiguration
                     CoreJsonSerializer.Deserialize<PublicSignalProfileConfiguration>(item.Profile.GetRawText()),
                     CoreJsonSerializer.Deserialize<SignalScenarioPolicySet>(item.ScenarioPolicies.GetRawText())))
                 .ToArray();
+            SignalResearchStrategyPolicy? researchStrategies = wire.ResearchStrategies is { } researchJson
+                ? CoreJsonSerializer.Deserialize<SignalResearchStrategyPolicy>(researchJson.GetRawText())
+                : null;
+            SignalPriceLevelPolicy? priceLevelsPolicy = wire.PriceLevelsPolicy is { } levelsJson
+                ? CoreJsonSerializer.Deserialize<SignalPriceLevelPolicy>(levelsJson.GetRawText())
+                : null;
             return new SignalOnlyConfiguration(wire.Symbols, wire.InputLedgerPath,
                 wire.SignalJournalPath, profile, policies, wire.BoundaryMinimumChannelWidths,
-                multiLanePolicy, additional);
+                multiLanePolicy, additional, researchStrategies, priceLevelsPolicy);
         }
         catch (JsonException)
         {
@@ -284,7 +348,11 @@ public sealed record SignalOnlyConfiguration
             : ParseElement(CoreJsonSerializer.Serialize(MultiLanePolicy)),
         AdditionalProfiles.Count == 0 ? null : AdditionalProfiles.Select(item =>
             new WireAdditionalProfile(ParseElement(CoreJsonSerializer.Serialize(item.Profile)),
-                ParseElement(CoreJsonSerializer.Serialize(item.ScenarioPolicies)))).ToArray()), WireOptions);
+                ParseElement(CoreJsonSerializer.Serialize(item.ScenarioPolicies)))).ToArray(),
+        ResearchStrategies is null ? null
+            : ParseElement(CoreJsonSerializer.Serialize(ResearchStrategies)),
+        PriceLevelsPolicy is null ? null
+            : ParseElement(CoreJsonSerializer.Serialize(PriceLevelsPolicy))), WireOptions);
 
     internal PublicSignalProfileConfiguration ProfileForSymbol(string symbol)
     {
@@ -396,7 +464,8 @@ public sealed record SignalOnlyConfiguration
         string[] Symbols, string InputLedgerPath, string SignalJournalPath,
         JsonElement Profile, JsonElement ScenarioPolicies,
         IReadOnlyDictionary<string, decimal>? BoundaryMinimumChannelWidths = null,
-        JsonElement? MultiLanePolicy = null, WireAdditionalProfile[]? AdditionalProfiles = null);
+        JsonElement? MultiLanePolicy = null, WireAdditionalProfile[]? AdditionalProfiles = null,
+        JsonElement? ResearchStrategies = null, JsonElement? PriceLevelsPolicy = null);
 
     private sealed record WireAdditionalProfile(JsonElement Profile, JsonElement ScenarioPolicies);
 }

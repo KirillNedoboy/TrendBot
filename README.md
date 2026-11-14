@@ -61,6 +61,18 @@ against the same state files. OI and trade-window warmup are required. Missing o
 stale B/C evidence blocks that candidate rather than confirming it. The profile
 is experimental, not statistically validated; see the [runtime details](docs/architecture/operations.md#p15-m03-t011-public-only-signal-runtime).
 
+The v6 profile enables failed-breakout reclaim, breakout/retest continuation
+and three independent Flow-recovery methods on 15m, 30m and 1h. A separate
+compression/expansion hypothesis runs on 30m and 1h. The existing Boundary and
+Center families remain enabled on all four timeframes. Each family has an
+explicit timeframe array in `researchStrategies`; an empty array disables it.
+These are research signals, not validated trading strategies.
+
+New v6 signals include indicative SL, TP1 and TP2 derived from the closed-bar
+reference and ATR. They are unrounded research levels, not orders or guaranteed
+fills; older signals and unavailable inputs show `Unknown`. The per-family
+parameters and formulas are in the [runtime details](docs/architecture/operations.md#p15-m03-t011-public-only-signal-runtime).
+
 Each new signal can include a UTC-session VWAP, a POC for the observed
 one-minute trade window, and the latest observed Binance liquidation snapshot.
 They are context only, not extra entry filters. The liquidation stream is

@@ -8,9 +8,6 @@ namespace TradingBot.Core.Tests;
 
 public sealed class LaneASetupFixtureTests
 {
-    private static readonly SetupType[] V1SetupTypes =
-        [SetupType.BoundaryRejection, SetupType.CenterRetest];
-
     private static readonly Type[] LaneAContractTypes =
     [
         typeof(BoundaryRejectionSetupResult),
@@ -249,9 +246,8 @@ public sealed class LaneASetupFixtureTests
     }
 
     [Fact]
-    public void OnlyV1SetupFamiliesAndNoExecutionContractsAreExposed()
+    public void LegacyLaneAContractsDoNotExposeExecution()
     {
-        Assert.Equal(V1SetupTypes, Enum.GetValues<SetupType>());
         Assert.Equal(BoundaryRejectionSetupResult.CurrentAlgorithmVersion,
             "boundary-rejection-v1");
         Assert.Equal(CenterRetestSetupResult.CurrentAlgorithmVersion,

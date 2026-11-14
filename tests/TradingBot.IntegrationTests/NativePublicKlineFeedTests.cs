@@ -800,6 +800,98 @@ public sealed class NativePublicKlineFeedTests
         Assert.Empty(rejectingHandler.Requests);
     }
 
+    [Fact]
+    public async Task ResearchReclaimIsPersistedWithLaneEvidenceAndSurvivesRestart()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        DateTimeOffset contextStart = HistoryStart.AddHours(-2);
+        BinanceKline[] restBars = CreateRestBars(null, contextStart);
+        DateTimeOffset pivotOpen = HistoryStart.AddMinutes(15 * 8);
+        int pivotIndex = Array.FindIndex(restBars, bar => bar.Timeframe == "15m"
+            && bar.OpenTimeMilliseconds == pivotOpen.ToUnixTimeMilliseconds());
+        restBars[pivotIndex] = CreateKline(pivotOpen, "15m", true, low: 60m);
+        KlineHandler handler = new(restBars, false);
+        using HttpClient client = new(handler);
+        FixedTimeProvider clock = new(WarmupAt);
+        BinancePublicRestClient rest = new(client, new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(journalDatabase.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(3),
+            htfSlowPeriodBars: 2, contextHistoryStart: contextStart, channelCenterPeriodBars: 2,
+            atrMode: PriceContextAtrMode.Rma);
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupAsync(
+            rest, "BTCUSDT", profile, ledger, clock, TestContext.Current.CancellationToken);
+        ImmutableValueList<string> frames = new(["15m"]);
+        ImmutableValueList<string> none = new([]);
+        SignalResearchStrategyPolicy research = new(1, "research-fixture", frames, frames,
+            frames, none, none, none, none, none, 96, 2, 1, 30m, 70m, 2m, 2);
+        SignalPriceLevelPolicy priceLevels = new(1, "levels-fixture",
+            SignalPriceLevelPolicy.CurrentFormulaVersion, 1,
+            new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
+                .Select(static family => new SignalPriceLevelParameters(family, 1.5m, 0.1m, 1m, 2m))));
+        ISignalMultiLaneSource lanes = new FixtureMultiLaneSource("confirmed");
+        using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), feed, ledger, journal, lanes, research, priceLevels);
+        await consumer.ProcessAsync(CreateEnvelope(CreateKline(ContextOpen, "1h", true),
+            CoClose.AddMilliseconds(10)), TestContext.Current.CancellationToken);
+        await consumer.ProcessAsync(CreateEnvelope(CreateKline(PrimaryOpen, "15m", true,
+            low: 95m, openOverride: 105m, highOverride: 107m, closeOverride: 106m),
+            CoClose.AddMilliseconds(20)), TestContext.Current.CancellationToken);
+        await consumer.ProcessAsync(CreateEnvelope(CreateKline(CoClose, "15m", true,
+            low: 58m, openOverride: 96m, highOverride: 97m, closeOverride: 59m),
+            CoClose.AddMinutes(15).AddMilliseconds(10)), TestContext.Current.CancellationToken);
+        BinanceStreamEnvelope reclaim = CreateEnvelope(CreateKline(CoClose.AddMinutes(15), "15m", true,
+            low: 58m, openOverride: 59m, highOverride: 63m, closeOverride: 61m),
+            CoClose.AddMinutes(30).AddMilliseconds(10));
+        NativePublicKlineFeedUpdate reclaimUpdate = await consumer.ProcessAsync(
+            reclaim, TestContext.Current.CancellationToken);
+
+        const string stream = "binance-usdm-native-kline:BTCUSDT";
+        SignalJournalSnapshot snapshot = journal.Read(stream);
+        SignalJournalSignal signal = Assert.Single(snapshot.Signals,
+            item => item.Signal.Identity.Family == SetupType.FailedBreakoutReclaim);
+        Assert.Equal(Direction.Long, signal.Signal.Identity.Direction);
+        Assert.True(SignalMultiLaneResearchEvaluator.Evaluate(signal.Evidence.MultiLaneInput!).IsAllowed);
+        Assert.Contains(snapshot.Outbox, item => item.ScenarioEvent.SignalId == signal.Signal.Identity.SignalId);
+        SignalPriceLevels levels = Assert.IsType<SignalPriceLevels>(signal.Signal.PriceLevels);
+        Assert.Equal(SignalPriceLevelsState.Ready, levels.State);
+        Assert.True(levels.StopLoss < 58m);
+        Assert.True(levels.TakeProfit1 > signal.Signal.ReferencePrice.Price.Value);
+        Assert.True(levels.TakeProfit2 > levels.TakeProfit1);
+        using StringWriter rendered = new(CultureInfo.InvariantCulture);
+        using StringWriter errors = new(CultureInfo.InvariantCulture);
+        int exit = await SignalOnlyCommand.RunAsync(
+            ["signal-only", "render", "--journal", journalDatabase.Path, "--symbol", "BTCUSDT",
+                "--format", "json"], rendered, errors, TestContext.Current.CancellationToken);
+        Assert.Equal(0, exit);
+        using JsonDocument document = JsonDocument.Parse(rendered.ToString());
+        JsonElement card = document.RootElement.GetProperty("signals").EnumerateArray()
+            .Single(item => item.GetProperty("signalId").GetString() == signal.Signal.Identity.SignalId);
+        Assert.Equal(levels.StopLoss, card.GetProperty("priceLevels").GetProperty("stopLoss").GetDecimal());
+        Assert.Equal(levels.TakeProfit1, card.GetProperty("priceLevels").GetProperty("takeProfit1").GetDecimal());
+        Assert.Equal(levels.TakeProfit2, card.GetProperty("priceLevels").GetProperty("takeProfit2").GetDecimal());
+        using StringWriter liveOutput = new(CultureInfo.InvariantCulture);
+        await SignalOnlyCommand.WritePublicCloseAsync(reclaimUpdate, "BTCUSDT", stream, journal, liveOutput);
+        Assert.Contains(signal.Signal.Identity.SignalId, liveOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains($"\"stopLoss\":{levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}",
+            liveOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains($"\"takeProfit2\":{levels.TakeProfit2!.Value.ToString(CultureInfo.InvariantCulture)}",
+            liveOutput.ToString(), StringComparison.Ordinal);
+
+        NativePublicKlineFeed restored = NativePublicKlineFeed.RestoreFromLedger(rest,
+            "BTCUSDT", profile, ledger, clock);
+        using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), restored, ledger, journal, lanes, research, priceLevels);
+        await recovered.ProcessAsync(reclaim, TestContext.Current.CancellationToken);
+        SignalJournalSnapshot reopened = journal.Read(stream);
+        Assert.Single(reopened.Signals,
+            item => item.Signal.Identity.Family == SetupType.FailedBreakoutReclaim);
+        Assert.Equal(levels, reopened.Signals.Single(item =>
+            item.Signal.Identity.Family == SetupType.FailedBreakoutReclaim).Signal.PriceLevels);
+        Assert.Equal(snapshot.Outbox.Count, reopened.Outbox.Count);
+    }
+
     [Theory]
     [InlineData("legacy")]
     [InlineData("confirmed")]
@@ -807,6 +899,7 @@ public sealed class NativePublicKlineFeedTests
     [InlineData("veto")]
     [InlineData("unknown")]
     [InlineData("recovery")]
+    [InlineData("disabled")]
     public async Task SignalOnlyConsumerPersistsConfirmedSignalAndOutbox(string laneMode)
     {
         using TemporaryLedger inputDatabase = new();
@@ -847,8 +940,13 @@ public sealed class NativePublicKlineFeedTests
             "with-context" => new FixtureContextMultiLaneSource(),
             _ => new FixtureMultiLaneSource(laneMode)
         };
+        ImmutableValueList<string> none = new([]);
+        SignalResearchStrategyPolicy? research = laneMode == "disabled"
+            ? new SignalResearchStrategyPolicy(1, "disabled-fixture", none, none,
+                none, none, none, none, none, none, 96, 2, 1, 30m, 70m, 2m, 2)
+            : null;
         using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
-            CreateScenarioPolicies(), feed, ledger, journal, laneSource);
+            CreateScenarioPolicies(), feed, ledger, journal, laneSource, research);
         handler.Add(restBars[pivotIndex]);
         await consumer.BackfillAsync(TestContext.Current.CancellationToken);
         BinanceKline context = CreateKline(ContextOpen, "1h", true);
@@ -889,6 +987,13 @@ public sealed class NativePublicKlineFeedTests
             evaluation.LaneA.SetupObservations.CenterRetestLongStatus);
         SignalJournalSnapshot snapshot = journal.Read(
             "binance-usdm-native-kline:BTCUSDT");
+        if (laneMode == "disabled")
+        {
+            Assert.Empty(snapshot.Signals);
+            Assert.Empty(snapshot.Outbox);
+            Assert.Contains(snapshot.Diagnostics, item => item.Code == "no-confirmed-setup");
+            return;
+        }
         if (laneMode is "veto" or "unknown")
         {
             Assert.Empty(snapshot.Signals);
@@ -1387,7 +1492,8 @@ public sealed class NativePublicKlineFeedTests
         int setupWarmupBars, TimeSpan maximumAge, int htfSlowPeriodBars = 1,
         DateTimeOffset? contextHistoryStart = null, int channelCenterPeriodBars = 1,
         string priceContextVersion = PriceContextFeatureCalculator.CurrentAlgorithmVersion,
-        string setupTimeframe = "15m", string contextTimeframe = "1h")
+        string setupTimeframe = "15m", string contextTimeframe = "1h",
+        PriceContextAtrMode atrMode = PriceContextAtrMode.Sma)
     {
         PublicSignalTimeframeConfiguration Timeframe(string timeframe, int seedBars,
             int warmupBars, DateTimeOffset? historyStart = null) => new(timeframe,
@@ -1400,7 +1506,7 @@ public sealed class NativePublicKlineFeedTests
             priceContextVersion: priceContextVersion,
             featureQualityVersion: FeatureQualityEvaluation.CurrentAlgorithmVersion,
             setupFamilyVersion: "lane-a-v1", pivotLeftBars: 1, pivotRightBars: 1,
-            atrPeriodBars: 1, atrMode: PriceContextAtrMode.Sma,
+            atrPeriodBars: 1, atrMode: atrMode,
             atrValueUnit: PublicSignalValueUnit.Price,
             channelCenterKind: PriceContextChannelCenterKind.Ema,
             channelCenterPeriodBars: channelCenterPeriodBars,

@@ -17,6 +17,9 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
     private readonly PublicSignalProfileConfiguration _profile;
     private readonly string _profileHash;
     private readonly ISignalMultiLaneSource? _multiLane;
+    private readonly SignalResearchStrategyPolicy? _researchStrategies;
+    private readonly SignalPriceLevelPolicy? _priceLevelsPolicy;
+    private readonly string? _researchStrategyHash;
     private readonly SignalScenarioProjectionEngine _scenarioEngine;
     private readonly Dictionary<string, string> _revisionHashes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _committedInputEventIds = new(StringComparer.Ordinal);
@@ -39,7 +42,9 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
     internal SignalOnlyInstrumentConsumer(string symbol,
         PublicSignalProfileConfiguration profile, SignalScenarioPolicySet scenarioPolicies,
         NativePublicKlineFeed feed, SqliteNativeBarInputLedger inputLedger,
-        SqliteSignalJournalStore signalJournal, ISignalMultiLaneSource? multiLane)
+        SqliteSignalJournalStore signalJournal, ISignalMultiLaneSource? multiLane,
+        SignalResearchStrategyPolicy? researchStrategies = null,
+        SignalPriceLevelPolicy? priceLevelsPolicy = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(profile);
@@ -66,7 +71,11 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         _signalJournal = signalJournal;
         _profile = profile;
         _multiLane = multiLane;
-        _profileHash = ComputeProfileHash(profile, multiLane?.Policy);
+        _researchStrategies = researchStrategies;
+        _priceLevelsPolicy = priceLevelsPolicy;
+        _researchStrategyHash = researchStrategies is null ? null
+            : Hash(CoreJsonSerializer.Serialize(researchStrategies));
+        _profileHash = ComputeProfileHash(profile, multiLane?.Policy, researchStrategies, priceLevelsPolicy);
         _scenarioEngine = new SignalScenarioProjectionEngine(scenarioPolicies);
         SignalJournalSnapshot journalSnapshot = signalJournal.Read(_streamId);
         _currentState = new SignalJournalCurrentState(journalSnapshot.Checkpoint,
@@ -345,13 +354,20 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             return;
         }
 
-        SetupCandidate[] candidates = ConfirmedCandidates(evaluation);
+        SignalResearchStrategyEvaluation? research = _researchStrategies is null ? null
+            : SignalResearchStrategyEvaluator.Evaluate(evaluation.LaneA.PriceContext,
+                _researchStrategies);
+        SetupCandidate[] candidates = ConfirmedCandidates(evaluation, research,
+            _researchStrategies, _researchStrategyHash);
         if (candidates.Length == 0)
         {
-            string code = evaluation.LaneA.SetupObservations.IsComplete
+            string code = EnabledBaselineComplete(evaluation, _researchStrategies)
+                && (research is null || research.UnknownReasons.Count == 0)
                 ? "no-confirmed-setup" : "signal-evaluation-unknown";
             CommitDiagnostic(inputEventId, inputHash, eventTime, availabilityTime,
-                receipt.IntakeSequence, code, EvaluationReasons(evaluation).Append(code));
+                receipt.IntakeSequence, code, EvaluationReasons(evaluation)
+                    .Concat(research is null ? Enumerable.Empty<string>() : research.UnknownReasons)
+                    .Append(code));
             return;
         }
 
@@ -372,16 +388,22 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             return;
         }
 
-        PriceContextPivotKind anchorKind = candidate.Direction == Direction.Long
-            ? PriceContextPivotKind.Low : PriceContextPivotKind.High;
-        PriceContextPivotEvidence? pivot = evaluation.LaneA.PriceContext.ConfirmedPivots.Pivots
-            .Where(item => item.Kind == anchorKind
-                && item.PivotBar.EventTime.Value < candidate.SignalBar.EventTime.Value
-                && item.ConfirmationSequence <= evaluation.IntakeSequence)
-            .OrderBy(static item => item.ConfirmationTime.Value)
-            .ThenBy(static item => item.ConfirmationSequence)
-            .LastOrDefault();
-        if (pivot is null)
+        ScreenerBar? anchorBar = candidate.AnchorBar;
+        if (anchorBar is null)
+        {
+            PriceContextPivotKind anchorKind = candidate.Direction == Direction.Long
+                ? PriceContextPivotKind.Low : PriceContextPivotKind.High;
+            anchorBar = evaluation.LaneA.PriceContext.ConfirmedPivots.Pivots
+                .Where(item => item.Kind == anchorKind
+                    && item.PivotBar.EventTime.Value < candidate.SignalBar.EventTime.Value
+                    && item.ConfirmationSequence <= evaluation.IntakeSequence)
+                .OrderBy(static item => item.ConfirmationTime.Value)
+                .ThenBy(static item => item.ConfirmationSequence)
+                .LastOrDefault()?.PivotBar;
+        }
+        if (anchorBar is null
+            || anchorBar.EventTime.Value >= candidate.SignalBar.EventTime.Value
+            || anchorBar.AvailabilityTime.Value > evaluation.LaneA.SetupObservations.Cursor.AsOf.Value)
         {
             CommitDiagnostic(scenarioEventId, inputHash, candidate.SignalBar.EventTime,
                 availabilityTime, intakeSequence,
@@ -425,8 +447,8 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         SignalScenarioAnchor anchor = SignalScenarioAnchor.Create(
             new InstrumentId(Symbol), BinanceKlineIdentity.VenueName, _feed.SetupTimeframe,
             candidate.Direction, candidate.Family, _profile.ProfileVersion!,
-            candidate.AlgorithmVersion, pivot.PivotBar.Bar.EventId,
-            pivot.PivotBar.EventTime, pivot.PivotBar.StableSequence);
+            candidate.AlgorithmVersion, anchorBar.Bar.EventId,
+            anchorBar.EventTime, anchorBar.StableSequence);
         SignalScenarioProcessedInput? prior = _scenarioSnapshot.ProcessedInputs
             .FirstOrDefault(item => StringComparer.Ordinal.Equals(item.StreamId, _streamId)
                 && StringComparer.Ordinal.Equals(item.EventId, scenarioEventId));
@@ -446,7 +468,7 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
 
         (SignalRecord Signal, SignalEvidenceRecord Evidence) signal =
-            CreateSignal(evaluation, candidate, anchor.Identity, pivot.PivotBar, multiLaneInput);
+            CreateSignal(evaluation, candidate, anchor.Identity, anchorBar, multiLaneInput);
         SignalScenarioProjectionTransition transition = _scenarioEngine.Apply(
             _scenarioSnapshot, scenarioInput);
         if (transition.Status == SignalScenarioTransitionStatus.IdentityConflict)
@@ -532,12 +554,16 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
                 : null;
         SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(identity,
             provenance, SignalEvidenceState.Complete, qualityReasons, multiLaneInput, marketContext);
+        SignalPriceLevels? priceLevels = _priceLevelsPolicy is null ? null
+            : SignalPriceLevelEvaluator.Evaluate(evaluation.LaneA.PriceContext, signalBar,
+                candidate.Family, candidate.Direction, _priceLevelsPolicy);
         SignalRecord signal = SignalRecord.Create(identity, evidence,
             SignalAssessmentState.ConfirmedOnClosedBar,
             new SignalBarInterval(signalBar.Bar.OpenTime, signalBar.Bar.CloseTime),
             multiLaneInput?.DecisionAt ?? decisionCut.AsOf,
             new SignalReferencePrice(signalBar.SourceId, setupVersion,
-                signalBar.Bar.EventId, signalBar.EventTime, signalBar.Bar.Close));
+                signalBar.Bar.EventId, signalBar.EventTime, signalBar.Bar.Close),
+            priceLevels: priceLevels);
         return (signal, evidence);
     }
 
@@ -603,12 +629,28 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         _currentState.Checkpoint?.StableSequence ?? 0, intakeSequence) + 1);
 
     private static string ComputeProfileHash(PublicSignalProfileConfiguration profile,
-        SignalMultiLanePolicy? policy)
+        SignalMultiLanePolicy? policy, SignalResearchStrategyPolicy? researchStrategies,
+        SignalPriceLevelPolicy? priceLevelsPolicy)
     {
-        string json = policy is null ? CoreJsonSerializer.Serialize(profile)
-            : CoreJsonSerializer.Serialize(new { Profile = profile, MultiLanePolicy = policy });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+        if (priceLevelsPolicy is not null)
+        {
+            return Hash(CoreJsonSerializer.Serialize(new
+            {
+                Profile = profile,
+                MultiLanePolicy = policy,
+                ResearchStrategies = researchStrategies,
+                PriceLevelsPolicy = priceLevelsPolicy
+            }));
+        }
+        string json = researchStrategies is not null
+            ? CoreJsonSerializer.Serialize(new { Profile = profile, MultiLanePolicy = policy, ResearchStrategies = researchStrategies })
+            : policy is null ? CoreJsonSerializer.Serialize(profile)
+                : CoreJsonSerializer.Serialize(new { Profile = profile, MultiLanePolicy = policy });
+        return Hash(json);
     }
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static string ReceiptHash(NativeBarInputLedgerReceipt receipt) =>
         receipt.RevisionHash ?? Convert.ToHexString(SHA256.HashData(
@@ -633,8 +675,9 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
 
         string family = inputEventId[(familySeparator + 1)..directionSeparator];
         string direction = inputEventId[(directionSeparator + 1)..];
-        if (family is not (nameof(SetupType.BoundaryRejection)
-                or nameof(SetupType.CenterRetest))
+        if (!Enum.TryParse(family, out SetupType parsedFamily)
+            || !Enum.IsDefined(parsedFamily)
+            || !StringComparer.Ordinal.Equals(parsedFamily.ToString(), family)
             || direction is not (nameof(Direction.Long) or nameof(Direction.Short)))
         {
             return inputEventId;
@@ -643,19 +686,52 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         return inputEventId[prefix.Length..familySeparator];
     }
 
+    private static bool EnabledBaselineComplete(NativePublicKlineEvaluation evaluation,
+        SignalResearchStrategyPolicy? policy)
+    {
+        LaneASetupObservationProjection projection = evaluation.LaneA.SetupObservations;
+        if (policy is null)
+        {
+            return projection.IsComplete;
+        }
+        string timeframe = evaluation.Input.SetupTimeframe;
+        return (!policy.BoundaryTimeframes.Contains(timeframe)
+                || projection.BoundaryLongStatus != LaneASetupObservationStatus.Unknown
+                    && projection.BoundaryShortStatus != LaneASetupObservationStatus.Unknown)
+            && (!policy.CenterRetestTimeframes.Contains(timeframe)
+                || projection.CenterRetestLongStatus != LaneASetupObservationStatus.Unknown
+                    && projection.CenterRetestShortStatus != LaneASetupObservationStatus.Unknown);
+    }
+
     private static SetupCandidate[] ConfirmedCandidates(
-        NativePublicKlineEvaluation evaluation)
+        NativePublicKlineEvaluation evaluation, SignalResearchStrategyEvaluation? research,
+        SignalResearchStrategyPolicy? policy, string? researchStrategyHash)
     {
         LaneASetupObservationProjection projection = evaluation.LaneA.SetupObservations;
         List<SetupCandidate> candidates = [];
-        AddBoundary(Direction.Long, projection.BoundaryLongStatus,
-            evaluation.LaneA.BoundaryRejection.Long);
-        AddBoundary(Direction.Short, projection.BoundaryShortStatus,
-            evaluation.LaneA.BoundaryRejection.Short);
-        AddCenter(Direction.Long, projection.CenterRetestLongStatus,
-            evaluation.LaneA.CenterRetest.Long);
-        AddCenter(Direction.Short, projection.CenterRetestShortStatus,
-            evaluation.LaneA.CenterRetest.Short);
+        string timeframe = evaluation.Input.SetupTimeframe;
+        if (policy is null || policy.BoundaryTimeframes.Contains(timeframe))
+        {
+            AddBoundary(Direction.Long, projection.BoundaryLongStatus,
+                evaluation.LaneA.BoundaryRejection.Long);
+            AddBoundary(Direction.Short, projection.BoundaryShortStatus,
+                evaluation.LaneA.BoundaryRejection.Short);
+        }
+        if (policy is null || policy.CenterRetestTimeframes.Contains(timeframe))
+        {
+            AddCenter(Direction.Long, projection.CenterRetestLongStatus,
+                evaluation.LaneA.CenterRetest.Long);
+            AddCenter(Direction.Short, projection.CenterRetestShortStatus,
+                evaluation.LaneA.CenterRetest.Short);
+        }
+        if (research is not null)
+        {
+            foreach (SignalResearchStrategyCandidate item in research.Candidates)
+            {
+                candidates.Add(new SetupCandidate(item.Family, item.Direction, item.SignalBar,
+                    item.Reasons, $"{item.AlgorithmVersion}:{researchStrategyHash}", item.AnchorBar));
+            }
+        }
         return [.. candidates];
 
         void AddBoundary(Direction direction, LaneASetupObservationStatus status,
@@ -720,5 +796,5 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
 
     private sealed record SetupCandidate(SetupType Family, Direction Direction,
         ScreenerBar SignalBar, ImmutableValueList<string> Reasons,
-        string AlgorithmVersion);
+        string AlgorithmVersion, ScreenerBar? AnchorBar = null);
 }

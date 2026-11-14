@@ -564,7 +564,8 @@ public sealed record SignalReferencePrice
 /// <summary>Versioned passive signal card; it grants no validation or execution authority.</summary>
 public sealed record SignalRecord
 {
-    public const int CurrentFormatVersion = 1;
+    public const int LegacyFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public int FormatVersion { get; }
 
@@ -588,14 +589,17 @@ public sealed record SignalRecord
 
     public string RecordHash { get; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SignalPriceLevels? PriceLevels { get; }
+
     [JsonConstructor]
     public SignalRecord(int formatVersion, SignalIdentity identity,
         string evidenceHash, SignalAssessmentState assessmentState,
         SignalBarInterval barInterval, UtcTimestamp decisionAt,
         SignalReferencePrice referencePrice, decimal? probability,
-        string? calibrationVersion, string recordHash)
+        string? calibrationVersion, string recordHash, SignalPriceLevels? priceLevels = null)
     {
-        if (formatVersion != CurrentFormatVersion)
+        if (formatVersion is not (LegacyFormatVersion or CurrentFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The signal record format version is unsupported.");
@@ -607,11 +611,21 @@ public sealed record SignalRecord
         ArgumentNullException.ThrowIfNull(barInterval);
         ArgumentNullException.ThrowIfNull(decisionAt);
         ArgumentNullException.ThrowIfNull(referencePrice);
+        if ((formatVersion == CurrentFormatVersion) != (priceLevels is not null))
+        {
+            throw new ArgumentException("The signal format and price levels are incompatible.",
+                nameof(priceLevels));
+        }
+        ValidatePriceLevels(identity, referencePrice, priceLevels);
         ValidateCalibration(probability, calibrationVersion);
         SignalContractHash.RequireSha256(recordHash, nameof(recordHash));
-        string expected = SignalContractHash.Compute(new SignalRecordMaterial(
-            formatVersion, identity, evidenceHash, assessmentState, barInterval,
-            decisionAt, referencePrice, probability, calibrationVersion));
+        string expected = formatVersion == LegacyFormatVersion
+            ? SignalContractHash.Compute(new SignalRecordMaterial(
+                formatVersion, identity, evidenceHash, assessmentState, barInterval,
+                decisionAt, referencePrice, probability, calibrationVersion))
+            : SignalContractHash.Compute(new SignalRecordMaterialV2(
+                formatVersion, identity, evidenceHash, assessmentState, barInterval,
+                decisionAt, referencePrice, probability, calibrationVersion, priceLevels!));
         if (!StringComparer.Ordinal.Equals(recordHash, expected))
         {
             throw new ArgumentException("The signal record hash does not match its content.",
@@ -627,6 +641,7 @@ public sealed record SignalRecord
         ReferencePrice = referencePrice;
         Probability = probability;
         CalibrationVersion = calibrationVersion;
+        PriceLevels = priceLevels;
         RecordHash = recordHash;
     }
 
@@ -634,7 +649,7 @@ public sealed record SignalRecord
         SignalEvidenceRecord evidence, SignalAssessmentState assessmentState,
         SignalBarInterval barInterval, UtcTimestamp decisionAt,
         SignalReferencePrice referencePrice, decimal? probability = null,
-        string? calibrationVersion = null)
+        string? calibrationVersion = null, SignalPriceLevels? priceLevels = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(evidence);
@@ -646,12 +661,18 @@ public sealed record SignalRecord
         ValidateAssessmentEvidence(assessmentState, evidence);
         ValidateCalibration(probability, calibrationVersion);
         ValidateCausalFields(evidence, barInterval, decisionAt, referencePrice);
-        SignalRecordMaterial material = new(CurrentFormatVersion, identity,
-            evidence.RecordHash, assessmentState, barInterval, decisionAt,
-            referencePrice, probability, calibrationVersion);
-        return new SignalRecord(CurrentFormatVersion, identity, evidence.RecordHash,
+        ValidatePriceLevels(identity, referencePrice, priceLevels);
+        int version = priceLevels is null ? LegacyFormatVersion : CurrentFormatVersion;
+        string hash = priceLevels is null
+            ? SignalContractHash.Compute(new SignalRecordMaterial(version, identity,
+                evidence.RecordHash, assessmentState, barInterval, decisionAt,
+                referencePrice, probability, calibrationVersion))
+            : SignalContractHash.Compute(new SignalRecordMaterialV2(version, identity,
+                evidence.RecordHash, assessmentState, barInterval, decisionAt,
+                referencePrice, probability, calibrationVersion, priceLevels));
+        return new SignalRecord(version, identity, evidence.RecordHash,
             assessmentState, barInterval, decisionAt, referencePrice, probability,
-            calibrationVersion, SignalContractHash.Compute(material));
+            calibrationVersion, hash, priceLevels);
     }
 
     public void ValidateEvidence(SignalEvidenceRecord evidence)
@@ -667,6 +688,21 @@ public sealed record SignalRecord
         }
 
         ValidateCausalFields(evidence, BarInterval, DecisionAt, ReferencePrice);
+    }
+
+    private static void ValidatePriceLevels(SignalIdentity identity,
+        SignalReferencePrice referencePrice, SignalPriceLevels? priceLevels)
+    {
+        if (priceLevels is not null
+            && (priceLevels.Parameters.Family != identity.Family
+                || priceLevels.Direction != identity.Direction
+                || !StringComparer.Ordinal.Equals(priceLevels.Timeframe, identity.SetupTimeframe)
+                || !StringComparer.Ordinal.Equals(priceLevels.SourceEventId, referencePrice.EventId)
+                || priceLevels.ReferencePrice != referencePrice.Price.Value))
+        {
+            throw new ArgumentException("The price levels do not match the signal reference.",
+                nameof(priceLevels));
+        }
     }
 
     private static void ValidateAssessmentEvidence(
@@ -743,6 +779,12 @@ public sealed record SignalRecord
         SignalAssessmentState AssessmentState, SignalBarInterval BarInterval,
         UtcTimestamp DecisionAt, SignalReferencePrice ReferencePrice,
         decimal? Probability, string? CalibrationVersion);
+
+    private sealed record SignalRecordMaterialV2(int FormatVersion,
+        SignalIdentity Identity, string EvidenceHash,
+        SignalAssessmentState AssessmentState, SignalBarInterval BarInterval,
+        UtcTimestamp DecisionAt, SignalReferencePrice ReferencePrice,
+        decimal? Probability, string? CalibrationVersion, SignalPriceLevels PriceLevels);
 }
 
 /// <summary>Immutable publication attempt/receipt linked to one exact signal record.</summary>

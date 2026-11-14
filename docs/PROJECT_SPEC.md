@@ -6,6 +6,29 @@ This document is the indexed product/system specification for TradingBot. The ve
 
 Build a C#/.NET 10 modular monolith for autonomous, deterministic, multi-lane intraday trading research and eventual execution on Binance USD-M perpetual futures. The system must support one Core decision path for replay, backtest, shadow, paper, limited-live, and production modes, with explicit gates before real orders.
 
+## Indicative public signal price levels — 2026-11-14
+
+The user requested TP and SL for every active strategy and setup timeframe and
+delegated the research-parameter choices. Public signal-only format v6 adds
+explicit per-family ATR/wick rules and two targets to newly committed signal
+records. The values are indicative research hypotheses, not fills, exchange
+orders, position sizing, portfolio approval, or evidence of profitability.
+Missing inputs remain Unknown. Prior signal records and their hashes are not
+rewritten; OOS and private-execution gates remain unchanged.
+
+## Multi-strategy public research amendment — 2026-11-13
+
+The user requested additional strategies on the existing 12 symbols and
+delegated timeframe selection. The public-only scanner keeps the existing
+Boundary Rejection and Center Retest, and adds independently versioned
+failed-breakout reclaim, breakout/retest continuation, three Flow recovery
+methods, and compression/expansion hypotheses. Strategy/timeframe switches and
+experimental parameters are explicit configuration, not a claim of
+profitability or Pine numerical parity. All candidates retain the existing
+Lane B/C policy, causal input cuts, durable signal journal and research label.
+No OOS comparison, private execution or order authority follows from this
+amendment; the canonical source and prior signal records remain unchanged.
+
 ## Optional public market context — 2026-11-13
 
 The user authorized UTC-session VWAP, observed-trade POC and sampled Binance

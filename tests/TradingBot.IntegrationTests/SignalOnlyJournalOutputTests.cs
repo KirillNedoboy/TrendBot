@@ -116,6 +116,11 @@ public sealed class SignalOnlyJournalOutputTests
         Assert.Equal("anchor-boundary-long",
             reference.GetProperty("eventId").GetString());
         Assert.Equal(100m, reference.GetProperty("price").GetDecimal());
+        JsonElement legacyLevels = firstCard.GetProperty("priceLevels");
+        Assert.Equal("Unknown", legacyLevels.GetProperty("state").GetString());
+        Assert.Equal("not-recorded-for-legacy-signal",
+            legacyLevels.GetProperty("unknownReason").GetString());
+        Assert.Equal(JsonValueKind.Null, legacyLevels.GetProperty("stopLoss").ValueKind);
         Assert.Equal("Canceled", firstCard.GetProperty("scenario")
             .GetProperty("state").GetString());
         Assert.Null(firstCard.GetProperty("publishedAt").GetString());

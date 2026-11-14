@@ -264,6 +264,17 @@ internal static class TelegramSignalMessageFormatter
             $"Scenario event: {item.ScenarioEvent.Kind}",
             "Statistical validation: UNKNOWN"
         ];
+        lines.Add($"Reference close (not a fill): {signal.ReferencePrice.Price.Value.ToString(CultureInfo.InvariantCulture)}");
+        if (signal.PriceLevels is { State: SignalPriceLevelsState.Ready } levels)
+        {
+            lines.Add($"Indicative SL: {levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}");
+            lines.Add($"TP1: {levels.TakeProfit1!.Value.ToString(CultureInfo.InvariantCulture)}; TP2: {levels.TakeProfit2!.Value.ToString(CultureInfo.InvariantCulture)}");
+            lines.Add("Research levels only; not orders, fills, or exchange-tick-rounded prices.");
+        }
+        else
+        {
+            lines.Add($"SL/TP: UNKNOWN ({signal.PriceLevels?.UnknownReason ?? "not-recorded-for-legacy-signal"})");
+        }
         if (evidence.MarketContext is { } context)
         {
             lines.Add($"UTC-session VWAP: {context.Vwap.Value?.ToString(CultureInfo.InvariantCulture) ?? context.Vwap.UnknownReason}");

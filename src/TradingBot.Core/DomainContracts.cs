@@ -17,7 +17,13 @@ public enum Direction
 public enum SetupType
 {
     BoundaryRejection,
-    CenterRetest
+    CenterRetest,
+    FailedBreakoutReclaim,
+    BreakoutRetestContinuation,
+    FlowStochasticRecovery,
+    FlowRsiRecovery,
+    FlowAtrRecovery,
+    VolatilityCompressionExpansion
 }
 
 public enum SetupState

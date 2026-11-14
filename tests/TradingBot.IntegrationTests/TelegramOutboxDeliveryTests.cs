@@ -119,6 +119,33 @@ public sealed class TelegramOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task TelegramMessageContainsPersistedIndicativeLevels()
+    {
+        using TemporaryDatabase journalDatabase = new("journal");
+        using TemporaryDatabase deliveryDatabase = new("delivery");
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path,
+            new ScenarioFixture(includeLevels: true));
+        string? postedText = null;
+        using HttpClient http = new(new DelegateHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            postedText = body.RootElement.GetProperty("text").GetString();
+            return JsonResponse(HttpStatusCode.OK, "{\"ok\":true,\"result\":{\"message_id\":41}}");
+        }));
+        using SqliteSignalOutboxDeliveryStore delivery =
+            SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http, CreatePolicy(),
+            TestBotToken, TestChatId, new MutableTimeProvider(DeliveryStart));
+        SignalOutboxDeliverySnapshot result = Assert.IsType<SignalOutboxDeliverySnapshot>(
+            await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
+        Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, result.Status);
+        Assert.Contains("Reference close (not a fill): 100", postedText, StringComparison.Ordinal);
+        Assert.Contains("Indicative SL: 97", postedText, StringComparison.Ordinal);
+        Assert.Contains("TP1: 103; TP2: 106", postedText, StringComparison.Ordinal);
+        Assert.Contains("not orders", postedText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MalformedApiResponseShapeIsDurablyUnknownAndRedacted()
     {
         using TemporaryDatabase journalDatabase = new("journal");
@@ -555,7 +582,7 @@ public sealed class TelegramOutboxDeliveryTests
         private readonly int _closeMinute;
 
         public ScenarioFixture(string setupTimeframe = "15m",
-            Direction direction = Direction.Long, int closeMinute = 15)
+            Direction direction = Direction.Long, int closeMinute = 15, bool includeLevels = false)
         {
             Assert.True(PublicSignalTimeframes.TryGetDurationMilliseconds(setupTimeframe, out long setupMs));
             string contextTimeframe = PublicSignalTimeframes.ContextForSetup(setupTimeframe)!;
@@ -597,11 +624,20 @@ public sealed class TelegramOutboxDeliveryTests
             SignalEvidenceRecord evidence = SignalEvidenceRecord.Create(
                 _anchor.Identity, provenance, SignalEvidenceState.Complete,
                 ["fixture-reviewed"]);
+            SignalPriceLevels? levels = includeLevels
+                ? new SignalPriceLevels(1, "fixture-levels", SignalPriceLevelPolicy.CurrentFormulaVersion,
+                    14, new SignalPriceLevelParameters(SetupType.BoundaryRejection, 1.5m, 0.1m, 1m, 2m),
+                    setupTimeframe, direction, "anchor-event", 100m,
+                    direction == Direction.Long ? 99m : 101m, 2m, SignalPriceLevelsState.Ready,
+                    direction == Direction.Long ? 97m : 103m,
+                    direction == Direction.Long ? 103m : 97m,
+                    direction == Direction.Long ? 106m : 94m, null)
+                : null;
             _signal = SignalRecord.Create(_anchor.Identity, evidence,
                 SignalAssessmentState.ConfirmedOnClosedBar,
                 new SignalBarInterval(UtcAt(openMinute), UtcAt(closeMinute)), UtcAt(closeMinute),
                 new SignalReferencePrice("binance-public", "native-kline-v1",
-                    "anchor-event", UtcAt(openMinute), new Price(100m)));
+                    "anchor-event", UtcAt(openMinute), new Price(100m)), priceLevels: levels);
             FirstCommit = new SignalJournalCommit(StreamId, 0, 1,
                 _firstInput.EventId, InputHash, _firstInput.EventTime,
                 _firstInput.AvailabilityTime, _firstInput.StableSequence,

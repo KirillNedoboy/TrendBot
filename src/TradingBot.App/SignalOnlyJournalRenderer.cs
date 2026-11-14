@@ -47,6 +47,17 @@ internal static class SignalOnlyJournalRenderer
                 $"  Scenario anchor: {card.ScenarioAnchor.EventId}; alert: {card.Scenario?.AlertEventId ?? "unknown"}; state: {card.Scenario?.State ?? "unknown"}");
             output.AppendLine(CultureInfo.InvariantCulture,
                 $"  Scenario reference only: {card.ReferencePrice.Price} from {card.ReferencePrice.SourceId}/{card.ReferencePrice.EventId} at {card.ReferencePrice.ObservedAt}");
+            if (card.PriceLevels.State == "Ready")
+            {
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  Indicative SL: {card.PriceLevels.StopLoss}; TP1: {card.PriceLevels.TakeProfit1}; TP2: {card.PriceLevels.TakeProfit2}");
+                output.AppendLine("  Levels are research estimates, not orders or guaranteed fills; exchange tick rounding is not applied.");
+            }
+            else
+            {
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  SL/TP: unknown ({card.PriceLevels.UnknownReason})");
+            }
             output.AppendLine(CultureInfo.InvariantCulture,
                 $"  Quality reasons: {(card.QualityReasons.Length == 0 ? "none" : string.Join(", ", card.QualityReasons))}");
             if (card.MultiLane is { } lanes)
@@ -160,11 +171,20 @@ internal static class SignalOnlyJournalRenderer
                 signal.ReferencePrice.SourceId, signal.ReferencePrice.SourceVersion,
                 signal.ReferencePrice.EventId, Iso(signal.ReferencePrice.ObservedAt),
                 signal.ReferencePrice.Price.Value),
+            CreatePriceLevelsView(signal.PriceLevels),
             provenance.InputReferences.Select(CreateInputReference).ToArray(),
             item.Evidence.QualityReasons.ToArray(),
             episode is null ? null : CreateEpisode(episode), null, null,
             CreateMultiLaneView(item.Evidence.MultiLaneInput), item.Evidence.MarketContext);
     }
+
+    private static SignalOnlyPriceLevelsView CreatePriceLevelsView(SignalPriceLevels? levels) =>
+        levels is null
+            ? new SignalOnlyPriceLevelsView("Unknown", null, null, null, null, null, null,
+                null, "not-recorded-for-legacy-signal")
+            : new SignalOnlyPriceLevelsView(levels.State.ToString(), levels.FormulaVersion,
+                levels.PolicyVersion, levels.AtrPeriodBars, levels.Atr, levels.StopLoss,
+                levels.TakeProfit1, levels.TakeProfit2, levels.UnknownReason);
 
     private static SignalOnlyMultiLaneView? CreateMultiLaneView(SignalMultiLaneInput? input)
     {
@@ -235,6 +255,7 @@ internal sealed record SignalOnlySignalCard(string SignalId, string RecordHash,
     SignalOnlyCausalCutView DecisionCut, SignalOnlyCausalCutView HigherTimeframeCut,
     SignalOnlyScenarioAnchorView ScenarioAnchor,
     SignalOnlyReferenceView ReferencePrice,
+    SignalOnlyPriceLevelsView PriceLevels,
     SignalOnlyInputReferenceView[] InputReferences, string[] QualityReasons,
     SignalOnlyScenarioEpisodeView? Scenario,
     SignalOnlyDeliveryReceiptView? OutputReceipt, string? PublishedAt,
@@ -256,6 +277,10 @@ internal sealed record SignalOnlyScenarioAnchorView(string EventId,
 
 internal sealed record SignalOnlyReferenceView(string Kind, string SourceId,
     string SourceVersion, string EventId, string ObservedAt, decimal Price);
+
+internal sealed record SignalOnlyPriceLevelsView(string State, string? FormulaVersion,
+    string? PolicyVersion, int? AtrPeriodBars, decimal? Atr, decimal? StopLoss,
+    decimal? TakeProfit1, decimal? TakeProfit2, string? UnknownReason);
 
 internal sealed record SignalOnlyInputReferenceView(string Role, string Timeframe,
     string SourceId, string SourceVersion, string EventId, string PayloadHash,

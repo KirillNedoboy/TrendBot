@@ -420,7 +420,8 @@ public static class SignalOnlyCommand
                         : NativePublicKlineFeed.RestoreFromLedger(restClient, symbol,
                             setting.Profile, inputLedger);
                     SignalOnlyInstrumentConsumer consumer = new(symbol, setting.Profile,
-                        setting.ScenarioPolicies, feed, inputLedger, signalJournal, multiLane);
+                        setting.ScenarioPolicies, feed, inputLedger, signalJournal, multiLane,
+                        configuration.ResearchStrategies, configuration.PriceLevelsPolicy);
                     consumers.Add((feed, consumer));
                     if (snapshot.Receipts.Count != 0)
                     {
@@ -594,6 +595,7 @@ public static class SignalOnlyCommand
         {
             SignalMultiLaneAssessment? lanes = item.Evidence.MultiLaneInput is { } laneInput
                 ? SignalMultiLaneResearchEvaluator.Evaluate(laneInput) : null;
+            SignalPriceLevels? levels = item.Signal.PriceLevels;
             await output.WriteLineAsync(JsonSerializer.Serialize(new
             {
                 kind = "signal",
@@ -603,6 +605,19 @@ public static class SignalOnlyCommand
                 setup = item.Signal.Identity.Family.ToString(),
                 decisionAt = item.Signal.DecisionAt.Value,
                 signalId = item.Signal.Identity.SignalId,
+                referenceClose = item.Signal.ReferencePrice.Price.Value,
+                priceLevels = new
+                {
+                    state = levels?.State.ToString() ?? "Unknown",
+                    policyVersion = levels?.PolicyVersion,
+                    atr = levels?.Atr,
+                    stopLoss = levels?.StopLoss,
+                    takeProfit1 = levels?.TakeProfit1,
+                    takeProfit2 = levels?.TakeProfit2,
+                    unknownReason = levels?.UnknownReason
+                        ?? (levels is null ? "not-recorded-for-legacy-signal" : null),
+                    semantics = "research-only-unrounded-not-orders-or-fills"
+                },
                 marketContext = item.Evidence.MarketContext,
                 research = "RESEARCH",
                 statisticalValidation = "UNKNOWN",

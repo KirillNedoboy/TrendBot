@@ -126,6 +126,29 @@ public sealed class SignalScenarioProjectionTests
     }
 
     [Fact]
+    public void SeveralFamiliesOnOneBarKeepDistinctEpisodesAndPairwiseLinksAfterReload()
+    {
+        SignalScenarioProjectionEngine engine = new(Policies());
+        SignalScenarioProjectionSnapshot snapshot = engine.CreateInitialSnapshot();
+        SetupType[] families = [SetupType.BoundaryRejection, SetupType.FailedBreakoutReclaim,
+            SetupType.FlowStochasticRecovery, SetupType.FlowRsiRecovery];
+        for (int index = 0; index < families.Length; index++)
+        {
+            SignalScenarioProjectionTransition transition = engine.Apply(snapshot,
+                Confirm($"event-{index}", Anchor($"anchor-{index}", family: families[index]),
+                    10, 10 + index));
+            Assert.Equal(SignalScenarioTransitionStatus.Applied, transition.Status);
+            snapshot = transition.NextSnapshot;
+        }
+
+        SignalScenarioProjectionSnapshot restored = CoreJsonSerializer.Deserialize<
+            SignalScenarioProjectionSnapshot>(CoreJsonSerializer.Serialize(snapshot));
+        Assert.Equal(families.Length, restored.Episodes.Count);
+        Assert.Equal(6, restored.Events.Count(item => item.Kind == SignalScenarioEventKind.OverlapLinked));
+        Assert.Equal(4, restored.Events.Count(item => item.Kind == SignalScenarioEventKind.AlertCreated));
+    }
+
+    [Fact]
     public void ExpiryAndRearmUseExplicitInclusiveBoundariesAndNewAnchorIdentity()
     {
         SignalScenarioProjectionEngine engine = new(Policies(

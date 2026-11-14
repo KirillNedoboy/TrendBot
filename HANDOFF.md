@@ -1,5 +1,83 @@
 # Current checkpoint
 
+## Indicative TP/SL for public signals
+
+- The user requested indicative TP/SL for every enabled strategy/timeframe
+  and delegated parameter selection. They authorized a one-time implementation
+  by the current model; model/provider settings were not changed. Format-v6
+  `signal-only.multitimeframe.example.json` declares all family settings.
+  ATR(14) is calculated on each setup timeframe; stops are beyond the closed
+  signal-bar wick with a family-specific ATR minimum, and two targets use the
+  initial stop distance. Exact formulas, parameter matrix and sources are in
+  [operations](docs/architecture/operations.md#p15-m03-t011-public-only-signal-runtime).
+- New signal-record format v2 commits the levels and their formula inputs with
+  the signal. JSON/console, live signal logs and optional Telegram display them.
+  Missing or invalid inputs remain Unknown; old format-v1 signals remain
+  readable and are not retroactively assigned levels. Prices are unrounded
+  research estimates, not fills, protective orders or proof of profitability.
+- The previous `signal_12_price_levels_v1` process stopped during the Windows
+  shutdown at 2026-11-13 21:52 UTC; no automatic restart was installed. The
+  journal then contained 38 format-v1 signals and no actual v2 signal. The
+  Windows event log recorded the next system start on 2026-11-14 20:57 UTC.
+- Persistent public-only session `signal_12_price_levels_recovered_v1` now
+  uses the existing `artifacts/signal-only-12/` state. All 48 symbol/timeframe
+  streams reported receiving after recovery; missing history was backfilled,
+  not turned into retrospective signals. During the subsequent observation it
+  accepted 48 closed inputs, including 36 ready evaluations; all 36 produced
+  `no-confirmed-setup`, so no new v2 signal was observed. Both SQLite copies in
+  `artifacts/signal-only-12/backup-before-levels-recovery-el6zss6y/` passed
+  `quick_check` and the configuration was preserved beside them. Older
+  binaries cannot read new v2 signals; preserve the new journal and use a
+  compatible backup for rollback. The session is not an installed supervisor.
+- A separate offline, read-only calculation replayed an existing real BTCUSDT
+  15m Flow Stochastic short signal at its recorded sequence 553. The restored
+  decision cut and reference price matched the committed provenance, and the
+  current ATR policy returned Ready SL/TP1/TP2. Network calls were explicitly
+  rejected; the result was not saved, published, or represented as a new
+  historical signal or profitability evidence.
+- An isolated four-symbol public-feed run temporarily enabled all research
+  families on 5m for faster observation; all 16 streams received data. At the
+  next 5m close it accepted four inputs and the main scanner accepted 12;
+  neither produced a signal, so no live v2 signal is claimed. The isolated
+  process was stopped.
+  Targeted Core tests passed 105/105 and integration tests passed 72/72,
+  including all 25 enabled family/timeframe combinations in both directions,
+  no-lookahead, unknowns, legacy compatibility, SQLite restart, output and
+  fake-HTTP Telegram formatting. Scoped C# whitespace verification and Release
+  builds passed. No external Telegram send, order, private execution, OOS
+  comparison or claim of profitable trading was made.
+
+## Multi-strategy public research scanner
+
+- The 12-symbol scanner now has eight independently configurable Lane A
+  families. Boundary rejection and center retest remain on all four setup
+  timeframes; failed-breakout reclaim, breakout-retest continuation and the
+  stochastic, RSI and ATR flow-recovery variants run on 15m, 30m and 1h;
+  volatility-compression expansion runs on 30m and 1h. Format-v5
+  `signal-only.multitimeframe.example.json` declares these selections and the
+  experimental research parameters. All candidates still require Lane B and
+  Lane C to be Confirm or Neutral; missing, stale or vetoed evidence blocks
+  admission. These are research hypotheses, not validated profitability.
+- An isolated real public-feed smoke run temporarily enabled the new families
+  on BTC 5m, solely for quicker observation. It committed one short
+  `FlowStochasticRecovery` signal with Lane B Confirm and Lane C Neutral,
+  marked RESEARCH and statistical validation UNKNOWN. The final Release build
+  reopened that journal and rendered the signal. No synthetic signal or
+  external Telegram send was used.
+- Previous session `signal_12_multistrategy_v6` used the existing
+  `artifacts/signal-only-12/` state and all 48 streams reported receiving. It
+  was stopped for the price-level cutover above. Across its own cutover BTC
+  15m retained checkpoint 15 and XRP 5m retained two signals while its
+  checkpoint advanced from 28 to 29. The stopped v4 scanner's SQLite
+  databases and configuration were copied to
+  `artifacts/signal-only-12/backup-before-research-bf4bqilo/`, and both database
+  copies passed `quick_check`. Older binaries cannot read newly committed
+  strategy-family names. That process was not supervised.
+- Targeted Core tests passed 55/55 and integration tests passed 74/74. Release
+  builds had zero warnings/errors, scoped C# whitespace verification passed,
+  and the documentation validator passed. No order, private execution or OOS
+  comparison was performed.
+
 ## Public market context (2026-11-13)
 
 - User-authorized explanatory context adds UTC-session VWAP, a recent
@@ -22,11 +100,11 @@
   VWAP and POC; observed liquidation snapshots were present for BTC, ETH and
   XRP. These observations do not establish future feed availability or trading
   effectiveness.
-- Persistent session process `signal_12_context_v5` uses the existing
-  `artifacts/signal-only-12/` state and multi-timeframe configuration; all 48
-  symbol/profile streams reported receiving. The BTC 15m journal retained
-  checkpoint 9, zero signals and nine diagnostics through the cutover. The
-  process is not installed as a supervised service.
+- The previous session process `signal_12_context_v5` was stopped for the
+  multi-strategy cutover above. Before that cutover all 48 symbol/profile
+  streams reported receiving, and the BTC 15m journal retained checkpoint 9,
+  zero signals and nine diagnostics through the context cutover. The process
+  was not installed as a supervised service.
 - Targeted checks passed: Core 26/26, Binance 11/11 and integration 70/70;
   Release builds had zero warnings/errors and scoped whitespace verification
   passed. Telegram formatting used a fake HTTP handler; no external send, order,

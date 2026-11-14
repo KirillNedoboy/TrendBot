@@ -1,5 +1,5 @@
 {
-  "formatVersion": 4,
+  "formatVersion": 6,
   "mode": "signal-only-public",
   "symbols": [
     "BTCUSDT",
@@ -135,6 +135,41 @@
       "minimumAbsorptionVolume": null,
       "maximumAbsorptionPriceMove": null
     }
+  },
+  "researchStrategies": {
+    "formatVersion": 1,
+    "policyVersion": "multi-strategy-12-research-v1",
+    "boundaryTimeframes": ["5m", "15m", "30m", "1h"],
+    "centerRetestTimeframes": ["5m", "15m", "30m", "1h"],
+    "failedReclaimTimeframes": ["15m", "30m", "1h"],
+    "breakoutRetestTimeframes": ["15m", "30m", "1h"],
+    "flowStochasticTimeframes": ["15m", "30m", "1h"],
+    "flowRsiTimeframes": ["15m", "30m", "1h"],
+    "flowAtrTimeframes": ["15m", "30m", "1h"],
+    "compressionTimeframes": ["30m", "1h"],
+    "structuralMaximumAgeBars": 96,
+    "flowLookbackBars": 14,
+    "flowSmoothingBars": 3,
+    "flowLowerExtreme": 30,
+    "flowUpperExtreme": 70,
+    "flowAtrScale": 2,
+    "compressionLookbackBars": 14
+  },
+  "priceLevelsPolicy": {
+    "formatVersion": 1,
+    "policyVersion": "multistrategy-atr-levels-research-v1",
+    "formulaVersion": "signal-atr-wick-levels-v1",
+    "atrPeriodBars": 14,
+    "families": [
+      { "family": "boundaryRejection", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
+      { "family": "centerRetest", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 },
+      { "family": "failedBreakoutReclaim", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
+      { "family": "breakoutRetestContinuation", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 },
+      { "family": "flowStochasticRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
+      { "family": "flowRsiRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
+      { "family": "flowAtrRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
+      { "family": "volatilityCompressionExpansion", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 }
+    ]
   },
   "additionalProfiles": [
     {

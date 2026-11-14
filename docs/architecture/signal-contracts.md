@@ -8,7 +8,7 @@
 |---|---|---|
 | `SignalIdentity` | Logical occurrence: instrument, venue, 15m setup timeframe, direction, family, profile/family versions, and setup event ID (the pre-confirmation structural anchor when composed through `SignalScenarioAnchor`) | `SignalId`, SHA-256 of the logical identity fields; excludes evidence and card content |
 | `SignalEvidenceRecord` | Completeness state, quality reasons, public input provenance, and profile-configuration hash | `RecordHash`, SHA-256 of evidence content; linked by `SignalId` |
-| `SignalRecord` | Immutable passive card: assessment state, setup interval, decision time, reference price, evidence hash, optional calibrated probability | `RecordHash`, SHA-256 of card content; distinct from `SignalId` and evidence hash |
+| `SignalRecord` | Immutable passive card: assessment state, setup interval, decision time, reference price, evidence hash, optional calibrated probability, and v2 indicative price levels | `RecordHash`, SHA-256 of card content; distinct from `SignalId` and evidence hash |
 | `SignalDeliveryReceipt` | One output attempt/acknowledgment/rejection/unknown receipt, bound to one exact signal record | `ReceiptId`, content identity; links `SignalId` and `SignalRecordHash` |
 | `SignalOutcomeRecord` | Independent measured/expired/unknown outcome and method version | `OutcomeId`, content identity; links `SignalId`, `SignalRecordHash`, and `EvidenceRecordHash` |
 
@@ -36,6 +36,23 @@ optional sampled liquidation snapshot. Each retains its window and unknown
 state; these values are not admission rules. Formats v1/v2 keep their prior
 serialized form and hashes. The source, formulas and incomplete liquidation
 coverage are described in [operations](operations.md#p15-m03-t011-public-only-signal-runtime).
+
+Research strategy families have distinct `SetupType` values and algorithm
+versions. Their configured policy hash participates in the new signal's
+profile hash and family-version identity; earlier records are not rewritten.
+New records cannot be read by older binaries that do not know the added family
+names. Signal identity and scenario checkpoints remain passive and do not imply
+execution authorization.
+
+Signal-record format v2 embeds the versioned price-level policy, source event,
+signal-bar extreme, ATR, state, and indicative SL/TP1/TP2 in the record hash.
+Ready prices are recomputed from the recorded inputs on deserialization;
+unknown levels carry a reason and no numeric prices. Family, direction,
+timeframe, source event and reference price must match the signal. Format v1
+retains its exact serialized form and hash and is rendered as levels unknown,
+not recalculated from later data. Earlier binaries cannot read v2 records.
+The policy, formulas and limitations are in
+[operations](operations.md#p15-m03-t011-public-only-signal-runtime).
 
 ## Local journal rendering
 

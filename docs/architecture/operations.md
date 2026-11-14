@@ -150,9 +150,12 @@ paths. Format v1 uses the profile's common boundary width. Format v2 additionall
 requires a positive, complete `boundaryMinimumChannelWidths` map keyed by the
 exact configured symbols. Format v3 also requires an explicit multi-lane research
 policy. Format v4 adds explicit independent setup/context profiles and scenario
-policies; each symbol's effective profile and its hash use its own width and
-the multi-lane policy. Unknown or duplicate properties and private transport
-settings are rejected before either database is opened.
+policies. Format v5 additionally requires independently selectable strategy
+timeframes and explicit research parameters. Format v6 adds an explicit
+price-level policy for every signal family and requires matching ATR settings on
+every configured timeframe. These policies participate in the effective profile
+hash. Formats v1–v5 remain readable. Unknown or duplicate properties and private
+transport settings are rejected before either database is opened.
 
 `signal-only.12.example.json` is a format-v3 exploratory profile for the 12
 configured perpetual contracts. Its widths are one price tick per symbol
@@ -162,7 +165,7 @@ filters. Recheck contract eligibility and tick sizes before operation. The
 bounded preflight and bounded run currently accept format v1 only.
 
 The command composes the existing public REST and market WebSocket clients. A
-v4 instrument has one consumer and durable stream per setup timeframe, but one
+v4–v6 instrument has one consumer and durable stream per setup timeframe, but one
 deduplicated kline WebSocket and one shared public B/C data source. The v3
 15m/1h stream retains its existing identity. Empty streams warm up from REST;
 populated streams restore their own feed and recover pending receipts in intake
@@ -180,6 +183,84 @@ scenario expiry retains the baseline 96 setup bars (8h, 24h, 48h, 96h for
 one-minute observations at each decision, not timeframe-specific evidence
 of effectiveness. The new profiles start history at 2026-11-09 04:00 UTC;
 the original 15m/1h seed and version are unchanged.
+
+The v6 example retains Boundary Rejection and Center Retest on all four setup
+timeframes. Failed-breakout reclaim, breakout/retest continuation and three
+independent Flow variants run on 15m, 30m and 1h; compression/expansion runs on
+30m and 1h. The timeframe arrays in `researchStrategies` independently enable
+each family. Empty arrays disable that family. A policy hash is included in the
+new family identity and the complete policy participates in the profile hash.
+All candidates use the same explicit B/C confirmation/neutral/veto policy; no
+new family can authorize an order.
+
+Failed-breakout reclaim freezes a confirmed pivot level known before the breach
+bar opens and before its input sequence. A bar must cross and close through
+that level; a strictly later closed bar must reclaim it. Same-bar returns are
+not credited. Breakout/retest requires a close across a known level, a later
+bar touching and holding it, and a further close beyond the retest extreme.
+Both directions are mirrored and unfinished episodes expire after the configured
+number of bars. Missing levels, gaps and incompatible causal sequences remain
+unknown, not confirmations.
+
+Flow recovery has separate stochastic, RSI and ATR-normalized families. They
+use closed OHLC inputs, explicitly configured lookback, smoothing, scale and
+extreme levels. A signal requires a prior extreme and a later return without
+jumping into the opposite extreme; incomplete warmup and zero denominators are
+unknown. The example's Flow settings are research seeds from the supplied
+reference, not optimized parameters. These independent decimal implementations
+do not claim TradingView/Prizrak numerical parity.
+
+Compression/expansion compares normalized ATR-channel width to its previous
+configured history: the preceding bar must set a strict window low, the current
+width must expand, and the current close must cross the preceding high or low.
+The example uses its existing ATR-period length as the research lookback.
+Unsupported channel configuration or incomplete history is unknown. These rules
+are exploratory hypotheses, not OOS results or calibrated recommendations.
+
+**Indicative research SL and targets.** Format v6 records the signal bar's
+closed reference price `E` and the causally available setup-timeframe ATR(14)
+with Wilder/RMA smoothing. With signal-bar low `L`, high `H`, family multiplier
+`k`, and `A = ATR(14)`, the initial levels are:
+
+* Long: `SL = min(E - k*A, L - 0.1*A)`.
+* Short: `SL = max(E + k*A, H + 0.1*A)`.
+* `R = abs(E - SL)`; TP1 is `E +/- 1*R` and TP2 is `E +/- p*R`, with plus
+  for long and minus for short. Levels are fixed at the signal decision; this
+  is not a trailing stop or a fill simulation.
+
+| Family | Setup timeframes | `k` | TP2 `p` |
+| --- | --- | ---: | ---: |
+| Boundary Rejection | 5m, 15m, 30m, 1h | 1.5 | 2 |
+| Center Retest | 5m, 15m, 30m, 1h | 1.5 | 2.5 |
+| Failed Breakout Reclaim | 15m, 30m, 1h | 1.5 | 2 |
+| Breakout Retest Continuation | 15m, 30m, 1h | 2 | 2.5 |
+| Flow Stochastic, RSI and ATR Recovery | 15m, 30m, 1h | 1.5 | 2 |
+| Volatility Compression Expansion | 30m, 1h | 2 | 2.5 |
+
+The 0.1 ATR wick buffer and target multiples are explicit, unoptimized design
+choices, not values established by the cited literature or profitability
+evidence. ATR adapts to each symbol and timeframe; 14 bars are not the same
+elapsed time across timeframes. Fidelity describes ATR(14), Wilder smoothing
+and 1.5 ATR as an example volatility-based stop in its
+[ATR guide](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/ATR).
+Carver, *Systematic Trading* (2015), and Aronson, *Evidence-Based Technical
+Analysis* (2007), motivate explicit rules and guard against overfitting; neither
+validates these settings for Binance perpetuals.
+
+The signal bar must be the latest causal ATR input. Missing/gapped data,
+nonpositive or unrepresentable prices and arithmetic overflow yield `Unknown`
+without numeric levels; the signal itself is not retroactively removed.
+The levels are not rounded to an exchange tick and are not executable-order
+prices. Binance's [PRICE_FILTER](https://developers.binance.com/docs/derivatives/usds-margined-futures/common-definition)
+uses `minPrice`, `maxPrice` and `tickSize`; the existing boundary-width map is
+not a live filter source. Reference close is not an entry fill, and a stop price
+does not guarantee execution at that price. Spread, slippage, fees, funding,
+latency and profitability are not calculated.
+
+
+Older binaries cannot deserialize new family names or signal-record format v2.
+Preserve a consistent pre-upgrade journal backup before cutover; never open a
+journal containing new-format signals with an older binary.
 
 The optional `public-market-context-v1` is explanatory and never changes signal
 admission. UTC-session VWAP is `sum(quoteAssetVolume) / sum(baseVolume)` from
