@@ -239,14 +239,14 @@ the unscaled formula for historical configurations; root format v7 remains the
 isolated Donchian-flow profile. These are indicative levels, not orders or
 execution authority.
 
-`signal-only.flow-25.example.json` is a separate 25-symbol research profile
-for Flow ATR and Flow Stochastic only, on 15m, 30m and 1h. It retains the
-format-v8 risk-scaled levels and uses separate stores. The 13 added symbols
-were checked against Binance exchange information on 2026-11-20; their minimum
-widths are the observed price ticks, not calibrated strategy parameters.
-The original 12 overlap the multi-strategy profile, so running both with
-delivery enabled can duplicate alerts. Check resource capacity, state isolation
-and delivery scope before adding either workload to a service.
+`signal-only.flow-25.example.json` is a separate 25-symbol research profile:
+Flow ATR on 15m/30m and Flow Stochastic on 15m. The 1h candles remain context
+for both setups; there is no 1h Flow setup. It retains format-v8 risk-scaled
+levels and uses new stores under `artifacts/flow-25-selected-v1/`, separate from
+the earlier three-timeframe profile. The 13 added symbols were checked against
+Binance exchange information on 2026-11-20; their minimum widths are observed
+price ticks, not calibrated strategy parameters. The original 12 overlap the
+multi-strategy profile, so concurrent delivery may duplicate alerts.
 
 `signal-only.12.example.json` is a format-v3 exploratory profile for the 12
 configured perpetual contracts. Its widths are one price tick per symbol
@@ -632,6 +632,32 @@ The market client has bounded reconnect attempts and the process exits on
 unrecovered failure. There is no installed service, resource limit or long-running
 soak guarantee. Keep one process per state directory, monitor its output and
 restart it when necessary. Preserve the input and signal journals together.
+
+### Three-profile research kit
+
+The local kit consists of three separate foreground launcher invocations:
+`flow`, `donchian-30m`, and `donchian-1h`. See the README for commands. Each
+uses its own intake, signal and Telegram delivery databases. The launcher creates
+the required state directory and holds an exclusive `research-profile.lock`
+for its lifetime. This guards against a second invocation through the launcher;
+it cannot prevent direct application launches or a surviving child after a
+forced launcher termination. Verify the application has stopped before restarting.
+Do not delete or replace delivery state while retaining its signal journal.
+
+Telegram is disabled by default. To opt in, configure the same bot token and chat
+ID privately in each process environment, as described below, and append
+`-EnableTelegram` to each launcher command. Each process has a separate outbox
+and delivery state; independently generated signals may arrive as separate
+messages, including signals for the same symbol and candle. No cross-profile
+deduplication is claimed. Expiry and ambiguous-delivery rules still apply.
+
+The launcher is not a service manager and has no automatic restart. A failure
+of one profile does not stop the other launcher processes, but they still share
+host resources, network and Binance limits. Fixed history starts cause warmup and
+storage to grow. Measure aggregate CPU, memory, storage and rate-limit behavior
+before deployment; the prior 25-symbol Flow startup did not establish complete
+long-duration readiness. Installing services or sending Telegram messages is a
+separate operator action.
 
 ### Explicit Telegram delivery
 

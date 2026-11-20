@@ -78,13 +78,36 @@ one-minute trade window, and the latest observed Binance liquidation snapshot.
 They are context only, not extra entry filters. The liquidation stream is
 sampled and a missing snapshot does not mean there were no liquidations.
 
-An isolated 25-symbol Flow ATR and Flow Stochastic research configuration is
-[`signal-only.flow-25.example.json`](signal-only.flow-25.example.json). It uses
-15m, 30m and 1h, the risk-scaled level policy, and separate journals. It does
-not enable the other strategy families. It is not installed or started
-automatically; running it alongside the existing 12-symbol scanner can duplicate
-Flow alerts for the 12 shared symbols. The added instruments and level choices
-are exploratory, not evidence of profitability.
+The 25-symbol Flow research configuration is
+[`signal-only.flow-25.example.json`](signal-only.flow-25.example.json): ATR on
+15m/30m and Stochastic on 15m. Its 1h candles remain higher-timeframe context,
+not a separate Flow setup. It uses risk-scaled research levels and separate
+state files. Running it alongside an overlapping scanner can duplicate alerts.
+The parameters are exploratory, not evidence of profitability.
+
+The research kit runs that Flow profile and both Donchian profiles as three
+independent foreground processes. After the Release build above, run one command
+in each of three separate PowerShell terminals:
+
+```powershell
+& .\tools\run-research-profile.ps1 -Profile flow -DotnetPath $dotnet
+```
+
+```powershell
+& .\tools\run-research-profile.ps1 -Profile donchian-30m -DotnetPath $dotnet
+```
+
+```powershell
+& .\tools\run-research-profile.ps1 -Profile donchian-1h -DotnetPath $dotnet
+```
+
+Define `$dotnet` as in the build example in each terminal, or omit `-DotnetPath`
+when `dotnet` is on PATH. These commands do not send Telegram messages by default.
+Each profile has its own state directory and launcher lock; the lock does not
+protect against direct application launches. Stop a profile with Ctrl+C and make
+sure its application process has exited before restarting it. The launcher does
+not supervise or restart processes. For opt-in Telegram delivery and operational
+limits, see [operations](docs/architecture/operations.md#three-profile-research-kit).
 
 The independent 1h Donchian-flow research profile covers 25 USDT perpetuals
 without Lane B/C admission filters. It uses separate state files, models a fixed

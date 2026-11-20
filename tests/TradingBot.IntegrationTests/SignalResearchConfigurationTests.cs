@@ -45,15 +45,39 @@ public sealed class SignalResearchConfigurationTests
         SignalOnlyConfiguration flow = SignalOnlyConfiguration.Load(
             Path.Combine(root, "signal-only.flow-25.example.json"));
         SignalOnlyConfiguration baseline = SignalOnlyConfiguration.Parse(ReadProfile());
+        SignalOnlyConfiguration hourly = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.donchian-flow.example.json"));
+        SignalOnlyConfiguration halfHourly = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.donchian-flow-30m.example.json"));
 
         Assert.Equal(25, flow.Symbols.Count);
         Assert.Equal(baseline.Symbols.ToArray(), flow.Symbols.Take(baseline.Symbols.Count).ToArray());
-        Assert.Equal(75, flow.StreamIds().Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(flow.Symbols.ToArray(), hourly.Symbols.ToArray());
+        Assert.Equal(flow.Symbols.ToArray(), halfHourly.Symbols.ToArray());
+        string[] statePaths =
+        [
+            flow.InputLedgerPath, flow.SignalJournalPath,
+            hourly.InputLedgerPath, hourly.SignalJournalPath,
+            halfHourly.InputLedgerPath, halfHourly.SignalJournalPath
+        ];
+        Assert.Equal(6, statePaths.Distinct(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal).Count());
+        Assert.Equal(50, flow.StreamIds().Distinct(StringComparer.Ordinal).Count());
         Assert.NotEqual(baseline.InputLedgerPath, flow.InputLedgerPath);
         Assert.NotEqual(baseline.SignalJournalPath, flow.SignalJournalPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "flow-25-risk-scale-v2", "native-bars.sqlite")),
+            flow.InputLedgerPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "flow-25-risk-scale-v2", "signal-journal.sqlite")),
+            flow.SignalJournalPath);
+        Assert.All(flow.Symbols, symbol =>
+        {
+            SignalOnlyTimeframeProfile[] profiles = flow.ProfilesForSymbol(symbol).ToArray();
+            Assert.Equal(["15m", "30m"], profiles.Select(item => item.Profile.Setup!.Timeframe).ToArray());
+            Assert.All(profiles, item => Assert.Equal("1h", item.Profile.Context!.Timeframe));
+        });
         SignalResearchStrategyPolicy policy = Assert.IsType<SignalResearchStrategyPolicy>(flow.ResearchStrategies);
-        Assert.Equal(["15m", "1h", "30m"], policy.FlowAtrTimeframes);
-        Assert.Equal(["15m", "1h", "30m"], policy.FlowStochasticTimeframes);
+        Assert.Equal(["15m", "30m"], policy.FlowAtrTimeframes);
+        Assert.Equal(["15m"], policy.FlowStochasticTimeframes);
         Assert.Empty(policy.BoundaryTimeframes);
         Assert.Empty(policy.CenterRetestTimeframes);
         Assert.Empty(policy.FailedReclaimTimeframes);

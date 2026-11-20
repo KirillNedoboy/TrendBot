@@ -1,3 +1,44 @@
+## Three-profile public research kit (2026-11-20)
+
+- The user requested a local kit for 25 instruments: Flow ATR on 15m/30m,
+  Flow Stochastic on 15m, and independent Donchian-flow 30m and 1h. The Flow
+  example now has 50 setup streams, retains 1h context, and uses new profile
+  identities and stores. Earlier Flow and Donchian stores were not migrated.
+  This supersedes the earlier Flow timeframe descriptions recorded below.
+- `tools/run-research-profile.ps1` starts one selected profile in the foreground
+  with its own state and optional Telegram delivery. Three invocations are
+  independent processes; the launcher lock guards only other launcher invocations.
+  It is not a service manager. No server, private API, order or Telegram send was
+  used for this task.
+- Release IntegrationTests build passed with warnings as errors; configuration
+  tests passed 6/6, relevant closed-bar/recovery tests passed 20/20, and three
+  fake-transport delivery checks passed, including independent journals to one
+  chat. The PowerShell launcher fixture verified credential and duplicate-lock
+  guards for all three profiles. Scoped whitespace and docs-graph validation
+  passed. No message was sent to Telegram.
+- A bounded 422-second staggered public-only smoke on Windows used temporary
+  stores. Donchian 1h initialized and received updates for 25/25; after an
+  injected 30m process failure, the other two processes stayed alive and the
+  restarted 30m profile received updates for 25/25. Flow output recorded
+  initialization for 20/50 setup streams and updates for 2/50 before forced
+  termination; buffered output may be incomplete. Its partial ledger contained
+  44 checkpoints and 41,716 intake receipts. The test does
+  not prove full concurrent readiness or long-duration reliability.
+- A subsequent 211-second Flow-only recovery from that partial ledger
+  initialized and received updates on all 50 setup streams. The final ledger
+  had 50 checkpoints and 55,625 intake receipts. Sampled peak Flow working set
+  was about 1,075 MiB and private memory about 1,030 MiB; this was not a
+  simultaneous fully warmed three-process measurement.
+- On a further 211-second simultaneous restart from those warmed temporary
+  journals, Flow received updates on 50/50 setup streams and each Donchian
+  profile on 25/25. The sampled aggregate application-process peak was about
+  1,697 MiB working set and 1,570 MiB private memory; state occupied 105.9 MiB.
+  Launcher overhead, long-duration growth and server behavior were not measured.
+- The observed sampled aggregate peaks for child application processes were
+  417.6 MiB working set and 295.6 MiB private memory; temporary state occupied
+  94.9 MiB at termination. Sampling omitted launcher overhead and cannot be
+  extrapolated to a server or to a fully warmed long-running deployment.
+
 ## Primary research strategy selection (2026-11-20)
 
 - The historical shortlist is Flow ATR Recovery on 15m/30m and Flow Stochastic

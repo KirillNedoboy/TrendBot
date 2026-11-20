@@ -173,6 +173,58 @@ public sealed class TelegramOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task IndependentJournalsDeliverToOneChatWithoutSharingReceipts()
+    {
+        using TemporaryDatabase journalFile1 = new("kit-journal-1");
+        using TemporaryDatabase journalFile2 = new("kit-journal-2");
+        using TemporaryDatabase journalFile3 = new("kit-journal-3");
+        using TemporaryDatabase deliveryFile1 = new("kit-delivery-1");
+        using TemporaryDatabase deliveryFile2 = new("kit-delivery-2");
+        using TemporaryDatabase deliveryFile3 = new("kit-delivery-3");
+        ScenarioFixture[] fixtures =
+        [
+            new("15m", closeMinute: 60),
+            new("30m", closeMinute: 60),
+            new("1h", closeMinute: 60)
+        ];
+        using SqliteSignalJournalStore journal1 = CreateJournal(journalFile1.Path, fixtures[0]);
+        using SqliteSignalJournalStore journal2 = CreateJournal(journalFile2.Path, fixtures[1]);
+        using SqliteSignalJournalStore journal3 = CreateJournal(journalFile3.Path, fixtures[2]);
+        using SqliteSignalOutboxDeliveryStore delivery1 = SqliteSignalOutboxDeliveryStore.Open(deliveryFile1.Path);
+        using SqliteSignalOutboxDeliveryStore delivery2 = SqliteSignalOutboxDeliveryStore.Open(deliveryFile2.Path);
+        using SqliteSignalOutboxDeliveryStore delivery3 = SqliteSignalOutboxDeliveryStore.Open(deliveryFile3.Path);
+        int calls = 0;
+        using HttpClient http = new(new DelegateHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            Assert.Equal(TestChatId, body.RootElement.GetProperty("chat_id").GetString());
+            calls++;
+            return JsonResponse(HttpStatusCode.OK,
+                $"{{\"ok\":true,\"result\":{{\"message_id\":{calls}}}}}");
+        }));
+        MutableTimeProvider clock = new(At(61));
+        TelegramOutboxDeliveryService[] senders =
+        [
+            new(journal1, delivery1, http, CreatePolicy(), TestBotToken, TestChatId, clock),
+            new(journal2, delivery2, http, CreatePolicy(), TestBotToken, TestChatId, clock),
+            new(journal3, delivery3, http, CreatePolicy(), TestBotToken, TestChatId, clock)
+        ];
+
+        for (int index = 0; index < senders.Length; index++)
+        {
+            SignalOutboxDeliverySnapshot sent = Assert.IsType<SignalOutboxDeliverySnapshot>(
+                await senders[index].DispatchNextAsync(fixtures[index].StreamId, TestContext.Current.CancellationToken));
+            Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, sent.Status);
+            Assert.Null(await senders[index].DispatchNextAsync(fixtures[index].StreamId,
+                TestContext.Current.CancellationToken));
+        }
+        Assert.Equal(3, calls);
+        Assert.Single(delivery1.Read(fixtures[0].StreamId));
+        Assert.Single(delivery2.Read(fixtures[1].StreamId));
+        Assert.Single(delivery3.Read(fixtures[2].StreamId));
+    }
+
+    [Fact]
     public async Task ApiAcknowledgmentAndMessageIdSurviveDeliveryJournalReopen()
     {
         using TemporaryDatabase journalDatabase = new("journal");
