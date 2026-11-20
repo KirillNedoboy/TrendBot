@@ -41,8 +41,11 @@ internal static class SignalOnlyJournalRenderer
                 $"  Interval: [{card.Interval.OpenTime}, {card.Interval.CloseTime}]");
             output.AppendLine(CultureInfo.InvariantCulture,
                 $"  Decision cut: {card.DecisionCut.AsOf} / seq {card.DecisionCut.MaxStableSequence}");
-            output.AppendLine(CultureInfo.InvariantCulture,
-                $"  HTF cut: {card.HigherTimeframeCut.AsOf} / seq {card.HigherTimeframeCut.MaxStableSequence}");
+            if (card.HigherTimeframeCut is { } higherTimeframeCut)
+            {
+                output.AppendLine(CultureInfo.InvariantCulture,
+                    $"  HTF cut: {higherTimeframeCut.AsOf} / seq {higherTimeframeCut.MaxStableSequence}");
+            }
             output.AppendLine(CultureInfo.InvariantCulture,
                 $"  Scenario anchor: {card.ScenarioAnchor.EventId}; alert: {card.Scenario?.AlertEventId ?? "unknown"}; state: {card.Scenario?.State ?? "unknown"}");
             output.AppendLine(CultureInfo.InvariantCulture,
@@ -164,24 +167,27 @@ internal static class SignalOnlyJournalRenderer
             new SignalOnlyIntervalView(identity.SetupTimeframe,
                 Iso(signal.BarInterval.OpenTime), Iso(signal.BarInterval.CloseTime)),
             Iso(signal.DecisionAt), CreateCut(provenance.DecisionCut),
-            CreateCut(provenance.HigherTimeframeCut),
+            provenance.FormatVersion == SignalProvenance.SetupOnlyFormatVersion
+                ? null : CreateCut(provenance.HigherTimeframeCut),
             new SignalOnlyScenarioAnchorView(identity.SetupEventId,
                 FindAnchor(provenance, identity.SetupEventId)),
             new SignalOnlyReferenceView("scenario-reference-only",
                 signal.ReferencePrice.SourceId, signal.ReferencePrice.SourceVersion,
                 signal.ReferencePrice.EventId, Iso(signal.ReferencePrice.ObservedAt),
                 signal.ReferencePrice.Price.Value),
-            CreatePriceLevelsView(signal.PriceLevels),
+            CreatePriceLevelsView(signal.PriceLevels, identity.Family),
             provenance.InputReferences.Select(CreateInputReference).ToArray(),
             item.Evidence.QualityReasons.ToArray(),
             episode is null ? null : CreateEpisode(episode), null, null,
             CreateMultiLaneView(item.Evidence.MultiLaneInput), item.Evidence.MarketContext);
     }
 
-    private static SignalOnlyPriceLevelsView CreatePriceLevelsView(SignalPriceLevels? levels) =>
+    private static SignalOnlyPriceLevelsView CreatePriceLevelsView(SignalPriceLevels? levels,
+        SetupType family) =>
         levels is null
             ? new SignalOnlyPriceLevelsView("Unknown", null, null, null, null, null, null,
-                null, "not-recorded-for-legacy-signal")
+                null, family == SetupType.DonchianFlowBreakout
+                    ? "channel-levels-in-evidence" : "not-recorded-for-legacy-signal")
             : new SignalOnlyPriceLevelsView(levels.State.ToString(), levels.FormulaVersion,
                 levels.PolicyVersion, levels.AtrPeriodBars, levels.Atr, levels.StopLoss,
                 levels.TakeProfit1, levels.TakeProfit2, levels.UnknownReason);
@@ -252,7 +258,7 @@ internal sealed record SignalOnlySignalCard(string SignalId, string RecordHash,
     string FamilyAlgorithmVersion, string AssessmentState, string EvidenceState,
     string ResearchStatus, string StatisticalValidation,
     SignalOnlyIntervalView Interval, string DecisionAt,
-    SignalOnlyCausalCutView DecisionCut, SignalOnlyCausalCutView HigherTimeframeCut,
+    SignalOnlyCausalCutView DecisionCut, SignalOnlyCausalCutView? HigherTimeframeCut,
     SignalOnlyScenarioAnchorView ScenarioAnchor,
     SignalOnlyReferenceView ReferencePrice,
     SignalOnlyPriceLevelsView PriceLevels,

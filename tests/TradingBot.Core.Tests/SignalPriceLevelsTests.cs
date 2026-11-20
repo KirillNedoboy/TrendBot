@@ -10,7 +10,8 @@ public sealed class SignalPriceLevelsTests
 
     public static IEnumerable<object[]> EnabledProfiles()
     {
-        foreach (SetupType family in Enum.GetValues<SetupType>())
+        foreach (SetupType family in Enum.GetValues<SetupType>()
+            .Where(static family => family != SetupType.DonchianFlowBreakout))
         {
             string[] timeframes = family switch
             {
@@ -125,6 +126,7 @@ public sealed class SignalPriceLevelsTests
     private static SignalPriceLevelPolicy Policy() => new(1, "fixture-levels",
         SignalPriceLevelPolicy.CurrentFormulaVersion, 14,
         new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
+            .Where(static family => family != SetupType.DonchianFlowBreakout)
             .Select(family => new SignalPriceLevelParameters(family,
                 family is SetupType.BreakoutRetestContinuation or SetupType.VolatilityCompressionExpansion ? 2m : 1.5m,
                 0.1m, 1m,

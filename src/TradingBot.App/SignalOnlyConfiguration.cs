@@ -14,6 +14,7 @@ public sealed record SignalOnlyConfiguration
     public const int MultiTimeframeFormatVersion = 4;
     public const int ResearchStrategiesFormatVersion = 5;
     public const int PriceLevelsFormatVersion = 6;
+    public const int DonchianFlowFormatVersion = 7;
     public const string SignalOnlyMode = "signal-only-public";
 
     private static readonly JsonSerializerOptions WireOptions = new()
@@ -48,6 +49,8 @@ public sealed record SignalOnlyConfiguration
     public SignalResearchStrategyPolicy? ResearchStrategies { get; }
 
     public SignalPriceLevelPolicy? PriceLevelsPolicy { get; }
+    public DonchianFlowSignalPolicy? DonchianFlowPolicy { get; }
+
 
     internal IReadOnlyList<SignalOnlyTimeframeProfile> AdditionalProfiles { get; }
 
@@ -77,7 +80,8 @@ public sealed record SignalOnlyConfiguration
         SignalMultiLanePolicy? multiLanePolicy,
         IReadOnlyList<SignalOnlyTimeframeProfile>? additionalProfiles,
         SignalResearchStrategyPolicy? researchStrategies = null,
-        SignalPriceLevelPolicy? priceLevelsPolicy = null)
+        SignalPriceLevelPolicy? priceLevelsPolicy = null,
+        DonchianFlowSignalPolicy? donchianFlowPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         ArgumentNullException.ThrowIfNull(profile);
@@ -150,6 +154,17 @@ public sealed record SignalOnlyConfiguration
             throw new ArgumentException("Research strategies require a multi-timeframe profile.",
                 nameof(researchStrategies));
         }
+        if (donchianFlowPolicy is not null
+            && (donchianFlowPolicy.BodyFloor <= 0m || profile.Setup?.Timeframe is not ("1h" or "30m")
+                || donchianFlowPolicy.StopChannelBars is not (null or 13 or 21)
+                || donchianFlowPolicy.TargetChannelBars is not (null or 89 or 144)
+                || multiLanePolicy is not null || additional.Length != 0
+                || researchStrategies is not null || priceLevelsPolicy is not null
+                || scenarioPolicies.Invalidation?.CancelOnExplicitInvalidation != true))
+        {
+            throw new ArgumentException("The Donchian flow profile must be isolated and use 1h or 30m bars.",
+                nameof(donchianFlowPolicy));
+        }
         HashSet<string> setupTimeframes = new(StringComparer.Ordinal) { profile.Setup!.Timeframe! };
         HashSet<string> profileVersions = new(StringComparer.Ordinal) { profile.ProfileVersion! };
         foreach (SignalOnlyTimeframeProfile item in additional)
@@ -200,6 +215,10 @@ public sealed record SignalOnlyConfiguration
             : multiLanePolicy is not null ? MultiLaneFormatVersion
             : boundaryMinimumChannelWidths is null
                 ? CurrentFormatVersion : PerSymbolWidthFormatVersion;
+        if (donchianFlowPolicy is not null)
+        {
+            FormatVersion = DonchianFlowFormatVersion;
+        }
         Mode = SignalOnlyMode;
         Symbols = new ImmutableValueList<string>(canonicalSymbols);
         InputLedgerPath = inputPath;
@@ -209,6 +228,7 @@ public sealed record SignalOnlyConfiguration
         MultiLanePolicy = multiLanePolicy;
         ResearchStrategies = researchStrategies;
         PriceLevelsPolicy = priceLevelsPolicy;
+        DonchianFlowPolicy = donchianFlowPolicy;
         AdditionalProfiles = Array.AsReadOnly(additional);
         if (boundaryMinimumChannelWidths is not null)
         {
@@ -276,9 +296,14 @@ public sealed record SignalOnlyConfiguration
                     && wire.AdditionalProfiles is { Length: > 0 }
                     && wire.ResearchStrategies is { ValueKind: JsonValueKind.Object }
                     && wire.PriceLevelsPolicy is { ValueKind: JsonValueKind.Object },
+                DonchianFlowFormatVersion => wire.BoundaryMinimumChannelWidths is null
+                    && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null
+                    && wire.ResearchStrategies is null && wire.PriceLevelsPolicy is null
+                    && wire.DonchianFlowPolicy is { ValueKind: JsonValueKind.Object },
                 _ => false
             };
-            if (!validVersion
+            if (!validVersion || wire.FormatVersion != DonchianFlowFormatVersion
+                    && wire.DonchianFlowPolicy is not null
                 || !StringComparer.Ordinal.Equals(wire.Mode, SignalOnlyMode)
                 || wire.Profile.ValueKind != JsonValueKind.Object
                 || wire.ScenarioPolicies.ValueKind != JsonValueKind.Object)
@@ -306,9 +331,12 @@ public sealed record SignalOnlyConfiguration
             SignalPriceLevelPolicy? priceLevelsPolicy = wire.PriceLevelsPolicy is { } levelsJson
                 ? CoreJsonSerializer.Deserialize<SignalPriceLevelPolicy>(levelsJson.GetRawText())
                 : null;
+            DonchianFlowSignalPolicy? donchianFlowPolicy = wire.DonchianFlowPolicy is { } donchianJson
+                ? CoreJsonSerializer.Deserialize<DonchianFlowSignalPolicy>(donchianJson.GetRawText())
+                : null;
             return new SignalOnlyConfiguration(wire.Symbols, wire.InputLedgerPath,
                 wire.SignalJournalPath, profile, policies, wire.BoundaryMinimumChannelWidths,
-                multiLanePolicy, additional, researchStrategies, priceLevelsPolicy);
+                multiLanePolicy, additional, researchStrategies, priceLevelsPolicy, donchianFlowPolicy);
         }
         catch (JsonException)
         {
@@ -352,7 +380,9 @@ public sealed record SignalOnlyConfiguration
         ResearchStrategies is null ? null
             : ParseElement(CoreJsonSerializer.Serialize(ResearchStrategies)),
         PriceLevelsPolicy is null ? null
-            : ParseElement(CoreJsonSerializer.Serialize(PriceLevelsPolicy))), WireOptions);
+            : ParseElement(CoreJsonSerializer.Serialize(PriceLevelsPolicy)),
+        DonchianFlowPolicy is null ? null
+            : ParseElement(CoreJsonSerializer.Serialize(DonchianFlowPolicy))), WireOptions);
 
     internal PublicSignalProfileConfiguration ProfileForSymbol(string symbol)
     {
@@ -465,7 +495,8 @@ public sealed record SignalOnlyConfiguration
         JsonElement Profile, JsonElement ScenarioPolicies,
         IReadOnlyDictionary<string, decimal>? BoundaryMinimumChannelWidths = null,
         JsonElement? MultiLanePolicy = null, WireAdditionalProfile[]? AdditionalProfiles = null,
-        JsonElement? ResearchStrategies = null, JsonElement? PriceLevelsPolicy = null);
+        JsonElement? ResearchStrategies = null, JsonElement? PriceLevelsPolicy = null,
+        JsonElement? DonchianFlowPolicy = null);
 
     private sealed record WireAdditionalProfile(JsonElement Profile, JsonElement ScenarioPolicies);
 }

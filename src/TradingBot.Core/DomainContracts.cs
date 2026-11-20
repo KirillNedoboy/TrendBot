@@ -23,7 +23,8 @@ public enum SetupType
     FlowStochasticRecovery,
     FlowRsiRecovery,
     FlowAtrRecovery,
-    VolatilityCompressionExpansion
+    VolatilityCompressionExpansion,
+    DonchianFlowBreakout
 }
 
 public enum SetupState

@@ -829,6 +829,7 @@ public sealed class NativePublicKlineFeedTests
         SignalPriceLevelPolicy priceLevels = new(1, "levels-fixture",
             SignalPriceLevelPolicy.CurrentFormulaVersion, 1,
             new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
+                .Where(static family => family != SetupType.DonchianFlowBreakout)
                 .Select(static family => new SignalPriceLevelParameters(family, 1.5m, 0.1m, 1m, 2m))));
         ISignalMultiLaneSource lanes = new FixtureMultiLaneSource("confirmed");
         using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
@@ -1078,6 +1079,312 @@ public sealed class NativePublicKlineFeedTests
         Assert.Contains("\"statisticalValidation\":\"UNKNOWN\"", liveOutput.ToString(),
             StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("1h", 60)]
+    [InlineData("30m", 30)]
+    public async Task DonchianFlowUsesOnlySetupBarsAndCancelsOnOppositeBreakoutAfterRestart(
+        string timeframe, int minutes)
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        BinanceKline SetupBar(int index, decimal high, decimal low, decimal volume, bool closed = true)
+        {
+            long open = HistoryStart.AddMinutes(index * minutes).ToUnixTimeMilliseconds();
+            return new BinanceKline(open, 100m, high, low, 101m, volume,
+                open + (minutes * 60_000L) - 1, volume * 101m, 10, 1m, 100m, "0", timeframe, closed);
+        }
+        BinanceKline[] history = Enumerable.Range(0, 55)
+            .Select(index => SetupBar(index, 102m, 98m, 10m)).ToArray();
+        KlineHandler handler = new(history, false);
+        using HttpClient http = new(handler);
+        FixedTimeProvider clock = new(HistoryStart.AddMinutes((55 * minutes) + minutes - 1));
+        BinancePublicRestClient rest = new(http, new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(journalDatabase.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(8),
+            setupTimeframe: timeframe, contextTimeframe: timeframe == "30m" ? "1h" : "4h");
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupSetupOnlyAsync(rest,
+            "BTCUSDT", profile, ledger, clock, TestContext.Current.CancellationToken);
+        Assert.All(handler.Requests, uri => Assert.Equal(timeframe, Query(uri, "interval")));
+        DonchianFlowSignalPolicy policy = new(0.000001m);
+        using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), feed, ledger, journal, null, donchianFlowPolicy: policy);
+        string stream = SignalOnlyStreamId.For("BTCUSDT", timeframe);
+        await consumer.ProcessAsync(CreateEnvelope(SetupBar(55, 104m, 98m, 30m, false),
+            HistoryStart.AddMinutes(55 * minutes).AddSeconds(2)), TestContext.Current.CancellationToken);
+        Assert.Empty(journal.Read(stream).Signals);
+        BinanceStreamEnvelope breakout = CreateEnvelope(SetupBar(55, 104m, 98m, 30m),
+            HistoryStart.AddMinutes(56 * minutes).AddSeconds(2));
+        NativePublicKlineFeedUpdate breakoutUpdate = await consumer.ProcessAsync(
+            breakout, TestContext.Current.CancellationToken);
+        NativePublicKlineEvaluation breakoutEvaluation = Assert.IsType<NativePublicKlineEvaluation>(
+            breakoutUpdate.Evaluation);
+        Assert.True(breakoutEvaluation.IsReady, string.Join(", ", breakoutEvaluation.ReadinessReasons));
+        SignalJournalSnapshot snapshot = journal.Read(stream);
+        SignalJournalSignal signal = Assert.Single(snapshot.Signals);
+        Assert.Equal(SetupType.DonchianFlowBreakout, signal.Signal.Identity.Family);
+        Assert.Equal(Direction.Long, signal.Signal.Identity.Direction);
+        Assert.Equal(timeframe, signal.Signal.Identity.SetupTimeframe);
+        Assert.Null(signal.Evidence.MultiLaneInput);
+        Assert.All(signal.Evidence.Provenance.InputReferences,
+            reference => Assert.Equal(SignalInputRole.Setup, reference.Role));
+        Assert.Single(snapshot.Outbox);
+        using StringWriter liveOutput = new(CultureInfo.InvariantCulture);
+        await SignalOnlyCommand.WritePublicCloseAsync(breakoutUpdate, "BTCUSDT",
+            stream, journal, liveOutput, timeframe);
+        using JsonDocument closeLog = JsonDocument.Parse(liveOutput.ToString().Split('\n')[0]);
+        Assert.Equal("ready", closeLog.RootElement.GetProperty("readiness").GetString());
+        using JsonDocument rendered = JsonDocument.Parse(SignalOnlyJournalRenderer.RenderJson(stream, snapshot));
+        Assert.Equal(JsonValueKind.Null,
+            rendered.RootElement.GetProperty("signals")[0].GetProperty("higherTimeframeCut").ValueKind);
+        Assert.Contains("channel-upper-55:102", signal.Evidence.QualityReasons);
+        using StringWriter cliOutput = new(CultureInfo.InvariantCulture);
+        int renderExit = await SignalOnlyCommand.RunAsync(
+            ["signal-only", "render", "--journal", journalDatabase.Path, "--symbol", "BTCUSDT",
+                "--format", "json", "--timeframe", timeframe], cliOutput, TextWriter.Null,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, renderExit);
+        Assert.Contains(signal.Signal.Identity.SignalId, cliOutput.ToString(), StringComparison.Ordinal);
+        string message = TelegramSignalMessageFormatter.Format(Assert.Single(snapshot.Outbox),
+            signal.Signal, signal.Evidence);
+        Assert.True(message.Contains($"Timeframe: {timeframe}", StringComparison.Ordinal)
+            || message.Contains(timeframe == "30m" ? "Таймфрейм: 30 минут" : "Таймфрейм: 1 час",
+                StringComparison.Ordinal));
+        Assert.Contains("Канал 55", message, StringComparison.Ordinal);
+        Assert.Contains("Поток WMA 9 / 34", message, StringComparison.Ordinal);
+        string host = Path.GetFullPath(Path.Combine(
+            System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(),
+            "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        System.Diagnostics.ProcessStartInfo start = new(host)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (string argument in new[]
+        {
+            typeof(SignalOnlyCommand).Assembly.Location, "signal-only", "render",
+            "--journal", journalDatabase.Path, "--symbol", "BTCUSDT", "--format", "json",
+            "--timeframe", timeframe
+        })
+        {
+            start.ArgumentList.Add(argument);
+        }
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!;
+        string processOutput = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        string processError = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        Assert.True(process.ExitCode == 0, processError);
+        Assert.Contains(signal.Signal.Identity.SignalId, processOutput, StringComparison.Ordinal);
+
+        NativePublicKlineFeed restored = NativePublicKlineFeed.RestoreSetupOnlyFromLedger(rest,
+            "BTCUSDT", profile, ledger, clock);
+        using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), restored, ledger, journal, null, donchianFlowPolicy: policy);
+        await recovered.ProcessAsync(breakout, TestContext.Current.CancellationToken);
+        BinanceStreamEnvelope opposite = CreateEnvelope(SetupBar(56, 102m, 97m, 10m),
+            HistoryStart.AddMinutes(57 * minutes).AddSeconds(2));
+        await recovered.ProcessAsync(opposite, TestContext.Current.CancellationToken);
+        SignalJournalSnapshot after = journal.Read(stream);
+        Assert.Single(after.Signals);
+        Assert.Contains(after.ScenarioEvents, item => item.Kind == SignalScenarioEventKind.Canceled
+            && item.ReasonCode == "opposite-channel-55-breakout");
+        Assert.Equal(2, after.Outbox.Count);
+        NativePublicKlineFeed restoredAgain = NativePublicKlineFeed.RestoreSetupOnlyFromLedger(rest,
+            "BTCUSDT", profile, ledger, clock);
+        using SignalOnlyInstrumentConsumer recoveredAgain = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), restoredAgain, ledger, journal, null, donchianFlowPolicy: policy);
+        await recoveredAgain.ProcessAsync(opposite, TestContext.Current.CancellationToken);
+        Assert.Equal(2, journal.Read(stream).Outbox.Count);
+    }
+
+    [Fact]
+    public async Task DonchianFlowSetupGapStillBlocksReadiness()
+    {
+        using TemporaryLedger inputDatabase = new();
+        BinanceKline[] history = Enumerable.Range(0, 55)
+            .Where(index => index != 20)
+            .Select(index => CreateKline(HistoryStart.AddHours(index), "1h", true))
+            .ToArray();
+        KlineHandler handler = new(history, false);
+        using HttpClient http = new(handler);
+        FixedTimeProvider clock = new(HistoryStart.AddHours(55).AddMinutes(59));
+        BinancePublicRestClient rest = new(http, new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(8),
+            setupTimeframe: "1h", contextTimeframe: "4h");
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupSetupOnlyAsync(rest,
+            "BTCUSDT", profile, ledger, clock, TestContext.Current.CancellationToken);
+
+        NativePublicKlineEvaluation evaluation = Assert.IsType<NativePublicKlineEvaluation>(
+            feed.Accept(CreateEnvelope(CreateKline(HistoryStart.AddHours(55), "1h", true),
+                HistoryStart.AddHours(56).AddSeconds(2))).Evaluation);
+
+        Assert.False(evaluation.IsReady);
+        Assert.Contains("history-gap:setup", evaluation.ReadinessReasons);
+        Assert.DoesNotContain(evaluation.ReadinessReasons, reason => reason.Contains("context", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false, 13, 89, 98, 101, "channel-stop-touched", "1h", 60)]
+    [InlineData(false, 13, 89, 99, 102, "channel-target-touched", "1h", 60)]
+    [InlineData(false, 13, 89, 98, 102, "channel-exit-ambiguous", "1h", 60)]
+    [InlineData(false, 21, 144, 98, 101, "channel-stop-touched", "1h", 60)]
+    [InlineData(false, 21, 144, 99, 102, "channel-target-touched", "1h", 60)]
+    [InlineData(true, 13, 89, 85, 102, "channel-stop-touched", "1h", 60)]
+    [InlineData(true, 21, 144, 80, 100, "channel-target-touched", "1h", 60)]
+    [InlineData(true, 13, 89, 80, 102, "channel-exit-ambiguous", "1h", 60)]
+    [InlineData(false, 13, 89, 98, 101, "channel-stop-touched", "30m", 30)]
+    [InlineData(false, 13, 89, 99, 102, "channel-target-touched", "30m", 30)]
+    [InlineData(false, 13, 89, 98, 102, "channel-exit-ambiguous", "30m", 30)]
+    [InlineData(true, 13, 89, 85, 102, "channel-stop-touched", "30m", 30)]
+    [InlineData(true, 13, 89, 80, 100, "channel-target-touched", "30m", 30)]
+    public async Task DonchianFlowResearchExitsUseFrozenLevelsAndPreserveAmbiguity(
+        bool isShort, int stopPeriod, int targetPeriod, int low, int high, string expectedReason,
+        string timeframe, int minutes)
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        BinanceKline SetupBar(int index, decimal barHigh, decimal barLow, decimal volume)
+        {
+            long open = HistoryStart.AddMinutes(index * minutes).ToUnixTimeMilliseconds();
+            decimal close = isShort && index >= 145 ? 90m : 101m;
+            return new BinanceKline(open, 100m, barHigh, barLow, close, volume,
+                open + (minutes * 60_000L) - 1, volume * close, 10, 1m, 100m, "0", timeframe, true);
+        }
+        BinanceKline[] history = Enumerable.Range(0, 145)
+            .Select(index => SetupBar(index, 102m, isShort ? 80m : 98m, 10m)).ToArray();
+        using HttpClient http = new(new KlineHandler(history, false));
+        FixedTimeProvider clock = new(HistoryStart.AddMinutes((145 * minutes) + minutes - 1));
+        BinancePublicRestClient rest = new(http, new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(inputDatabase.Path);
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(journalDatabase.Path);
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(8),
+            setupTimeframe: timeframe, contextTimeframe: timeframe == "30m" ? "1h" : "4h");
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupSetupOnlyAsync(rest,
+            "BTCUSDT", profile, ledger, clock, TestContext.Current.CancellationToken);
+        DonchianFlowSignalPolicy policy = new(0.000001m, stopPeriod, targetPeriod);
+        using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), feed, ledger, journal, null, donchianFlowPolicy: policy);
+        await consumer.ProcessAsync(CreateEnvelope(
+            SetupBar(145, isShort ? 101m : 104m, isShort ? 79m : 98m, 30m),
+            HistoryStart.AddMinutes(146 * minutes).AddSeconds(2)), TestContext.Current.CancellationToken);
+        string stream = SignalOnlyStreamId.For("BTCUSDT", timeframe);
+        SignalJournalSignal signal = Assert.Single(journal.Read(stream).Signals);
+        Assert.Contains(isShort ? "model-stop:102" : "model-stop:98", signal.Evidence.QualityReasons);
+        Assert.Contains(isShort ? "model-target:80" : "model-target:102", signal.Evidence.QualityReasons);
+        SignalJournalOutboxItem entry = Assert.Single(journal.Read(stream).Outbox);
+        string entryMessage = TelegramSignalMessageFormatter.Format(entry, signal.Signal, signal.Evidence);
+        Assert.Contains($"Модельный стоп по каналу {stopPeriod}: {(isShort ? "102" : "98")}",
+            entryMessage, StringComparison.Ordinal);
+        Assert.Contains($"Модельная цель по каналу {targetPeriod}: {(isShort ? "80" : "102")}",
+            entryMessage, StringComparison.Ordinal);
+        NativePublicKlineFeed restored = NativePublicKlineFeed.RestoreSetupOnlyFromLedger(
+            rest, "BTCUSDT", profile, ledger, clock);
+        using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
+            CreateScenarioPolicies(), restored, ledger, journal, null, donchianFlowPolicy: policy);
+        await recovered.ProcessAsync(CreateEnvelope(SetupBar(146, high, low, 10m),
+            HistoryStart.AddMinutes(147 * minutes).AddSeconds(2)), TestContext.Current.CancellationToken);
+        SignalJournalSnapshot after = journal.Read(stream);
+        Assert.Contains(after.ScenarioEvents, item => item.Kind == SignalScenarioEventKind.Canceled
+            && item.ReasonCode == expectedReason);
+        Assert.Single(after.Signals);
+        SignalJournalOutboxItem exit = Assert.Single(after.Outbox,
+            item => item.ScenarioEvent.Kind == SignalScenarioEventKind.Canceled);
+        string message = TelegramSignalMessageFormatter.Format(exit, signal.Signal, signal.Evidence);
+        Assert.Contains("Причина завершения сценария", message, StringComparison.Ordinal);
+        if (expectedReason == "channel-exit-ambiguous")
+        {
+            Assert.Contains("порядок неизвестен", message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void DonchianFlowConfigurationIsIsolatedAndRoundTrips()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        PublicSignalProfileConfiguration profile = CreateProfile(1, 1, TimeSpan.FromHours(8),
+            setupTimeframe: "1h", contextTimeframe: "4h");
+        SignalOnlyConfiguration baseline = new(["BTCUSDT"], inputDatabase.Path,
+            journalDatabase.Path, profile, CreateScenarioPolicies());
+        JsonObject json = JsonNode.Parse(baseline.ToJson())!.AsObject();
+        json["formatVersion"] = SignalOnlyConfiguration.DonchianFlowFormatVersion;
+        json["donchianFlowPolicy"] = new JsonObject { ["bodyFloor"] = 0.000001m };
+        SignalOnlyConfiguration parsed = SignalOnlyConfiguration.Parse(json.ToJsonString());
+        Assert.Equal(0.000001m, parsed.DonchianFlowPolicy!.BodyFloor);
+        Assert.Null(parsed.MultiLanePolicy);
+        Assert.Equal(parsed.DonchianFlowPolicy,
+            SignalOnlyConfiguration.Parse(parsed.ToJson()).DonchianFlowPolicy);
+        json["donchianFlowPolicy"]!["stopChannelBars"] = 21;
+        json["donchianFlowPolicy"]!["targetChannelBars"] = 144;
+        SignalOnlyConfiguration exits = SignalOnlyConfiguration.Parse(json.ToJsonString());
+        Assert.Equal(21, exits.DonchianFlowPolicy!.StopChannelBars);
+        Assert.Equal(144, exits.DonchianFlowPolicy.TargetChannelBars);
+        json["donchianFlowPolicy"]!["stopChannelBars"] = 34;
+        Assert.Throws<JsonException>(() => SignalOnlyConfiguration.Parse(json.ToJsonString()));
+        json["donchianFlowPolicy"]!["stopChannelBars"] = 21;
+        json["donchianFlowPolicy"]!["bodyFloor"] = 0m;
+        Assert.Throws<JsonException>(() => SignalOnlyConfiguration.Parse(json.ToJsonString()));
+    }
+
+    [Fact]
+    public void DonchianFlowExampleConfigurationLoadsWithoutMultiLane()
+    {
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        SignalOnlyConfiguration configuration = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.donchian-flow.example.json"));
+        SignalOnlyConfiguration baseline = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.multitimeframe.example.json"));
+        Assert.Equal(baseline.Symbols.ToArray(),
+            configuration.Symbols.Take(baseline.Symbols.Count).ToArray());
+        Assert.Equal(25, configuration.Symbols.Count);
+        Assert.Equal(25, configuration.StreamIds().Distinct(StringComparer.Ordinal).Count());
+        Assert.All(configuration.Symbols, symbol =>
+            Assert.Equal("1h", configuration.ProfileForSymbol(symbol).Setup!.Timeframe));
+        Assert.NotEqual(baseline.InputLedgerPath, configuration.InputLedgerPath);
+        Assert.NotEqual(baseline.SignalJournalPath, configuration.SignalJournalPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "donchian-flow", "native-bars.sqlite")),
+            configuration.InputLedgerPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "donchian-flow-12", "native-bars.sqlite")),
+            configuration.InputLedgerPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "donchian-flow-12", "signal-journal.sqlite")),
+            configuration.SignalJournalPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "donchian-flow-25", "native-bars.sqlite")),
+            configuration.InputLedgerPath);
+        Assert.NotEqual(Path.GetFullPath(Path.Combine("artifacts", "donchian-flow-25", "signal-journal.sqlite")),
+            configuration.SignalJournalPath);
+        Assert.Equal(SignalOnlyConfiguration.DonchianFlowFormatVersion, configuration.FormatVersion);
+        Assert.Equal("1h", configuration.Profile.Setup!.Timeframe);
+        Assert.Null(configuration.MultiLanePolicy);
+        Assert.Equal(0.000001m, configuration.DonchianFlowPolicy!.BodyFloor);
+        Assert.Equal(13, configuration.DonchianFlowPolicy.StopChannelBars);
+        Assert.Equal(89, configuration.DonchianFlowPolicy.TargetChannelBars);
+    }
+
+    [Fact]
+    public void ThirtyMinuteDonchianProfileIsIsolatedFromHourlyProfile()
+    {
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        SignalOnlyConfiguration hourly = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.donchian-flow.example.json"));
+        SignalOnlyConfiguration halfHourly = SignalOnlyConfiguration.Load(
+            Path.Combine(root, "signal-only.donchian-flow-30m.example.json"));
+        Assert.Equal(hourly.Symbols.ToArray(), halfHourly.Symbols.ToArray());
+        Assert.Equal(hourly.DonchianFlowPolicy, halfHourly.DonchianFlowPolicy);
+        Assert.Equal("30m", halfHourly.Profile.Setup!.Timeframe);
+        Assert.Null(halfHourly.MultiLanePolicy);
+        Assert.NotEqual(hourly.Profile.ProfileVersion, halfHourly.Profile.ProfileVersion);
+        Assert.NotEqual(hourly.InputLedgerPath, halfHourly.InputLedgerPath);
+        Assert.NotEqual(hourly.SignalJournalPath, halfHourly.SignalJournalPath);
+        Assert.Empty(hourly.StreamIds().Intersect(halfHourly.StreamIds(), StringComparer.Ordinal));
+        Assert.Equal(25, halfHourly.StreamIds().Distinct(StringComparer.Ordinal).Count());
+        JsonObject invalid = JsonNode.Parse(halfHourly.ToJson())!.AsObject();
+        invalid["profile"]!["setup"]!["timeframe"] = "15m";
+        Assert.Throws<JsonException>(() => SignalOnlyConfiguration.Parse(invalid.ToJsonString()));
+    }
+
 
     [Theory]
     [InlineData("5m", "15m", "confirmed")]

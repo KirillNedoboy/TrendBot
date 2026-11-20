@@ -127,6 +127,7 @@ public sealed class NativePublicKlineFeed
     private readonly SqliteNativeBarInputLedger? _ledger;
     private readonly NativePublicKlineRestHistoryBudget? _setupHistoryBudget;
     private readonly NativePublicKlineRestHistoryBudget? _contextHistoryBudget;
+    private readonly bool _setupOnly;
     private readonly Dictionary<string, BinanceKlineAcceptedRevision> _acceptedRevisions =
         new(StringComparer.Ordinal);
     private readonly SortedDictionary<long, ScreenerBar> _setupBars = [];
@@ -142,7 +143,7 @@ public sealed class NativePublicKlineFeed
         PublicSignalProfileConfiguration profile, TimeProvider timeProvider,
         SqliteNativeBarInputLedger? ledger,
         NativePublicKlineRestHistoryBudget? setupHistoryBudget,
-        NativePublicKlineRestHistoryBudget? contextHistoryBudget)
+        NativePublicKlineRestHistoryBudget? contextHistoryBudget, bool setupOnly = false)
     {
         _restClient = restClient;
         _symbol = symbol.ToUpperInvariant();
@@ -152,6 +153,7 @@ public sealed class NativePublicKlineFeed
         _ledger = ledger;
         _setupHistoryBudget = setupHistoryBudget;
         _contextHistoryBudget = contextHistoryBudget;
+        _setupOnly = setupOnly;
     }
 
     public string Symbol => _symbol;
@@ -161,6 +163,8 @@ public sealed class NativePublicKlineFeed
     internal string SetupTimeframe => _profile.Setup?.Timeframe ?? "15m";
 
     internal string ContextTimeframe => _profile.Context?.Timeframe ?? "1h";
+    internal bool SetupOnly => _setupOnly;
+
 
     public UtcTimestamp? SetupHistoryStart => ToTimestamp(_profile.Setup?.HistoryStartUtc);
 
@@ -190,7 +194,7 @@ public sealed class NativePublicKlineFeed
         PublicSignalProfileConfiguration profile, TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default) =>
         WarmupAsyncCore(restClient, symbol, profile, timeProvider, null, null, null,
-            cancellationToken);
+            false, cancellationToken);
 
     public static Task<NativePublicKlineFeed> WarmupAsync(
         IBinancePublicRestClient restClient, string symbol,
@@ -199,7 +203,17 @@ public sealed class NativePublicKlineFeed
     {
         ArgumentNullException.ThrowIfNull(ledger);
         return WarmupAsyncCore(restClient, symbol, profile, timeProvider, ledger, null,
-            null, cancellationToken);
+            null, false, cancellationToken);
+    }
+
+    internal static Task<NativePublicKlineFeed> WarmupSetupOnlyAsync(
+        IBinancePublicRestClient restClient, string symbol,
+        PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
+        TimeProvider? timeProvider = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        return WarmupAsyncCore(restClient, symbol, profile, timeProvider, ledger, null,
+            null, true, cancellationToken);
     }
 
     /// <summary>Loads history while enforcing per-timeframe REST page and row budgets.</summary>
@@ -214,13 +228,25 @@ public sealed class NativePublicKlineFeed
         ArgumentNullException.ThrowIfNull(setupHistoryBudget);
         ArgumentNullException.ThrowIfNull(contextHistoryBudget);
         return WarmupAsyncCore(restClient, symbol, profile, timeProvider, ledger,
-            setupHistoryBudget, contextHistoryBudget, cancellationToken);
+            setupHistoryBudget, contextHistoryBudget, false, cancellationToken);
     }
     /// <summary>Restores durable input without issuing REST history requests.</summary>
     public static NativePublicKlineFeed RestoreFromLedger(
         IBinancePublicRestClient restClient, string symbol,
         PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null) =>
+        RestoreFromLedgerCore(restClient, symbol, profile, ledger, timeProvider, false);
+
+    internal static NativePublicKlineFeed RestoreSetupOnlyFromLedger(
+        IBinancePublicRestClient restClient, string symbol,
+        PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
+        TimeProvider? timeProvider = null) =>
+        RestoreFromLedgerCore(restClient, symbol, profile, ledger, timeProvider, true);
+
+    private static NativePublicKlineFeed RestoreFromLedgerCore(
+        IBinancePublicRestClient restClient, string symbol,
+        PublicSignalProfileConfiguration profile, SqliteNativeBarInputLedger ledger,
+        TimeProvider? timeProvider, bool setupOnly)
     {
         ArgumentNullException.ThrowIfNull(restClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
@@ -228,7 +254,7 @@ public sealed class NativePublicKlineFeed
         ArgumentNullException.ThrowIfNull(ledger);
 
         NativePublicKlineFeed feed = new(restClient, symbol, profile,
-            timeProvider ?? TimeProvider.System, ledger, null, null);
+            timeProvider ?? TimeProvider.System, ledger, null, null, setupOnly);
         feed.RestoreLedger();
         return feed;
     }
@@ -240,20 +266,23 @@ public sealed class NativePublicKlineFeed
         SqliteNativeBarInputLedger? ledger,
         NativePublicKlineRestHistoryBudget? setupHistoryBudget,
         NativePublicKlineRestHistoryBudget? contextHistoryBudget,
-        CancellationToken cancellationToken)
+        bool setupOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(restClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(profile);
         TimeProvider clock = timeProvider ?? TimeProvider.System;
         NativePublicKlineFeed feed = new(restClient, symbol, profile, clock, ledger,
-            setupHistoryBudget, contextHistoryBudget);
+            setupHistoryBudget, contextHistoryBudget, setupOnly);
         feed.RestoreLedger();
         DateTimeOffset requestedAt = clock.GetUtcNow();
         await feed.LoadHistoryAsync(profile.Setup, feed.SetupTimeframe, requestedAt,
             feed._setupHistoryBudget, cancellationToken).ConfigureAwait(false);
-        await feed.LoadHistoryAsync(profile.Context, feed.ContextTimeframe, requestedAt,
-            feed._contextHistoryBudget, cancellationToken).ConfigureAwait(false);
+        if (!setupOnly)
+        {
+            await feed.LoadHistoryAsync(profile.Context, feed.ContextTimeframe, requestedAt,
+                feed._contextHistoryBudget, cancellationToken).ConfigureAwait(false);
+        }
         return feed;
     }
 
@@ -264,10 +293,13 @@ public sealed class NativePublicKlineFeed
         DateTimeOffset requestedAt = _timeProvider.GetUtcNow();
         await LoadHistoryAsync(_profile.Setup, SetupTimeframe, requestedAt,
             _setupHistoryBudget, cancellationToken).ConfigureAwait(false);
-        await LoadHistoryAsync(_profile.Context, ContextTimeframe, requestedAt,
-            _contextHistoryBudget, cancellationToken).ConfigureAwait(false);
+        if (!_setupOnly)
+        {
+            await LoadHistoryAsync(_profile.Context, ContextTimeframe, requestedAt,
+                _contextHistoryBudget, cancellationToken).ConfigureAwait(false);
+        }
         if (HasCompleteCoverage(_profile.Setup, SetupTimeframe, requestedAt)
-            && HasCompleteCoverage(_profile.Context, ContextTimeframe, requestedAt))
+            && (_setupOnly || HasCompleteCoverage(_profile.Context, ContextTimeframe, requestedAt)))
         {
             _unresolvedStreamDiagnostics.Remove("websocket-gap");
             _unresolvedStreamDiagnostics.Remove("websocket-disconnect");
@@ -280,7 +312,7 @@ public sealed class NativePublicKlineFeed
     {
         DateTimeOffset now = _timeProvider.GetUtcNow();
         return HasCompleteCoverage(_profile.Setup, SetupTimeframe, now)
-            && HasCompleteCoverage(_profile.Context, ContextTimeframe, now);
+            && (_setupOnly || HasCompleteCoverage(_profile.Context, ContextTimeframe, now));
     }
 
     private void RestoreLedger()
@@ -522,11 +554,10 @@ public sealed class NativePublicKlineFeed
         marketClient.Diagnostic += OnStreamDiagnostic;
         try
         {
-            BinanceSubscription[] subscriptions =
-            [
-                BinanceSubscription.Kline(_symbol, SetupTimeframe),
-                BinanceSubscription.Kline(_symbol, ContextTimeframe)
-            ];
+            BinanceSubscription[] subscriptions = _setupOnly
+                ? [BinanceSubscription.Kline(_symbol, SetupTimeframe)]
+                : [BinanceSubscription.Kline(_symbol, SetupTimeframe),
+                    BinanceSubscription.Kline(_symbol, ContextTimeframe)];
             await foreach (BinanceStreamEnvelope envelope in marketClient
                 .ReadAsync(subscriptions, cancellationToken).ConfigureAwait(false))
             {
@@ -804,28 +835,40 @@ public sealed class NativePublicKlineFeed
     {
         List<string> reasons = [.. _profile.UnknownReasons];
         AddSourceReason(setup, "setup", SetupTimeframe, reasons);
-        AddSourceReason(context, "context", ContextTimeframe, reasons);
+        if (!_setupOnly)
+        {
+            AddSourceReason(context, "context", ContextTimeframe, reasons);
+        }
         AddUnitReasons(indicators, reasons);
         AddMinimumCountReason(setupBars.Length, setup?.SeedHistoryBars,
             "seed-history-incomplete:setup", reasons);
         AddMinimumCountReason(setupBars.Length, setup?.WarmupBars,
             "warmup-incomplete:setup", reasons);
-        AddMinimumCountReason(contextBars.Length, context?.SeedHistoryBars,
-            "seed-history-incomplete:context", reasons);
-        AddMinimumCountReason(contextBars.Length, context?.WarmupBars,
-            "warmup-incomplete:context", reasons);
+        if (!_setupOnly)
+        {
+            AddMinimumCountReason(contextBars.Length, context?.SeedHistoryBars,
+                "seed-history-incomplete:context", reasons);
+            AddMinimumCountReason(contextBars.Length, context?.WarmupBars,
+                "warmup-incomplete:context", reasons);
+        }
         CheckSetupCoverage(setup, trigger, setupBars, reasons);
-        CheckLeadingContextCoverage(context, contextBars, reasons);
+        if (!_setupOnly)
+        {
+            CheckLeadingContextCoverage(context, contextBars, reasons);
+        }
         ScreenerBar? latestSetup = setupBars.Length == 0 ? null : setupBars[^1];
         CheckFreshness(latestSetup, setup, "setup", freshnessCut, reasons);
-        ScreenerBar? latestContext = contextBars.Length == 0 ? null : contextBars[^1];
-        if (latestContext is null)
+        if (!_setupOnly)
         {
-            reasons.Add("context-closed-bar-missing");
-        }
-        else
-        {
-            CheckFreshness(latestContext, context, "context", freshnessCut, reasons);
+            ScreenerBar? latestContext = contextBars.Length == 0 ? null : contextBars[^1];
+            if (latestContext is null)
+            {
+                reasons.Add("context-closed-bar-missing");
+            }
+            else
+            {
+                CheckFreshness(latestContext, context, "context", freshnessCut, reasons);
+            }
         }
 
         foreach (string diagnostic in streamDiagnostics)

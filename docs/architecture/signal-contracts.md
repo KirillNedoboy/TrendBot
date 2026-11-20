@@ -18,6 +18,12 @@ Signal identity intentionally excludes payload hashes, anchor timestamps/sequenc
 
 Each `SignalInputReference` carries public source ID/version, timeframe role, event ID, payload SHA-256, event time, availability time, and stable sequence. Setup inputs use native `15m`; higher-timeframe inputs use native `1h`. Provenance requires both roles, a profile version/configuration hash, a decision cut, and an HTF cut. The HTF cut cannot exceed the decision cut in event time or stable sequence. Each input's event time, availability time, and stable sequence must be visible at its role's cut.
 
+Provenance format 3 is restricted to the isolated `DonchianFlowBreakout` 1h
+and 30m profiles. It contains setup references only: no context bar is required or claimed.
+The structurally retained `HigherTimeframeCut` equals the decision cut as a
+serialization placeholder and is not an HTF observation; the renderer emits
+null for the HTF cut. Formats 1/2 and prior hashes remain unchanged.
+
 A signal's setup interval must close no later than its decision cut or `decisionAt`; `decisionAt` cannot precede the decision cut. Its reference price must name an input retained in the evidence provenance at that input's event time. `SignalRecord.ValidateEvidence`, `SignalDeliveryReceipt.ValidateFor`, and `SignalOutcomeRecord.ValidateFor` verify links when separately loaded records are joined.
 
 ## Fail-closed state and authority

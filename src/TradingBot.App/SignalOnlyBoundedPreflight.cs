@@ -93,6 +93,8 @@ public static class SignalOnlyBoundedPreflight
             !char.IsAsciiLetterOrDigit(item) && item is not ('-' or '_')))
             reasons.Add("run-id-invalid");
         if (envelope.Configuration is null) reasons.Add("configuration-unknown");
+        if (envelope.Configuration?.DonchianFlowPolicy is not null)
+            reasons.Add("donchian-flow-bounded-run-unsupported");
         if (string.IsNullOrWhiteSpace(wire.RunDirectory)) reasons.Add("run-directory-unknown");
 
         Positive(wire.MaxDurationSeconds, "max-duration-seconds");

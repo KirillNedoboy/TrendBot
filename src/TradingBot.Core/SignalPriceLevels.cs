@@ -60,8 +60,10 @@ public sealed record SignalPriceLevelPolicy
         }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(atrPeriodBars);
         ArgumentNullException.ThrowIfNull(families);
-        SetupType[] known = Enum.GetValues<SetupType>();
+        SetupType[] known = Enum.GetValues<SetupType>()
+            .Where(static family => family != SetupType.DonchianFlowBreakout).ToArray();
         if (families.Count != known.Length || families.Any(static item => item is null)
+            || families.Any(item => !known.Contains(item.Family))
             || families.Select(static item => item.Family).Distinct().Count() != known.Length)
         {
             throw new ArgumentException("Every signal family requires exactly one price-level policy.", nameof(families));

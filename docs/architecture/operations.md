@@ -4,6 +4,77 @@ The target deployment is a Linux VPS managed by systemd. Logs are structured JSO
 
 Docker, Kafka, Kubernetes, and ML are outside V1 scope. Secrets must come from the environment or a secret store and must never enter source, logs, docs, or test fixtures.
 
+## Hourly Donchian-flow research profile
+
+`signal-only.donchian-flow.example.json` is an isolated public-only format-7
+profile for 25 USDT perpetuals: the multi-strategy example's original 12 plus
+TRX, LTC, BCH, DOT, NEAR, APT, ARB, OP, INJ, ATOM, ETC, UNI and FIL.
+It uses new intake and signal databases under `artifacts/donchian-flow-25-sl13-tp89/`;
+do not point them at existing strategy streams or earlier Donchian-flow runs.
+Before the first launch, create that directory: the runtime does not create
+database parent directories. After reviewing the configuration, history bounds,
+disk usage and destination, run:
+`dotnet run --project src/TradingBot.App -c Release -- signal-only --config signal-only.donchian-flow.example.json`.
+No deployment, order, fill, protective order or profitability is implied.
+The fixed history start makes warmup and storage grow with time; 25 concurrent
+instruments increase feed, CPU and storage demands. Each symbol has its own
+serial stream. `bodyFloor` is shared across symbols in price units, so
+cross-symbol sensitivity must be studied rather than assumed. The fixed list
+is not a validated universe-selection rule.
+
+`signal-only.donchian-flow-30m.example.json` is a separate 30m experiment
+on the same 25 instruments, with the same bar-count formulas, 13/89 model
+exits and 96-hour scenario expiry. Its one-hour market and availability age
+limits correspond to two 30m bars. It uses
+`artifacts/donchian-flow-30m-25-sl13-tp89/`; create this directory before
+launch and do not reuse hourly stores. The author described the 9/34 parameters
+for 1h, not 30m: the transfer is an unvalidated hypothesis. No orders or
+automatic deployment are implied.
+
+Both hypotheses use closed and available setup candles (1h or 30m). The
+breakout compares the current high/low strictly against the highest high/lowest
+low of the preceding 55 candles. Flow is
+`volume/max(abs(close-open),bodyFloor)`; its current-inclusive SMA(10)
+normalizes flow, which is multiplied by close before WMA(9)/WMA(34).
+Volume must be strictly greater than 1.5 times the current-inclusive SMA(20).
+WMA equality and simultaneous up/down breakouts produce no entry. The example's
+`bodyFloor=0.000001` is an explicit price-unit research assumption, not an
+author-verified constant. Tie handling, prior-only channel and current-inclusive
+normalization are assumptions; the author's original script was not provided.
+
+At least 56 contiguous eligible bars are required. The stream is setup-only:
+it neither loads nor subscribes to the declared context (4h for the hourly profile,
+1h for the 30m profile), and Lane B/C are not admission gates. Readiness checks
+the setup history and freshness, not the unused context. The existing
+configuration schema retains a context declaration; setup-only provenance
+format 3 contains no context reference and its HTF cut field is not applicable.
+Older binaries may reject format-3 records, including 30m setup-only records.
+Use separate databases and preserve compatible binaries and backups for rollback.
+
+Signal evidence records channel boundaries, WMA values, current and mean volume,
+and the candle extremes. The 13/21/89/144 boundaries are preceding-bar channel
+references, not orders or guaranteed executable stops/targets; 89/144 remain
+unknown without sufficient continuous history. A target based on channel 89
+requires 89 prior contiguous bars plus the signal bar. The currently active scenario
+is canceled when a later closed candle breaches the opposite 55 boundary,
+irrespective of volume or trend. The example enables `stopChannelBars=13`
+and `targetChannelBars=89`; these model fixed boundaries at the signal cut.
+The stop uses the boundary itself, without an extra offset. Other supported
+choices are 21 and 144 respectively; null disables each model. An unavailable
+level, or a level on the wrong side of the reference close, remains unknown.
+A later candle touching both a target and a stop/opposite boundary cancels with
+`channel-exit-ambiguous`,
+without asserting which occurred first. The signal candle cannot end its own
+scenario, including after recovery. These are alert lifecycle observations,
+not positions, fills, returns or executable protection. Scenario rearm, expiry,
+delivery, and recovery use the declared passive policies.
+
+The legacy `bounded-run`/preflight composition is not adapted to format 7 and
+explicitly rejects this profile. Signal research remains RESEARCH/UNKNOWN; OOS
+comparison, epsilon sensitivity, fees, latency and funding still require a
+separately frozen study with suitable data. The bundled independent Pine file is
+not verified as the author's original algorithm.
+
 ## P15-M01-T001 operational shadow runtime
 
 The explicit `shadow` application mode is a long-running, cancellation-aware

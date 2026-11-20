@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using TradingBot.Core;
 using TradingBot.Exchange.Binance;
@@ -19,10 +20,12 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
     private readonly ISignalMultiLaneSource? _multiLane;
     private readonly SignalResearchStrategyPolicy? _researchStrategies;
     private readonly SignalPriceLevelPolicy? _priceLevelsPolicy;
+    private readonly DonchianFlowSignalPolicy? _donchianFlowPolicy;
     private readonly string? _researchStrategyHash;
     private readonly SignalScenarioProjectionEngine _scenarioEngine;
     private readonly Dictionary<string, string> _revisionHashes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _committedInputEventIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DonchianExitLevels> _donchianExitLevels = new(StringComparer.Ordinal);
     private SignalJournalCurrentState _currentState;
     private SignalScenarioProjectionSnapshot _scenarioSnapshot;
     private DateTimeOffset _nextRecoveryAt = DateTimeOffset.MinValue;
@@ -44,7 +47,8 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         NativePublicKlineFeed feed, SqliteNativeBarInputLedger inputLedger,
         SqliteSignalJournalStore signalJournal, ISignalMultiLaneSource? multiLane,
         SignalResearchStrategyPolicy? researchStrategies = null,
-        SignalPriceLevelPolicy? priceLevelsPolicy = null)
+        SignalPriceLevelPolicy? priceLevelsPolicy = null,
+        DonchianFlowSignalPolicy? donchianFlowPolicy = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(profile);
@@ -73,9 +77,12 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         _multiLane = multiLane;
         _researchStrategies = researchStrategies;
         _priceLevelsPolicy = priceLevelsPolicy;
+        _donchianFlowPolicy = donchianFlowPolicy;
         _researchStrategyHash = researchStrategies is null ? null
             : Hash(CoreJsonSerializer.Serialize(researchStrategies));
-        _profileHash = ComputeProfileHash(profile, multiLane?.Policy, researchStrategies, priceLevelsPolicy);
+        _profileHash = donchianFlowPolicy is null
+            ? ComputeProfileHash(profile, multiLane?.Policy, researchStrategies, priceLevelsPolicy)
+            : Hash(CoreJsonSerializer.Serialize(new { Profile = profile, DonchianFlowPolicy = donchianFlowPolicy }));
         _scenarioEngine = new SignalScenarioProjectionEngine(scenarioPolicies);
         SignalJournalSnapshot journalSnapshot = signalJournal.Read(_streamId);
         _currentState = new SignalJournalCurrentState(journalSnapshot.Checkpoint,
@@ -94,6 +101,23 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         {
             throw new InvalidOperationException(
                 "The configured scenario policies differ from the durable checkpoint.");
+        }
+        if (_donchianFlowPolicy is not null)
+        {
+            foreach (SignalJournalSignal item in journalSnapshot.Signals)
+            {
+                if (item.Signal.Identity.Family != SetupType.DonchianFlowBreakout
+                    || !StringComparer.Ordinal.Equals(item.Evidence.Provenance.ProfileConfigurationHash, _profileHash))
+                {
+                    throw new InvalidDataException("The isolated Donchian journal has a different profile.");
+                }
+                if (_scenarioSnapshot.Episodes.Any(episode =>
+                    episode.State == SignalScenarioEpisodeState.Active
+                    && episode.Identity.SignalId == item.Signal.Identity.SignalId))
+                {
+                    _donchianExitLevels[item.Signal.Identity.SignalId] = ReadDonchianExitLevels(item.Evidence);
+                }
+            }
         }
 
         foreach (SignalJournalDiagnostic diagnostic in journalSnapshot.Diagnostics)
@@ -345,6 +369,13 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
                 update.DiagnosticCode is null ? [] : [update.DiagnosticCode]);
             return;
         }
+        if (_donchianFlowPolicy is not null)
+        {
+            ProcessDonchianFlow(evaluation, inputEventId, inputHash, availabilityTime,
+                receipt.IntakeSequence, isRecovery);
+            return;
+        }
+
 
         if (!evaluation.IsReady)
         {
@@ -375,6 +406,142 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         {
             CommitCandidate(evaluation, candidate, inputEventId, inputHash,
                 availabilityTime, receipt.IntakeSequence, isRecovery);
+        }
+    }
+
+    private void ProcessDonchianFlow(NativePublicKlineEvaluation evaluation, string inputEventId,
+        string inputHash, UtcTimestamp availabilityTime, long intakeSequence, bool isRecovery)
+    {
+        if (!evaluation.IsReady)
+        {
+            CommitDiagnostic(inputEventId, inputHash, evaluation.TriggerRevision.CoreBar.EventTime,
+                availabilityTime, intakeSequence, "signal-evaluation-not-ready", evaluation.ReadinessReasons);
+            return;
+        }
+        DonchianFlowSignalResult result = DonchianFlowSignalEvaluator.Evaluate(
+            evaluation.Input.SetupBars, evaluation.LaneA.SetupObservations.Cursor,
+            _donchianFlowPolicy!);
+        if (result.SignalBar is not null && result.Upper55 is not null && result.Lower55 is not null)
+        {
+            InvalidateOnChannelExit(result, inputEventId, inputHash, availabilityTime, intakeSequence);
+        }
+        if (result.State != DonchianFlowSignalState.Ready || result.Direction is null)
+        {
+            string code = result.State == DonchianFlowSignalState.Ready
+                ? "no-confirmed-setup" : "signal-evaluation-unknown";
+            CommitDiagnostic(inputEventId, inputHash, evaluation.TriggerRevision.CoreBar.EventTime,
+                availabilityTime, intakeSequence, code, [result.UnknownReason ?? code]);
+            return;
+        }
+        Direction direction = result.Direction.Value;
+        ScreenerBar anchor = direction == Direction.Long ? result.UpperAnchor! : result.LowerAnchor!;
+        static string Number(decimal? value) =>
+            value?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
+        List<string> reasonList =
+        [
+            $"channel-upper-55:{Number(result.Upper55)}",
+            $"channel-lower-55:{Number(result.Lower55)}",
+            $"channel-upper-13:{Number(result.Upper13)}",
+            $"channel-lower-13:{Number(result.Lower13)}",
+            $"channel-upper-21:{Number(result.Upper21)}",
+            $"channel-lower-21:{Number(result.Lower21)}",
+            $"channel-upper-89:{Number(result.Upper89)}",
+            $"channel-lower-89:{Number(result.Lower89)}",
+            $"channel-upper-144:{Number(result.Upper144)}",
+            $"channel-lower-144:{Number(result.Lower144)}",
+            $"flow-fast-wma-9:{Number(result.FastWma)}",
+            $"flow-slow-wma-34:{Number(result.SlowWma)}",
+            $"body-floor:{_donchianFlowPolicy!.BodyFloor.ToString(CultureInfo.InvariantCulture)}",
+            $"volume-mean-20:{Number(result.VolumeMean)}",
+            $"volume:{result.SignalBar!.Bar.Volume.Value.ToString(CultureInfo.InvariantCulture)}",
+            $"signal-high:{result.SignalBar.Bar.High.Value.ToString(CultureInfo.InvariantCulture)}",
+            $"signal-low:{result.SignalBar.Bar.Low.Value.ToString(CultureInfo.InvariantCulture)}"
+        ];
+        if (_donchianFlowPolicy!.StopChannelBars is { } stopPeriod)
+        {
+            decimal? stop = stopPeriod == 13
+                ? direction == Direction.Long ? result.Lower13 : result.Upper13
+                : direction == Direction.Long ? result.Lower21 : result.Upper21;
+            decimal reference = result.SignalBar!.Close.Value;
+            if (stop is { } level && (direction == Direction.Long ? level >= reference : level <= reference))
+            {
+                stop = null;
+            }
+            reasonList.Add($"model-stop-period:{stopPeriod}");
+            reasonList.Add($"model-stop:{Number(stop)}");
+        }
+        if (_donchianFlowPolicy.TargetChannelBars is { } targetPeriod)
+        {
+            decimal? target = targetPeriod == 89
+                ? direction == Direction.Long ? result.Upper89 : result.Lower89
+                : direction == Direction.Long ? result.Upper144 : result.Lower144;
+            decimal reference = result.SignalBar!.Close.Value;
+            if (target is { } level && (direction == Direction.Long ? level <= reference : level >= reference))
+            {
+                target = null;
+            }
+            reasonList.Add($"model-target-period:{targetPeriod}");
+            reasonList.Add($"model-target:{Number(target)}");
+        }
+        ImmutableValueList<string> reasons = new(reasonList);
+        SetupCandidate candidate = new(SetupType.DonchianFlowBreakout, direction,
+            result.SignalBar!, reasons, DonchianFlowSignalPolicy.AlgorithmVersion, anchor);
+        CommitCandidate(evaluation, candidate, inputEventId, inputHash, availabilityTime,
+            intakeSequence, isRecovery);
+    }
+
+    private void InvalidateOnChannelExit(DonchianFlowSignalResult result, string sourceEventId,
+        string inputHash, UtcTimestamp availabilityTime, long intakeSequence)
+    {
+        ScreenerBar bar = result.SignalBar!;
+        SignalScenarioEpisode[] active = _scenarioSnapshot.Episodes
+            .Where(item => item.State == SignalScenarioEpisodeState.Active
+                && item.Identity.Family == SetupType.DonchianFlowBreakout
+                && bar.EventTime.Value > item.CreatedAt.Value)
+            .OrderBy(static item => item.Identity.SignalId, StringComparer.Ordinal).ToArray();
+        foreach (SignalScenarioEpisode episode in active)
+        {
+            if (!_donchianExitLevels.TryGetValue(episode.Identity.SignalId, out DonchianExitLevels levels))
+            {
+                throw new InvalidDataException("The active Donchian scenario has no durable levels.");
+            }
+            bool isLong = episode.Identity.Direction == Direction.Long;
+            bool opposite = isLong ? bar.Bar.Low.Value < result.Lower55
+                : bar.Bar.High.Value > result.Upper55;
+            bool stop = levels.Stop is { } stopLevel
+                && (isLong ? bar.Bar.Low.Value <= stopLevel : bar.Bar.High.Value >= stopLevel);
+            bool target = levels.Target is { } targetLevel
+                && (isLong ? bar.Bar.High.Value >= targetLevel : bar.Bar.Low.Value <= targetLevel);
+            if (!opposite && !stop && !target)
+            {
+                continue;
+            }
+            string reason = target && (stop || opposite) ? "channel-exit-ambiguous"
+                : target ? "channel-target-touched"
+                : stop ? "channel-stop-touched" : "opposite-channel-55-breakout";
+            string eventId = $"scenario-invalidate:{sourceEventId}:{episode.Identity.SignalId}";
+            if (_committedInputEventIds.Contains(eventId))
+            {
+                continue;
+            }
+            if (_currentState.Checkpoint is { } checkpoint
+                && availabilityTime.Value < checkpoint.AvailabilityTime.Value)
+            {
+                availabilityTime = checkpoint.AvailabilityTime;
+            }
+            long stableSequence = NextStableSequence(intakeSequence);
+            SignalScenarioInput input = SignalScenarioInput.Invalidate(_streamId, eventId,
+                episode.Identity.SignalId, reason, bar.EventTime, availabilityTime, stableSequence);
+            SignalScenarioProjectionTransition transition = _scenarioEngine.Apply(_scenarioSnapshot, input);
+            if (transition.Status is SignalScenarioTransitionStatus.Late
+                or SignalScenarioTransitionStatus.UnknownPolicy or SignalScenarioTransitionStatus.IdentityConflict)
+            {
+                throw new InvalidOperationException("The opposite-breakout scenario transition failed.");
+            }
+            Commit(new SignalJournalCommit(_streamId, CurrentInputSequence,
+                checked(CurrentInputSequence + 1), eventId, inputHash, input.EventTime,
+                input.AvailabilityTime, stableSequence, input.InputHash, transition.NextSnapshot,
+                transition.EmittedEvents, null, null, null));
         }
     }
 
@@ -503,6 +670,10 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             processed ? scenarioInput.InputHash : null, transition.NextSnapshot,
             transition.EmittedEvents, alert is null ? null : signal.Signal,
             alert is null ? null : signal.Evidence, diagnostic));
+        if (alert is not null && candidate.Family == SetupType.DonchianFlowBreakout)
+        {
+            _donchianExitLevels[signal.Signal.Identity.SignalId] = ReadDonchianExitLevels(signal.Evidence);
+        }
     }
 
     private (SignalRecord Signal, SignalEvidenceRecord Evidence) CreateSignal(
@@ -523,27 +694,29 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             }
         }
 
-        foreach (ScreenerBar bar in evaluation.Input.HtfBars)
+        if (candidate.Family != SetupType.DonchianFlowBreakout)
         {
-            references.Add(CreateInputReference(bar, SignalInputRole.HigherTimeframe,
-                _feed.ContextTimeframe, contextVersion));
-        }
+            foreach (ScreenerBar bar in evaluation.Input.HtfBars)
+            {
+                references.Add(CreateInputReference(bar, SignalInputRole.HigherTimeframe,
+                    _feed.ContextTimeframe, contextVersion));
+            }
 
-        if (evaluation.HtfCutEventId is null || evaluation.HtfCutTime is null
-            || !references.Any(reference => reference.Role == SignalInputRole.HigherTimeframe
-                && StringComparer.Ordinal.Equals(reference.EventId,
-                    evaluation.HtfCutEventId)))
-        {
-            throw new InvalidDataException(
-                "A confirmed signal is missing its causal higher-timeframe cut.");
+            if (evaluation.HtfCutEventId is null || evaluation.HtfCutTime is null
+                || !references.Any(reference => reference.Role == SignalInputRole.HigherTimeframe
+                    && StringComparer.Ordinal.Equals(reference.EventId, evaluation.HtfCutEventId)))
+            {
+                throw new InvalidDataException(
+                    "A confirmed signal is missing its causal higher-timeframe cut.");
+            }
         }
 
         CausalEventCursor decisionCut = evaluation.LaneA.SetupObservations.Cursor;
         SignalProvenance provenance = SignalProvenance.Create(_profile.ProfileVersion!,
             _profileHash, decisionCut, decisionCut, references);
-        string[] qualityReasons = evaluation.LaneA.Quality.Features
-            .SelectMany(static feature => feature.Reasons)
-            .Concat(candidate.Reasons)
+        IEnumerable<string> featureReasons = candidate.Family == SetupType.DonchianFlowBreakout
+            ? [] : evaluation.LaneA.Quality.Features.SelectMany(static feature => feature.Reasons);
+        string[] qualityReasons = featureReasons.Concat(candidate.Reasons)
             .Where(static reason => !string.IsNullOrWhiteSpace(reason))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(static reason => reason, StringComparer.Ordinal)
@@ -602,6 +775,13 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             ?? throw new InvalidDataException(
                 "The committed signal journal is missing its scenario checkpoint.");
         _committedInputEventIds.Add(commit.InputEventId);
+        foreach (SignalScenarioEvent item in commit.NewScenarioEvents)
+        {
+            if (item.Kind is SignalScenarioEventKind.Canceled or SignalScenarioEventKind.Expired)
+            {
+                _donchianExitLevels.Remove(item.SignalId);
+            }
+        }
     }
 
     private void RememberRevision(NativeBarInputLedgerReceipt receipt)
@@ -658,6 +838,19 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
 
     internal static string SourceEventId(string inputEventId)
     {
+        const string invalidatePrefix = "scenario-invalidate:";
+        if (inputEventId.StartsWith(invalidatePrefix, StringComparison.Ordinal))
+        {
+            int separator = inputEventId.LastIndexOf(':');
+            if (separator > invalidatePrefix.Length
+                && inputEventId.Length - separator - 1 == 64
+                && IsLowerHex(inputEventId.AsSpan(separator + 1)))
+            {
+                return inputEventId[invalidatePrefix.Length..separator];
+            }
+            return inputEventId;
+        }
+
         const string prefix = "scenario-confirm:";
         if (!inputEventId.StartsWith(prefix, StringComparison.Ordinal))
         {
@@ -684,6 +877,18 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         }
 
         return inputEventId[prefix.Length..familySeparator];
+    }
+
+    private static bool IsLowerHex(ReadOnlySpan<char> value)
+    {
+        foreach (char character in value)
+        {
+            if (character is not (>= '0' and <= '9' or >= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static bool EnabledBaselineComplete(NativePublicKlineEvaluation evaluation,
@@ -789,6 +994,25 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
             .ToArray();
         return stable.Length == 0 ? ["signal-evidence-unknown"] : stable;
     }
+
+    private static DonchianExitLevels ReadDonchianExitLevels(SignalEvidenceRecord evidence)
+    {
+        decimal? ReadLevel(string prefix)
+        {
+            foreach (string reason in evidence.QualityReasons)
+            {
+                if (reason.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return decimal.TryParse(reason.AsSpan(prefix.Length), NumberStyles.Number,
+                        CultureInfo.InvariantCulture, out decimal value) ? value : null;
+                }
+            }
+            return null;
+        }
+        return new DonchianExitLevels(ReadLevel("model-stop:"), ReadLevel("model-target:"));
+    }
+
+    private readonly record struct DonchianExitLevels(decimal? Stop, decimal? Target);
 
     private static string ScenarioInputEventId(string sourceEventId,
         SetupCandidate candidate) =>

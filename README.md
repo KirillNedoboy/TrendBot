@@ -78,6 +78,29 @@ one-minute trade window, and the latest observed Binance liquidation snapshot.
 They are context only, not extra entry filters. The liquidation stream is
 sampled and a missing snapshot does not mean there were no liquidations.
 
+The independent 1h Donchian-flow research profile covers 25 USDT perpetuals
+without Lane B/C admission filters. It uses separate state files, models a fixed
+13-channel stop and 89-channel target, and does not start automatically. These
+are research signals, not protective orders. After the build above:
+
+```powershell
+New-Item -ItemType Directory -Force .\artifacts\donchian-flow-25-sl13-tp89 | Out-Null
+& $dotnet $app signal-only --config .\signal-only.donchian-flow.example.json
+```
+
+For the separate experimental 30m profile on the same symbols:
+
+```powershell
+New-Item -ItemType Directory -Force .\artifacts\donchian-flow-30m-25-sl13-tp89 | Out-Null
+& $dotnet $app signal-only --config .\signal-only.donchian-flow-30m.example.json
+```
+
+The 30m settings reuse the hourly parameters without evidence of profitability
+or author-verified equivalence. The two profiles have independent journals.
+
+The profile and its research-only exit assumptions are described in
+[operations](docs/architecture/operations.md#hourly-donchian-flow-research-profile).
+
 ## Current state
 
 - SDK: .NET 10.0.401, pinned in [`global.json`](global.json); target `net10.0`.

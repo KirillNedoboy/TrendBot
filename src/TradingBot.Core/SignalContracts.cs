@@ -216,6 +216,7 @@ public sealed record SignalProvenance
 {
     public const int CurrentFormatVersion = 1;
     public const int MultiTimeframeFormatVersion = 2;
+    public const int SetupOnlyFormatVersion = 3;
 
     public int FormatVersion { get; }
 
@@ -235,7 +236,7 @@ public sealed record SignalProvenance
         CausalEventCursor higherTimeframeCut,
         ImmutableValueList<SignalInputReference> inputReferences)
     {
-        if (formatVersion is not (CurrentFormatVersion or MultiTimeframeFormatVersion))
+        if (formatVersion is not (CurrentFormatVersion or MultiTimeframeFormatVersion or SetupOnlyFormatVersion))
         {
             throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
                 "The signal provenance format version is unsupported.");
@@ -299,15 +300,19 @@ public sealed record SignalProvenance
             }
         }
 
-        if (!hasSetupInput || !hasHigherTimeframeInput)
+        if (!hasSetupInput || (formatVersion != SetupOnlyFormatVersion && !hasHigherTimeframeInput)
+            || (formatVersion == SetupOnlyFormatVersion && hasHigherTimeframeInput))
         {
             throw new ArgumentException(
-                "Signal provenance requires setup and higher-timeframe input references.",
+                "Signal provenance does not contain the inputs required by its format.",
                 nameof(inputReferences));
         }
-        if (PublicSignalTimeframes.ContextForSetup(setupTimeframe) != contextTimeframe
-            || formatVersion == CurrentFormatVersion
-                && (setupTimeframe != "15m" || contextTimeframe != "1h"))
+        if (formatVersion == SetupOnlyFormatVersion
+                && (setupTimeframe is not ("1h" or "30m") || higherTimeframeCut != decisionCut)
+            || formatVersion != SetupOnlyFormatVersion
+                && (PublicSignalTimeframes.ContextForSetup(setupTimeframe) != contextTimeframe
+                    || formatVersion == CurrentFormatVersion
+                        && (setupTimeframe != "15m" || contextTimeframe != "1h")))
         {
             throw new ArgumentException("The setup and context timeframes are inconsistent.",
                 nameof(inputReferences));
@@ -328,9 +333,11 @@ public sealed record SignalProvenance
         IEnumerable<SignalInputReference> inputReferences)
     {
         ImmutableValueList<SignalInputReference> references = new(inputReferences);
-        int version = references.All(reference => reference.Role == SignalInputRole.Setup
+        int version = references.All(static reference => reference.Role == SignalInputRole.Setup)
+            ? SetupOnlyFormatVersion
+            : references.All(reference => reference.Role == SignalInputRole.Setup
                 ? reference.Timeframe == "15m" : reference.Timeframe == "1h")
-            ? CurrentFormatVersion : MultiTimeframeFormatVersion;
+                ? CurrentFormatVersion : MultiTimeframeFormatVersion;
         return new SignalProvenance(version, profileVersion, profileConfigurationHash,
             decisionCut, higherTimeframeCut, references);
     }
@@ -453,7 +460,8 @@ public sealed record SignalEvidenceRecord
             identity.SignalId, provenance, state, reasons, multiLaneInput, marketContext);
         SignalEvidenceRecord result = new(formatVersion, identity.SignalId,
             provenance, state, reasons, SignalContractHash.Compute(material), multiLaneInput, marketContext);
-        if (multiLaneInput is not null || marketContext is not null)
+        if (multiLaneInput is not null || marketContext is not null
+            || provenance.FormatVersion == SignalProvenance.SetupOnlyFormatVersion)
         {
             result.ValidateFor(identity);
         }
@@ -466,6 +474,8 @@ public sealed record SignalEvidenceRecord
         if (!StringComparer.Ordinal.Equals(SignalId, identity.SignalId)
             || !StringComparer.Ordinal.Equals(identity.ProfileVersion,
                 Provenance.ProfileVersion)
+            || (Provenance.FormatVersion == SignalProvenance.SetupOnlyFormatVersion)
+                != (identity.Family == SetupType.DonchianFlowBreakout)
             || Provenance.InputReferences.Any(reference =>
                 reference.Role == SignalInputRole.Setup
                     ? reference.Timeframe != identity.SetupTimeframe

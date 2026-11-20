@@ -413,15 +413,21 @@ public static class SignalOnlyCommand
                     string setupTimeframe = setting.Profile.Setup!.Timeframe!;
                     string streamId = SignalOnlyStreamId.For(symbol, setupTimeframe);
                     NativeBarInputLedgerSnapshot snapshot = inputLedger.Read(streamId);
-                    NativePublicKlineFeed feed = snapshot.Receipts.Count == 0
-                        ? await NativePublicKlineFeed.WarmupAsync(restClient, symbol,
-                            setting.Profile, inputLedger,
-                            cancellationToken: runStop.Token).ConfigureAwait(false)
-                        : NativePublicKlineFeed.RestoreFromLedger(restClient, symbol,
-                            setting.Profile, inputLedger);
+                    NativePublicKlineFeed feed = snapshot.Receipts.Count != 0
+                        ? configuration.DonchianFlowPolicy is not null
+                            ? NativePublicKlineFeed.RestoreSetupOnlyFromLedger(restClient, symbol,
+                                setting.Profile, inputLedger)
+                            : NativePublicKlineFeed.RestoreFromLedger(restClient, symbol,
+                                setting.Profile, inputLedger)
+                        : configuration.DonchianFlowPolicy is not null
+                            ? await NativePublicKlineFeed.WarmupSetupOnlyAsync(restClient, symbol,
+                                setting.Profile, inputLedger, cancellationToken: runStop.Token).ConfigureAwait(false)
+                            : await NativePublicKlineFeed.WarmupAsync(restClient, symbol,
+                                setting.Profile, inputLedger, cancellationToken: runStop.Token).ConfigureAwait(false);
                     SignalOnlyInstrumentConsumer consumer = new(symbol, setting.Profile,
                         setting.ScenarioPolicies, feed, inputLedger, signalJournal, multiLane,
-                        configuration.ResearchStrategies, configuration.PriceLevelsPolicy);
+                        configuration.ResearchStrategies, configuration.PriceLevelsPolicy,
+                        configuration.DonchianFlowPolicy);
                     consumers.Add((feed, consumer));
                     if (snapshot.Receipts.Count != 0)
                     {
@@ -496,7 +502,9 @@ public static class SignalOnlyCommand
         TextWriter output, CancellationToken cancellationToken)
     {
         BinanceSubscription[] subscriptions = consumers
-            .SelectMany(item => new[] { item.Feed.SetupTimeframe, item.Feed.ContextTimeframe })
+            .SelectMany(item => item.Feed.SetupOnly
+                ? new[] { item.Feed.SetupTimeframe }
+                : new[] { item.Feed.SetupTimeframe, item.Feed.ContextTimeframe })
             .Distinct(StringComparer.Ordinal)
             .Select(timeframe => BinanceSubscription.Kline(symbol, timeframe))
             .ToArray();
@@ -511,7 +519,7 @@ public static class SignalOnlyCommand
             foreach ((NativePublicKlineFeed feed, SignalOnlyInstrumentConsumer consumer) in consumers)
             {
                 if (kline.Kline.Timeframe != feed.SetupTimeframe
-                    && kline.Kline.Timeframe != feed.ContextTimeframe)
+                    && (feed.SetupOnly || kline.Kline.Timeframe != feed.ContextTimeframe))
                 {
                     continue;
                 }
@@ -614,11 +622,14 @@ public static class SignalOnlyCommand
                     stopLoss = levels?.StopLoss,
                     takeProfit1 = levels?.TakeProfit1,
                     takeProfit2 = levels?.TakeProfit2,
-                    unknownReason = levels?.UnknownReason
-                        ?? (levels is null ? "not-recorded-for-legacy-signal" : null),
+                    unknownReason = levels?.UnknownReason ?? (levels is null
+                        ? item.Signal.Identity.Family == SetupType.DonchianFlowBreakout
+                            ? "channel-levels-in-evidence" : "not-recorded-for-legacy-signal"
+                        : null),
                     semantics = "research-only-unrounded-not-orders-or-fills"
                 },
                 marketContext = item.Evidence.MarketContext,
+                evidenceReasons = item.Evidence.QualityReasons,
                 research = "RESEARCH",
                 statisticalValidation = "UNKNOWN",
                 laneB = lanes?.LaneB.ToString(),

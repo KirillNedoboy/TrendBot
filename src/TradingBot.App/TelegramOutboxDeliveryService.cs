@@ -265,13 +265,50 @@ internal static class TelegramSignalMessageFormatter
             "Statistical validation: UNKNOWN"
         ];
         lines.Add($"Reference close (not a fill): {signal.ReferencePrice.Price.Value.ToString(CultureInfo.InvariantCulture)}");
+        if (signal.Identity.Family == SetupType.DonchianFlowBreakout)
+        {
+            string? exitReason = item.ScenarioEvent.ReasonCode switch
+            {
+                "opposite-channel-55-breakout" => "обратный пробой канала 55",
+                "channel-stop-touched" => "касание модельного стопа",
+                "channel-target-touched" => "касание модельной цели",
+                "channel-exit-ambiguous" => "стоп и цель или обратный пробой в одной свече; порядок неизвестен",
+                _ => null
+            };
+            if (exitReason is not null)
+            {
+                lines.Add($"Причина завершения сценария: {exitReason}; исполнение не моделируется.");
+            }
+            string Value(string key)
+            {
+                string prefix = key + ":";
+                string? reason = evidence.QualityReasons.FirstOrDefault(item =>
+                    item.StartsWith(prefix, StringComparison.Ordinal));
+                return reason is null ? "неизвестно" : reason[prefix.Length..];
+            }
+            lines.Add($"Канал 55: нижняя {Value("channel-lower-55")}; верхняя {Value("channel-upper-55")}");
+            lines.Add($"Тень сигнальной свечи: минимум {Value("signal-low")}; максимум {Value("signal-high")}");
+            lines.Add($"Поток WMA 9 / 34: {Value("flow-fast-wma-9")} / {Value("flow-slow-wma-34")}");
+            lines.Add($"Объём / средний объём 20: {Value("volume")} / {Value("volume-mean-20")}");
+            lines.Add($"Границы 13: {Value("channel-lower-13")} / {Value("channel-upper-13")}; 21: {Value("channel-lower-21")} / {Value("channel-upper-21")}");
+            lines.Add($"Границы 89: {Value("channel-lower-89")} / {Value("channel-upper-89")}; 144: {Value("channel-lower-144")} / {Value("channel-upper-144")}");
+            if (evidence.QualityReasons.Any(static item => item.StartsWith("model-stop-period:", StringComparison.Ordinal)))
+            {
+                lines.Add($"Модельный стоп по каналу {Value("model-stop-period")}: {Value("model-stop")}");
+            }
+            if (evidence.QualityReasons.Any(static item => item.StartsWith("model-target-period:", StringComparison.Ordinal)))
+            {
+                lines.Add($"Модельная цель по каналу {Value("model-target-period")}: {Value("model-target")}");
+            }
+            lines.Add("Канальные уровни — исследовательские ориентиры, не защитные ордера или гарантированные цели.");
+        }
         if (signal.PriceLevels is { State: SignalPriceLevelsState.Ready } levels)
         {
             lines.Add($"Indicative SL: {levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}");
             lines.Add($"TP1: {levels.TakeProfit1!.Value.ToString(CultureInfo.InvariantCulture)}; TP2: {levels.TakeProfit2!.Value.ToString(CultureInfo.InvariantCulture)}");
             lines.Add("Research levels only; not orders, fills, or exchange-tick-rounded prices.");
         }
-        else
+        else if (signal.Identity.Family != SetupType.DonchianFlowBreakout)
         {
             lines.Add($"SL/TP: UNKNOWN ({signal.PriceLevels?.UnknownReason ?? "not-recorded-for-legacy-signal"})");
         }

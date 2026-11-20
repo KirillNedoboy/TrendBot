@@ -6,6 +6,23 @@ This document is the indexed product/system specification for TradingBot. The ve
 
 Build a C#/.NET 10 modular monolith for autonomous, deterministic, multi-lane intraday trading research and eventual execution on Binance USD-M perpetual futures. The system must support one Core decision path for replay, backtest, shadow, paper, limited-live, and production modes, with explicit gates before real orders.
 
+## Independent Donchian-flow research profile — 2026-11-20
+
+The user authorized an isolated hourly public-only strategy based on the
+author's description. Its formula, assumptions and operational limits are
+documented in [operations](architecture/operations.md#hourly-donchian-flow-research-profile).
+This is not verified parity with the author's unavailable source, evidence of
+profitability, permission for orders, or authorization to change the existing
+service. The example uses separate stores; operators must not reuse existing
+strategy streams. A frozen OOS study remains subject to its own data and research gates.
+The user subsequently requested 25 instruments. The example retains the
+existing scanner's 12 symbols, adds 13 public perpetuals, and uses separate
+25-symbol stores without changing the running service.
+The user also authorized a separate 30m public-only Donchian-flow experiment
+on the same 25 instruments, with the same bar-count parameters and isolated
+stores. The author's 1h guidance does not validate the 30m transfer; no research
+or execution gate is waived.
+
 ## Indicative public signal price levels — 2026-11-14
 
 The user requested TP and SL for every active strategy and setup timeframe and

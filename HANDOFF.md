@@ -1,3 +1,105 @@
+## Thirty-minute Donchian-flow experiment (2026-11-20)
+
+- The user requested a separate 30m variant on the same 25 symbols. Its format-7
+  `signal-only.donchian-flow-30m.example.json` preserves the hourly formula,
+  model stop 13, target 89 and 96-hour expiry, with a separate profile identity
+  and `artifacts/donchian-flow-30m-25-sl13-tp89/` stores. Its declared 1h
+  context is unused. No private/order path or deployment was added.
+- The author described WMA 9/34 on 1h; copying the parameters to 30m is an
+  unvalidated research hypothesis, not source parity or profitability evidence.
+  Older binaries cannot necessarily read the new setup-only 30m provenance.
+- Release integration build passed with warnings as errors; 17 focused tests
+  passed for configuration, 1h/30m signals, modeled exits and recovery. A
+  further 2/2 integration cases verified open candles do not emit signals;
+  19/19 focused Core evaluator and signal-contract tests passed. Scoped
+  whitespace and documentation-graph validation passed.
+- A bounded public smoke initialized all 25 streams and observed 30m updates
+  for each. The process was deliberately stopped after 180 seconds (exit 124);
+  no live closed-bar signal was observed. No Telegram delivery, private API
+  call or order was performed. Long-duration operation remains unverified.
+
+## Donchian-flow model stop and target
+
+- The user requested the author's suggested exits. The 25-symbol example now
+  enables a fixed model stop at the 13-channel boundary and a fixed target at
+  the 89-channel boundary, calculated at signal time. The selection among the
+  author's alternatives is an unvalidated research choice; the stop has no
+  extra offset. The opposite 55-channel breakout remains an exit condition.
+- The changed policy uses a new profile identity and separate
+  `artifacts/donchian-flow-25-sl13-tp89/` stores. Existing stores and processes
+  are untouched. The previous 25-stream public smoke did not test this profile.
+  Model levels may be unknown and do not submit or guarantee protective orders.
+- Release integration build passed with warnings as errors. Nine focused
+  configuration and exit cases passed, including entry-message levels,
+  long/short exits, recovery and ambiguous touches. Scoped whitespace and
+  documentation-graph validation passed.
+
+## Twenty-five-symbol Donchian-flow configuration (2026-11-20)
+
+- The user requested 25 pairs. The isolated format-7 example preserves the
+  previous 12 symbols and adds TRX, LTC, BCH, DOT, NEAR, APT, ARB, OP, INJ,
+  ATOM, ETC, UNI and FIL USDT perpetuals. Public Binance `exchangeInfo`
+  reported all 13 additions as TRADING/PERPETUAL, with onboard dates before
+  2026-11-01; a public kline query confirmed their first 1h bar at the profile's
+  history start. This does not establish gap-free coverage through the present.
+- The new profile identity and `artifacts/donchian-flow-25/` stores are
+  separate from previous runs. A bounded 150-second recovery smoke initialized
+  all 25 streams and observed public 1h updates for each; the process was
+  deliberately stopped. No Telegram send, private API call, order or deployment
+  was performed. This is not a long-duration or profitability assessment.
+- The first smoke exposed a misleading `unknown` readiness status caused by
+  unused 4h context checks. Setup-only readiness now excludes those checks,
+  while retaining setup-history, freshness and validation checks; normal
+  multi-timeframe readiness still requires its context.
+- Release IntegrationTests build passed with warnings as errors; 110 targeted
+  feed, preflight and delivery tests passed, including setup-only readiness,
+  setup gaps and existing multi-timeframe context checks. Scoped whitespace
+  and documentation-graph checks passed.
+
+## Twelve-symbol Donchian-flow configuration (2026-11-20)
+
+- At that point the user requested broader coverage and the isolated format-7
+  `signal-only.donchian-flow.example.json` selected the same 12 symbols as the
+  multi-strategy example. Each has an independent 1h stream. Its profile
+  identity and `artifacts/donchian-flow-12/` paths avoid reusing the earlier
+  BTC-only journal or the existing multi-strategy stores.
+- Release IntegrationTests build passed with warnings as errors; the focused
+  configuration/stream-isolation and hourly recovery tests passed 2/2.
+  A 60-second isolated public smoke loaded 468 intake receipts per symbol and
+  observed 1h stream reception for all 12; no closed-bar signal was observed.
+  The smoke process was deliberately stopped after the bound; no deployment
+  was performed. The earlier startup evidence below is BTC-only. Long-duration
+  memory, rate-limit behavior and cross-symbol sensitivity remain unverified.
+
+## Hourly Donchian-flow research signal (2026-11-20)
+
+- The user authorized the current model to implement the standalone strategy.
+  At that point `signal-only.donchian-flow.example.json` was an isolated
+  format-7 BTCUSDT example; no existing service was changed. It uses closed 1h bars, previous
+  55-bar extrema, WMA 9/34 of normalized candle-body liquidity flow, and
+  current-inclusive 20-bar volume confirmation. The body floor and edge
+  conventions are research assumptions, not proven parity with the author.
+- Setup-only provenance format 3 and the associated feed do not require 4h
+  candles or Lane B/C. The original configuration formats and ATR price-level
+  family contracts remain readable. Format 7 and its records require a
+  compatible binary and isolated stores; `bounded-run` rejects this profile.
+  The default exits on the opposite 55-bar breach. Optional fixed 13/21 stop
+  and 89/144 target scenarios are passive observations only, with unknown
+  levels and same-bar ambiguity explicit. They do not create positions or orders.
+- Release warnings-as-errors builds passed; focused Core tests passed 70/70
+  and Integration tests 109/109, including closed-bar formula, both directions,
+  channel exits/ambiguity, causal recovery, actual CLI render, and legacy
+  compatibility. Scoped whitespace verification passed. A separate 45-second
+  real public startup loaded 468 intake receipts and observed the BTCUSDT 1h
+  stream; no live closed signal was observed and the test process was stopped.
+  Its isolated stores remain under `artifacts/donchian-flow/`. This does not
+  establish long-duration operation, latency, Pine parity or profitability.
+- The first local smoke failed with SQLite code 14 because the example's parent
+  directory was absent; creating the isolated directory allowed startup.
+  The runbook now states this prerequisite. No external Telegram send,
+  deployment, private API call or order was performed. Frozen OOS comparisons
+  remain blocked by the separately governed research task and suitable data.
+
 # Current checkpoint
 
 ## Indicative TP/SL for public signals

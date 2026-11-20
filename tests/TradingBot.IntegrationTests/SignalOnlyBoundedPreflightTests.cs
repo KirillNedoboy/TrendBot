@@ -40,6 +40,23 @@ public sealed class SignalOnlyBoundedPreflightTests
     }
 
     [Fact]
+    public async Task HourlyDonchianConfigurationCannotRunThroughLegacyBoundedComposition()
+    {
+        using Fixture fixture = new();
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        fixture.Envelope["configuration"] = JsonNode.Parse(File.ReadAllText(
+            Path.Combine(root, "signal-only.donchian-flow.example.json")));
+        fixture.WriteEnvelope();
+        using StringWriter output = new(CultureInfo.InvariantCulture);
+        int result = await SignalOnlyCommand.RunAsync(
+            ["signal-only", "preflight", "--envelope", fixture.EnvelopePath],
+            output, TextWriter.Null, TestContext.Current.CancellationToken);
+        Assert.Equal(1, result);
+        Assert.Contains("donchian-flow-bounded-run-unsupported", output.ToString(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(fixture.RunDirectory));
+    }
+
+    [Fact]
     public async Task MissingStorageBoundAndExistingStoreBlockReadiness()
     {
         using Fixture fixture = new();

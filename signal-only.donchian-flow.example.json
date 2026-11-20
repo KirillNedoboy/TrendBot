@@ -1,0 +1,125 @@
+{
+  "formatVersion": 7,
+  "mode": "signal-only-public",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "ADAUSDT",
+    "SUIUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "1000PEPEUSDT",
+    "TRXUSDT",
+    "LTCUSDT",
+    "BCHUSDT",
+    "DOTUSDT",
+    "NEARUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "OPUSDT",
+    "INJUSDT",
+    "ATOMUSDT",
+    "ETCUSDT",
+    "UNIUSDT",
+    "FILUSDT"
+  ],
+  "inputLedgerPath": "artifacts/donchian-flow-25-sl13-tp89/native-bars.sqlite",
+  "signalJournalPath": "artifacts/donchian-flow-25-sl13-tp89/signal-journal.sqlite",
+  "profile": {
+    "formatVersion": 2,
+    "profileVersion": "donchian-flow-1h-25-sl13-tp89-research-v1",
+    "setup": {
+      "timeframe": "1h",
+      "source": "binanceUsdMNativeKlines",
+      "sourceVersion": "binance-usdm-native-kline-v1",
+      "historyStartUtc": "2026-11-01T00:00:00+00:00",
+      "historyVersion": "donchian-flow-history-v1",
+      "seedHistoryBars": 56,
+      "seedVersion": "donchian-flow-seed-v1",
+      "warmupBars": 56,
+      "warmupVersion": "donchian-flow-warmup-v1",
+      "freshnessVersion": "donchian-flow-freshness-v1",
+      "maximumMarketDataAge": "02:00:00",
+      "maximumAvailabilityAge": "02:00:00"
+    },
+    "context": {
+      "timeframe": "4h",
+      "source": "binanceUsdMNativeKlines",
+      "sourceVersion": "binance-usdm-native-kline-v1",
+      "historyStartUtc": "2026-11-01T00:00:00+00:00",
+      "historyVersion": "donchian-flow-unused-context-v1",
+      "seedHistoryBars": 1,
+      "seedVersion": "donchian-flow-unused-context-v1",
+      "warmupBars": 1,
+      "warmupVersion": "donchian-flow-unused-context-v1",
+      "freshnessVersion": "donchian-flow-unused-context-v1",
+      "maximumMarketDataAge": "08:00:00",
+      "maximumAvailabilityAge": "08:00:00"
+    },
+    "indicators": {
+      "priceContextVersion": "price-context-v4",
+      "featureQualityVersion": "feature-quality-v1",
+      "setupFamilyVersion": "lane-a-v1",
+      "pivotLeftBars": 2,
+      "pivotRightBars": 2,
+      "atrPeriodBars": 14,
+      "atrMode": "rma",
+      "atrValueUnit": "price",
+      "channelCenterKind": "ema",
+      "channelCenterPeriodBars": 20,
+      "hlc3SmoothingKind": "ema",
+      "channelCenterValueUnit": "price",
+      "channelWidthKind": "atr",
+      "channelWidthPeriodBars": 14,
+      "channelWidthMultiplier": 1,
+      "channelWidthValueUnit": "price",
+      "channelWidthMultiplierUnit": "dimensionless",
+      "levelBufferMultiplier": 1,
+      "levelBufferMultiplierUnit": "dimensionless",
+      "htfFastPeriodBars": 9,
+      "htfSlowPeriodBars": 21,
+      "htfMovingAverageKind": "ema",
+      "htfConfirmationBars": 2,
+      "htfMovingAverageValueUnit": "price",
+      "boundaryMinimumChannelWidth": 0.1,
+      "boundaryMinimumChannelWidthUnit": "price"
+    },
+    "universe": {
+      "selectionVersion": "donchian-flow-example-25-v1",
+      "minimumSymbols": 25,
+      "maximumSymbols": 25
+    }
+  },
+  "scenarioPolicies": {
+    "formatVersion": 1,
+    "expiry": {
+      "formatVersion": 1,
+      "policyVersion": "donchian-flow-expiry-96h-v1",
+      "maximumAge": "4.00:00:00"
+    },
+    "rearm": {
+      "formatVersion": 1,
+      "policyVersion": "donchian-flow-new-anchor-v1",
+      "minimumAfterTerminal": "00:00:00",
+      "requiresNewAnchor": true
+    },
+    "invalidation": {
+      "formatVersion": 1,
+      "policyVersion": "donchian-flow-opposite-breakout-v1",
+      "cancelOnExplicitInvalidation": true,
+      "cancelOnOppositeDirection": true
+    },
+    "unknownReasons": [],
+    "isReady": true
+  },
+  "donchianFlowPolicy": {
+    "bodyFloor": 0.000001,
+    "stopChannelBars": 13,
+    "targetChannelBars": 89
+  }
+}
