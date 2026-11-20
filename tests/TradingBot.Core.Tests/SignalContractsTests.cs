@@ -96,8 +96,9 @@ public sealed class SignalContractsTests
         Assert.Equal(legacy, CoreJsonSerializer.Deserialize<SignalRecord>(legacyJson));
 
         SignalIdentity identity = Identity();
-        SignalPriceLevelParameters parameters = new(SetupType.BoundaryRejection, 1.5m, 0.1m, 1m, 2m);
-        SignalPriceLevels levels = new(1, "fixture-levels", SignalPriceLevelPolicy.CurrentFormulaVersion,
+        SignalPriceLevelParameters parameters = new(SetupType.BoundaryRejection,
+            1.5m, 0.1m, 1m, 2m, 1m);
+        SignalPriceLevels levels = new(1, "fixture-levels", SignalPriceLevelPolicy.ScaledFormulaVersion,
             14, parameters, "15m", Direction.Long, "setup-event", 100m, 99m, 2m,
             SignalPriceLevelsState.Ready, 97m, 103m, 106m, null);
         SignalRecord signal = SignalRecord.Create(identity, Evidence(identity, "quality-a"),

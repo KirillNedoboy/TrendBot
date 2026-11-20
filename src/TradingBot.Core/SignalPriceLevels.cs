@@ -16,10 +16,13 @@ public sealed record SignalPriceLevelParameters
     public decimal WickBufferAtr { get; }
     public decimal TakeProfit1Risk { get; }
     public decimal TakeProfit2Risk { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? StopDistanceMultiplier { get; }
 
     [JsonConstructor]
     public SignalPriceLevelParameters(SetupType family, decimal minimumStopAtr,
-        decimal wickBufferAtr, decimal takeProfit1Risk, decimal takeProfit2Risk)
+        decimal wickBufferAtr, decimal takeProfit1Risk, decimal takeProfit2Risk,
+        decimal? stopDistanceMultiplier = null)
     {
         ContractGuard.RequireDefined(family, nameof(family));
         if (minimumStopAtr <= 0m || wickBufferAtr <= 0m || takeProfit1Risk <= 0m
@@ -28,11 +31,17 @@ public sealed record SignalPriceLevelParameters
             throw new ArgumentOutOfRangeException(nameof(minimumStopAtr),
                 "Price-level multipliers must be positive and targets strictly ordered.");
         }
+        if (stopDistanceMultiplier is <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stopDistanceMultiplier),
+                "The stop-distance multiplier must be positive.");
+        }
         Family = family;
         MinimumStopAtr = minimumStopAtr;
         WickBufferAtr = wickBufferAtr;
         TakeProfit1Risk = takeProfit1Risk;
         TakeProfit2Risk = takeProfit2Risk;
+        StopDistanceMultiplier = stopDistanceMultiplier;
     }
 }
 
@@ -40,7 +49,9 @@ public sealed record SignalPriceLevelParameters
 public sealed record SignalPriceLevelPolicy
 {
     public const int CurrentFormatVersion = 1;
+    public const int ScaledFormatVersion = 2;
     public const string CurrentFormulaVersion = "signal-atr-wick-levels-v1";
+    public const string ScaledFormulaVersion = "signal-atr-wick-risk-scale-v2";
 
     public int FormatVersion { get; }
     public string PolicyVersion { get; }
@@ -52,9 +63,14 @@ public sealed record SignalPriceLevelPolicy
     public SignalPriceLevelPolicy(int formatVersion, string policyVersion, string formulaVersion,
         int atrPeriodBars, ImmutableValueList<SignalPriceLevelParameters> families)
     {
-        ArgumentOutOfRangeException.ThrowIfNotEqual(formatVersion, CurrentFormatVersion);
+        if (formatVersion != CurrentFormatVersion && formatVersion != ScaledFormatVersion)
+        {
+            throw new ArgumentOutOfRangeException(nameof(formatVersion));
+        }
         ContractGuard.RequireText(policyVersion, nameof(policyVersion));
-        if (!StringComparer.Ordinal.Equals(formulaVersion, CurrentFormulaVersion))
+        bool legacyFormula = formatVersion == CurrentFormatVersion;
+        if (!StringComparer.Ordinal.Equals(formulaVersion,
+                legacyFormula ? CurrentFormulaVersion : ScaledFormulaVersion))
         {
             throw new ArgumentException("The price-level formula is unsupported.", nameof(formulaVersion));
         }
@@ -64,9 +80,12 @@ public sealed record SignalPriceLevelPolicy
             .Where(static family => family != SetupType.DonchianFlowBreakout).ToArray();
         if (families.Count != known.Length || families.Any(static item => item is null)
             || families.Any(item => !known.Contains(item.Family))
-            || families.Select(static item => item.Family).Distinct().Count() != known.Length)
+            || families.Select(static item => item.Family).Distinct().Count() != known.Length
+            || families.Any(item => legacyFormula
+                ? item.StopDistanceMultiplier is not null
+                : item.StopDistanceMultiplier is null))
         {
-            throw new ArgumentException("Every signal family requires exactly one price-level policy.", nameof(families));
+            throw new ArgumentException("Every signal family requires exactly one compatible price-level policy.", nameof(families));
         }
         FormatVersion = formatVersion;
         PolicyVersion = policyVersion;
@@ -119,12 +138,19 @@ public sealed record SignalPriceLevels
     {
         ArgumentOutOfRangeException.ThrowIfNotEqual(formatVersion, CurrentFormatVersion);
         ContractGuard.RequireText(policyVersion, nameof(policyVersion));
-        if (!StringComparer.Ordinal.Equals(formulaVersion, SignalPriceLevelPolicy.CurrentFormulaVersion))
+        bool legacyFormula = StringComparer.Ordinal.Equals(formulaVersion,
+            SignalPriceLevelPolicy.CurrentFormulaVersion);
+        if (!legacyFormula && !StringComparer.Ordinal.Equals(formulaVersion,
+                SignalPriceLevelPolicy.ScaledFormulaVersion))
         {
             throw new ArgumentException("The price-level formula is unsupported.", nameof(formulaVersion));
         }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(atrPeriodBars);
         ArgumentNullException.ThrowIfNull(parameters);
+        if (legacyFormula != (parameters.StopDistanceMultiplier is null))
+        {
+            throw new ArgumentException("The price-level parameters do not match their formula.", nameof(parameters));
+        }
         ContractGuard.RequireDefined(direction, nameof(direction));
         ContractGuard.RequireDefined(state, nameof(state));
         ContractGuard.RequireText(sourceEventId, nameof(sourceEventId));
@@ -142,8 +168,8 @@ public sealed record SignalPriceLevels
             {
                 throw new ArgumentException("Ready price levels require complete inputs and prices.");
             }
-            (decimal stop, decimal first, decimal second) = CalculateValues(parameters, direction,
-                referencePrice, signalBarExtreme, atr.Value);
+            (decimal stop, decimal first, decimal second) = CalculateValues(formulaVersion,
+                parameters, direction, referencePrice, signalBarExtreme, atr.Value);
             if (!HasOrderedPrices(direction, referencePrice, signalBarExtreme, stop, first, second)
                 || stop != stopLoss || first != takeProfit1 || second != takeProfit2)
             {
@@ -189,8 +215,8 @@ public sealed record SignalPriceLevels
         decimal extreme = direction == Direction.Long ? signalBar.Bar.Low.Value : signalBar.Bar.High.Value;
         try
         {
-            (decimal stop, decimal first, decimal second) = CalculateValues(parameters, direction,
-                reference, extreme, atr);
+            (decimal stop, decimal first, decimal second) = CalculateValues(policy.FormulaVersion,
+                parameters, direction, reference, extreme, atr);
             if (!HasOrderedPrices(direction, reference, extreme, stop, first, second))
             {
                 return Unknown(policy, parameters, timeframe, direction, signalBar, atr,
@@ -216,18 +242,24 @@ public sealed record SignalPriceLevels
                 && stop > reference && stop > extreme;
 
     private static (decimal Stop, decimal First, decimal Second) CalculateValues(
-        SignalPriceLevelParameters parameters, Direction direction, decimal reference,
-        decimal extreme, decimal atr)
+        string formulaVersion, SignalPriceLevelParameters parameters, Direction direction,
+        decimal reference, decimal extreme, decimal atr)
     {
         checked
         {
             decimal minimumDistance = parameters.MinimumStopAtr * atr;
             decimal buffer = parameters.WickBufferAtr * atr;
-            decimal stop = direction == Direction.Long
+            decimal baseStop = direction == Direction.Long
                 ? Math.Min(reference - minimumDistance, extreme - buffer)
                 : Math.Max(reference + minimumDistance, extreme + buffer);
-            decimal risk = Math.Abs(reference - stop);
+            decimal baseRisk = Math.Abs(reference - baseStop);
             decimal sign = direction == Direction.Long ? 1m : -1m;
+            bool scaledFormula = StringComparer.Ordinal.Equals(formulaVersion,
+                SignalPriceLevelPolicy.ScaledFormulaVersion);
+            decimal risk = scaledFormula
+                ? baseRisk * parameters.StopDistanceMultiplier!.Value
+                : baseRisk;
+            decimal stop = scaledFormula ? reference - sign * risk : baseStop;
             return (stop, reference + sign * risk * parameters.TakeProfit1Risk,
                 reference + sign * risk * parameters.TakeProfit2Risk);
         }

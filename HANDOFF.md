@@ -1,4 +1,52 @@
+## Primary research strategy selection (2026-11-20)
+
+- The historical shortlist is Flow ATR Recovery on 15m/30m and Flow Stochastic
+  Recovery on 15m. The user also selected the separate Donchian-flow 30m and
+  1h profiles as primary research strategies; their profitability is unproven.
+  The existing Flow configuration still enables 15m/30m/1h for both families.
+  This priority does not authorize orders, delete other strategies, or redeploy
+  the removed server service.
+
+## TradingBot server removal (2026-11-20)
+
+- At the user's explicit request and confirmation, the public signal service
+  and its mounted state volume were stopped and disabled. The deployed app,
+  configuration, signal/candle/delivery databases, incident backups, dedicated
+  volume image, systemd units and drop-ins, encrypted Telegram credential files,
+  and dedicated service account were removed from the server.
+- Post-removal checks found no matching project units, paths, mounts, account or
+  group in the inspected locations. The three previously running short-bot
+  services remained active. Shared systemd journals were not deleted; their
+  historical entries remain until normal rotation. The local repository and
+  the Telegram bot itself were not deleted. A future deployment starts without
+  the removed server data or credential files.
+
+## Twenty-five-symbol Flow ATR and Stochastic profile (2026-11-20)
+
+- `signal-only.flow-25.example.json` selects the existing 12 contracts plus
+  TRX, LTC, BCH, DOT, NEAR, APT, ARB, OP, INJ, ATOM, ETC, UNI and FIL USDT
+  perpetuals. It enables only Flow ATR and Flow Stochastic at 15m, 30m and
+  1h, uses the risk-scaled policy and has distinct profile identities and stores.
+  The 13 additions were TRADING/PERPETUAL with the configured tick sizes in
+  Binance exchange information at inspection; this does not prove continuous
+  historical coverage or edge.
+- The configuration tests passed 6/6, including 75 distinct configured streams,
+  family restrictions, the 2× stop multiplier and separate journals. Scoped
+  whitespace and PowerShell 7 documentation validation passed.
+- A 90-second local public-only startup was stopped deliberately. The isolated
+  intake store contained 25 checkpoints and 13,841 accepted receipts; no console
+  stream updates or signals were observed before stopping. This is not evidence
+  that all 75 streams were initialized or of long-duration operation.
+- No live config, binary or process was changed. The existing 12 contracts
+  overlap the live scanner and parallel delivery could duplicate alerts.
+  The service was active at inspection with 275 recorded restarts; its cgroup
+  used approximately 2.14 GiB of 2.5 GiB and the 2 GiB state volume had 339 MiB
+  free. Those readings do not establish restart causes or capacity for 25 pairs.
+  A tested isolated release and resource/deduplication plan are still required
+  before deployment.
+
 ## Thirty-minute Donchian-flow experiment (2026-11-20)
+## Flow ATR and Flow Stochastic risk scaling (2026-11-20)
 
 - The user requested a separate 30m variant on the same 25 symbols. Its format-7
   `signal-only.donchian-flow-30m.example.json` preserves the hourly formula,
@@ -17,6 +65,24 @@
   for each. The process was deliberately stopped after 180 seconds (exit 124);
   no live closed-bar signal was observed. No Telegram delivery, private API
   call or order was performed. Long-duration operation remains unverified.
+- Root format 8 / nested price-level format 2 adds an explicit
+  `stopDistanceMultiplier`. The multitimeframe research profile sets it to 2 for
+  Flow ATR and Flow Stochastic across all enabled timeframes, and 1 for other
+  families. The original ATR/wick risk is doubled; existing target ratios make
+  SL = 2R, TP1 = 2R and TP2 = 4R relative to the old risk. Levels remain
+  indicative; this does not add order execution.
+- Nested format 1 retains the original unscaled formula; isolated root format 7
+  remains reserved for Donchian-flow. Focused Core formula/contracts tests passed
+  69/69, configuration tests passed 5/5, App Release build passed with warnings
+  as errors (0 warnings/errors), and scoped whitespace plus PowerShell 7
+  documentation validation passed.
+- The running `tradingbot-signal.service` was inspected read-only and remains on
+  root format 6 / nested format 1; its Flow ATR/Stochastic settings are
+  unchanged. No production config was copied and no restart occurred. The host
+  has no `dotnet` command or source checkout, and deploying the new policy
+  requires a tested release artifact. Do not apply format 8 to the live config
+  until that artifact is available; the worktree also contains unrelated user
+  changes that must not be shipped as part of it.
 
 ## Donchian-flow model stop and target
 

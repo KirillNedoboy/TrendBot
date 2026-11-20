@@ -225,8 +225,28 @@ policies. Format v5 additionally requires independently selectable strategy
 timeframes and explicit research parameters. Format v6 adds an explicit
 price-level policy for every signal family and requires matching ATR settings on
 every configured timeframe. These policies participate in the effective profile
-hash. Formats v1–v5 remain readable. Unknown or duplicate properties and private
-transport settings are rejected before either database is opened.
+hash. Formats v1–v5, legacy v6, and isolated v7 remain readable. Unknown or
+duplicate properties and private transport settings are rejected before either
+database is opened.
+Root format v8 adds risk-scaled price-level policy format v2. It first computes
+the existing ATR/wick stop distance, then multiplies that entire distance by
+each family's explicit `stopDistanceMultiplier`; TP distances use the scaled
+risk and the existing target ratios. The multitimeframe example applies 2 to
+Flow ATR and Flow Stochastic across every enabled timeframe, and 1 elsewhere.
+With their existing target ratios, these families now indicate SL at 2× the
+original risk, TP1 at 2×, and TP2 at 4×. Format v6 with nested policy v1 keeps
+the unscaled formula for historical configurations; root format v7 remains the
+isolated Donchian-flow profile. These are indicative levels, not orders or
+execution authority.
+
+`signal-only.flow-25.example.json` is a separate 25-symbol research profile
+for Flow ATR and Flow Stochastic only, on 15m, 30m and 1h. It retains the
+format-v8 risk-scaled levels and uses separate stores. The 13 added symbols
+were checked against Binance exchange information on 2026-11-20; their minimum
+widths are the observed price ticks, not calibrated strategy parameters.
+The original 12 overlap the multi-strategy profile, so running both with
+delivery enabled can duplicate alerts. Check resource capacity, state isolation
+and delivery scope before adding either workload to a service.
 
 `signal-only.12.example.json` is a format-v3 exploratory profile for the 12
 configured perpetual contracts. Its widths are one price tick per symbol

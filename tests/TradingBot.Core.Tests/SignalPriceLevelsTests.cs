@@ -40,12 +40,15 @@ public sealed class SignalPriceLevelsTests
         decimal secondTarget = family is SetupType.CenterRetest or SetupType.BreakoutRetestContinuation
             or SetupType.VolatilityCompressionExpansion ? 2.5m : 2m;
         decimal sign = direction == Direction.Long ? 1m : -1m;
-        decimal risk = minimumStopAtr * 2m;
+        decimal stopDistanceMultiplier = family is SetupType.FlowAtrRecovery or SetupType.FlowStochasticRecovery
+            ? 2m : 1m;
+        decimal risk = minimumStopAtr * 2m * stopDistanceMultiplier;
         Assert.Equal(SignalPriceLevelsState.Ready, levels.State);
         Assert.Equal(2m, levels.Atr);
         Assert.Equal(100m - sign * risk, levels.StopLoss);
         Assert.Equal(100m + sign * risk, levels.TakeProfit1);
         Assert.Equal(100m + sign * risk * secondTarget, levels.TakeProfit2);
+        Assert.Equal(stopDistanceMultiplier, levels.Parameters.StopDistanceMultiplier);
         Assert.Equal(levels, CoreJsonSerializer.Deserialize<SignalPriceLevels>(
             CoreJsonSerializer.Serialize(levels)));
     }
@@ -68,6 +71,30 @@ public sealed class SignalPriceLevelsTests
         {
             Assert.True(levels.StopLoss > 110m);
         }
+    }
+
+    [Theory]
+    [InlineData(Direction.Long)]
+    [InlineData(Direction.Short)]
+    public void FlowRecoveryRiskMultiplierScalesTheFullWickDerivedStop(Direction direction)
+    {
+        ScreenerBar[] bars = Bars("15m");
+        bars[^1] = direction == Direction.Long
+            ? Bar("15m", bars.Length - 1, 100m, 101m, 90m, 100m)
+            : Bar("15m", bars.Length - 1, 100m, 110m, 99m, 100m);
+
+        SignalPriceLevels levels = SignalPriceLevelEvaluator.Evaluate(Context("15m", bars),
+            bars[^1], SetupType.FlowAtrRecovery, direction, Policy());
+
+        Assert.Equal(SignalPriceLevelsState.Ready, levels.State);
+        Assert.Equal(2m, levels.Parameters.StopDistanceMultiplier);
+        decimal atr = levels.Atr!.Value;
+        decimal baseStop = direction == Direction.Long ? 90m - 0.1m * atr : 110m + 0.1m * atr;
+        decimal baseRisk = Math.Abs(100m - baseStop);
+        decimal sign = direction == Direction.Long ? 1m : -1m;
+        Assert.Equal(100m - sign * baseRisk * 2m, levels.StopLoss);
+        Assert.Equal(100m + sign * baseRisk * 2m, levels.TakeProfit1);
+        Assert.Equal(100m + sign * baseRisk * 4m, levels.TakeProfit2);
     }
 
     [Fact]
@@ -123,7 +150,23 @@ public sealed class SignalPriceLevelsTests
         Assert.Equal("price-levels-unrepresentable-or-nonpositive-price", levels.UnknownReason);
     }
 
-    private static SignalPriceLevelPolicy Policy() => new(1, "fixture-levels",
+    [Fact]
+    public void LegacyFormulaLevelsRemainReadableWithoutAStopMultiplier()
+    {
+        ScreenerBar[] bars = Bars("15m");
+        SignalPriceLevels levels = SignalPriceLevelEvaluator.Evaluate(Context("15m", bars),
+            bars[^1], SetupType.FlowAtrRecovery, Direction.Long, LegacyPolicy());
+
+        Assert.Equal("signal-atr-wick-levels-v1", levels.FormulaVersion);
+        Assert.Null(levels.Parameters.StopDistanceMultiplier);
+        Assert.Equal(97m, levels.StopLoss);
+        string json = CoreJsonSerializer.Serialize(levels);
+        Assert.DoesNotContain("\"stopDistanceMultiplier\"", json);
+        Assert.Equal(levels, CoreJsonSerializer.Deserialize<SignalPriceLevels>(json));
+    }
+
+    private static SignalPriceLevelPolicy LegacyPolicy() => new(
+        SignalPriceLevelPolicy.CurrentFormatVersion, "fixture-levels-v1",
         SignalPriceLevelPolicy.CurrentFormulaVersion, 14,
         new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
             .Where(static family => family != SetupType.DonchianFlowBreakout)
@@ -132,6 +175,19 @@ public sealed class SignalPriceLevelsTests
                 0.1m, 1m,
                 family is SetupType.CenterRetest or SetupType.BreakoutRetestContinuation
                     or SetupType.VolatilityCompressionExpansion ? 2.5m : 2m))));
+
+
+    private static SignalPriceLevelPolicy Policy() => new(
+        SignalPriceLevelPolicy.ScaledFormatVersion, "fixture-levels-v2",
+        SignalPriceLevelPolicy.ScaledFormulaVersion, 14,
+        new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
+            .Where(static family => family != SetupType.DonchianFlowBreakout)
+            .Select(family => new SignalPriceLevelParameters(family,
+                family is SetupType.BreakoutRetestContinuation or SetupType.VolatilityCompressionExpansion ? 2m : 1.5m,
+                0.1m, 1m,
+                family is SetupType.CenterRetest or SetupType.BreakoutRetestContinuation
+                    or SetupType.VolatilityCompressionExpansion ? 2.5m : 2m,
+                family is SetupType.FlowAtrRecovery or SetupType.FlowStochasticRecovery ? 2m : 1m))));
 
     private static PriceContextFeatureResult Context(string timeframe, ScreenerBar[] bars,
         CausalEventCursor? cursor = null)

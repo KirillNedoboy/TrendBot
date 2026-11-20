@@ -1,5 +1,5 @@
 {
-  "formatVersion": 6,
+  "formatVersion": 8,
   "mode": "signal-only-public",
   "symbols": [
     "BTCUSDT",
@@ -156,19 +156,19 @@
     "compressionLookbackBars": 14
   },
   "priceLevelsPolicy": {
-    "formatVersion": 1,
-    "policyVersion": "multistrategy-atr-levels-research-v1",
-    "formulaVersion": "signal-atr-wick-levels-v1",
+    "formatVersion": 2,
+    "policyVersion": "multistrategy-atr-levels-risk-scale-v2",
+    "formulaVersion": "signal-atr-wick-risk-scale-v2",
     "atrPeriodBars": 14,
     "families": [
-      { "family": "boundaryRejection", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
-      { "family": "centerRetest", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 },
-      { "family": "failedBreakoutReclaim", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
-      { "family": "breakoutRetestContinuation", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 },
-      { "family": "flowStochasticRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
-      { "family": "flowRsiRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
-      { "family": "flowAtrRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2 },
-      { "family": "volatilityCompressionExpansion", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5 }
+      { "family": "boundaryRejection", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2, "stopDistanceMultiplier": 1 },
+      { "family": "centerRetest", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5, "stopDistanceMultiplier": 1 },
+      { "family": "failedBreakoutReclaim", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2, "stopDistanceMultiplier": 1 },
+      { "family": "breakoutRetestContinuation", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5, "stopDistanceMultiplier": 1 },
+      { "family": "flowStochasticRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2, "stopDistanceMultiplier": 2 },
+      { "family": "flowRsiRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2, "stopDistanceMultiplier": 1 },
+      { "family": "flowAtrRecovery", "minimumStopAtr": 1.5, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2, "stopDistanceMultiplier": 2 },
+      { "family": "volatilityCompressionExpansion", "minimumStopAtr": 2, "wickBufferAtr": 0.1, "takeProfit1Risk": 1, "takeProfit2Risk": 2.5, "stopDistanceMultiplier": 1 }
     ]
   },
   "additionalProfiles": [

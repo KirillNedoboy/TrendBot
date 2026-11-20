@@ -15,6 +15,7 @@ public sealed record SignalOnlyConfiguration
     public const int ResearchStrategiesFormatVersion = 5;
     public const int PriceLevelsFormatVersion = 6;
     public const int DonchianFlowFormatVersion = 7;
+    public const int ScaledPriceLevelsFormatVersion = 8;
     public const string SignalOnlyMode = "signal-only-public";
 
     private static readonly JsonSerializerOptions WireOptions = new()
@@ -215,6 +216,10 @@ public sealed record SignalOnlyConfiguration
             : multiLanePolicy is not null ? MultiLaneFormatVersion
             : boundaryMinimumChannelWidths is null
                 ? CurrentFormatVersion : PerSymbolWidthFormatVersion;
+        if (priceLevelsPolicy?.FormatVersion == SignalPriceLevelPolicy.ScaledFormatVersion)
+        {
+            FormatVersion = ScaledPriceLevelsFormatVersion;
+        }
         if (donchianFlowPolicy is not null)
         {
             FormatVersion = DonchianFlowFormatVersion;
@@ -296,6 +301,11 @@ public sealed record SignalOnlyConfiguration
                     && wire.AdditionalProfiles is { Length: > 0 }
                     && wire.ResearchStrategies is { ValueKind: JsonValueKind.Object }
                     && wire.PriceLevelsPolicy is { ValueKind: JsonValueKind.Object },
+                ScaledPriceLevelsFormatVersion => wire.BoundaryMinimumChannelWidths is not null
+                    && wire.MultiLanePolicy is { ValueKind: JsonValueKind.Object }
+                    && wire.AdditionalProfiles is { Length: > 0 }
+                    && wire.ResearchStrategies is { ValueKind: JsonValueKind.Object }
+                    && wire.PriceLevelsPolicy is { ValueKind: JsonValueKind.Object },
                 DonchianFlowFormatVersion => wire.BoundaryMinimumChannelWidths is null
                     && wire.MultiLanePolicy is null && wire.AdditionalProfiles is null
                     && wire.ResearchStrategies is null && wire.PriceLevelsPolicy is null
@@ -331,6 +341,13 @@ public sealed record SignalOnlyConfiguration
             SignalPriceLevelPolicy? priceLevelsPolicy = wire.PriceLevelsPolicy is { } levelsJson
                 ? CoreJsonSerializer.Deserialize<SignalPriceLevelPolicy>(levelsJson.GetRawText())
                 : null;
+            if ((wire.FormatVersion == PriceLevelsFormatVersion
+                    && priceLevelsPolicy?.FormatVersion != SignalPriceLevelPolicy.CurrentFormatVersion)
+                || (wire.FormatVersion == ScaledPriceLevelsFormatVersion
+                    && priceLevelsPolicy?.FormatVersion != SignalPriceLevelPolicy.ScaledFormatVersion))
+            {
+                throw new JsonException();
+            }
             DonchianFlowSignalPolicy? donchianFlowPolicy = wire.DonchianFlowPolicy is { } donchianJson
                 ? CoreJsonSerializer.Deserialize<DonchianFlowSignalPolicy>(donchianJson.GetRawText())
                 : null;

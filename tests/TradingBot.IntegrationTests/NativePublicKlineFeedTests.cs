@@ -826,11 +826,11 @@ public sealed class NativePublicKlineFeedTests
         ImmutableValueList<string> none = new([]);
         SignalResearchStrategyPolicy research = new(1, "research-fixture", frames, frames,
             frames, none, none, none, none, none, 96, 2, 1, 30m, 70m, 2m, 2);
-        SignalPriceLevelPolicy priceLevels = new(1, "levels-fixture",
-            SignalPriceLevelPolicy.CurrentFormulaVersion, 1,
+        SignalPriceLevelPolicy priceLevels = new(SignalPriceLevelPolicy.ScaledFormatVersion,
+            "levels-fixture", SignalPriceLevelPolicy.ScaledFormulaVersion, 1,
             new ImmutableValueList<SignalPriceLevelParameters>(Enum.GetValues<SetupType>()
                 .Where(static family => family != SetupType.DonchianFlowBreakout)
-                .Select(static family => new SignalPriceLevelParameters(family, 1.5m, 0.1m, 1m, 2m))));
+                .Select(static family => new SignalPriceLevelParameters(family, 1.5m, 0.1m, 1m, 2m, 1m))));
         ISignalMultiLaneSource lanes = new FixtureMultiLaneSource("confirmed");
         using SignalOnlyInstrumentConsumer consumer = new("BTCUSDT", profile,
             CreateScenarioPolicies(), feed, ledger, journal, lanes, research, priceLevels);

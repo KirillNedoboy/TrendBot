@@ -6,6 +6,19 @@ This document is the indexed product/system specification for TradingBot. The ve
 
 Build a C#/.NET 10 modular monolith for autonomous, deterministic, multi-lane intraday trading research and eventual execution on Binance USD-M perpetual futures. The system must support one Core decision path for replay, backtest, shadow, paper, limited-live, and production modes, with explicit gates before real orders.
 
+## Primary public research strategies — 2026-11-20
+
+The user selected Flow ATR Recovery on 15m/30m, Flow Stochastic Recovery on
+15m, and the separate Donchian-flow 30m and 1h profiles as primary research
+strategies. The Flow shortlist is based on exploratory historical results;
+Donchian-flow is a separate user-selected hypothesis, not a demonstrated
+profitable result. The existing 25-symbol Flow configuration still enables both
+families on 15m, 30m and 1h; the other timeframes have not been promoted by the
+shortlist. Each Donchian profile uses its own 25-symbol state. This is a research
+priority, not proof of profitability, permission to trade, or a change to
+previously recorded signals. Other strategy implementations and their independent
+configurations are retained.
+
 ## Independent Donchian-flow research profile — 2026-11-20
 
 The user authorized an isolated hourly public-only strategy based on the

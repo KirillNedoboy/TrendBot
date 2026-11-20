@@ -78,6 +78,14 @@ one-minute trade window, and the latest observed Binance liquidation snapshot.
 They are context only, not extra entry filters. The liquidation stream is
 sampled and a missing snapshot does not mean there were no liquidations.
 
+An isolated 25-symbol Flow ATR and Flow Stochastic research configuration is
+[`signal-only.flow-25.example.json`](signal-only.flow-25.example.json). It uses
+15m, 30m and 1h, the risk-scaled level policy, and separate journals. It does
+not enable the other strategy families. It is not installed or started
+automatically; running it alongside the existing 12-symbol scanner can duplicate
+Flow alerts for the 12 shared symbols. The added instruments and level choices
+are exploratory, not evidence of profitability.
+
 The independent 1h Donchian-flow research profile covers 25 USDT perpetuals
 without Lane B/C admission filters. It uses separate state files, models a fixed
 13-channel stop and 89-channel target, and does not start automatically. These
