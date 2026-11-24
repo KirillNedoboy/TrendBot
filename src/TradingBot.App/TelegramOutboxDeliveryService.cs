@@ -49,6 +49,8 @@ public sealed class TelegramOutboxDeliveryService
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
+    internal void ValidateJournalStream(string streamId) => _ = _signalJournal.Read(streamId);
+
     public async Task<SignalOutboxDeliverySnapshot?> DispatchNextAsync(
         string streamId, CancellationToken cancellationToken = default)
     {
@@ -90,6 +92,10 @@ public sealed class TelegramOutboxDeliveryService
         SignalOutboxLease? first = null;
         foreach (string streamId in streamIds)
         {
+            if (!_deliveryStore.HasPotentialWork(_signalJournal, streamId))
+            {
+                continue;
+            }
             first = _deliveryStore.ClaimNext(_signalJournal, streamId, _policy,
                 _timeProvider.GetUtcNow());
             if (first is not null)
@@ -116,6 +122,10 @@ public sealed class TelegramOutboxDeliveryService
             foreach (string streamId in streamIds)
             {
                 if (StringComparer.Ordinal.Equals(streamId, first.StreamId))
+                {
+                    continue;
+                }
+                if (!_deliveryStore.HasPotentialWork(_signalJournal, streamId))
                 {
                     continue;
                 }
@@ -253,18 +263,18 @@ internal static class TelegramSignalMessageFormatter
 
         List<string> lines =
         [
-            "RESEARCH signal (not an order)",
-            $"Instrument: {signal.Identity.InstrumentId.Value}",
-            $"Direction: {signal.Identity.Direction}",
-            $"Setup: {signal.Identity.Family}",
-            $"Timeframe: {signal.Identity.SetupTimeframe}",
-            $"Assessment: {signal.AssessmentState}",
-            $"Decision time (UTC): {signal.DecisionAt.Value.ToUniversalTime():O}",
-            $"Scenario time (UTC): {item.ScenarioEvent.AvailabilityTime.Value.ToUniversalTime():O}",
-            $"Scenario event: {item.ScenarioEvent.Kind}",
-            "Statistical validation: UNKNOWN"
+            "Исследовательский сигнал (не ордер)",
+            $"Инструмент: {signal.Identity.InstrumentId.Value}",
+            $"Направление: {DirectionText(signal.Identity.Direction)}",
+            $"Стратегия: {FamilyText(signal.Identity.Family)}",
+            $"Таймфрейм: {TimeframeText(signal.Identity.SetupTimeframe)}",
+            $"Оценка: {AssessmentText(signal.AssessmentState)}",
+            $"Время решения (UTC): {signal.DecisionAt.Value.ToUniversalTime():O}",
+            $"Время события сценария (UTC): {item.ScenarioEvent.AvailabilityTime.Value.ToUniversalTime():O}",
+            $"Событие сценария: {ScenarioEventText(item.ScenarioEvent.Kind)}",
+            "Статистическая проверка: неизвестно"
         ];
-        lines.Add($"Reference close (not a fill): {signal.ReferencePrice.Price.Value.ToString(CultureInfo.InvariantCulture)}");
+        lines.Add($"Цена закрытия для ориентира (не цена исполнения): {signal.ReferencePrice.Price.Value.ToString(CultureInfo.InvariantCulture)}");
         if (signal.Identity.Family == SetupType.DonchianFlowBreakout)
         {
             string? exitReason = item.ScenarioEvent.ReasonCode switch
@@ -304,24 +314,24 @@ internal static class TelegramSignalMessageFormatter
         }
         if (signal.PriceLevels is { State: SignalPriceLevelsState.Ready } levels)
         {
-            lines.Add($"Indicative SL: {levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}");
-            lines.Add($"TP1: {levels.TakeProfit1!.Value.ToString(CultureInfo.InvariantCulture)}; TP2: {levels.TakeProfit2!.Value.ToString(CultureInfo.InvariantCulture)}");
-            lines.Add("Research levels only; not orders, fills, or exchange-tick-rounded prices.");
+            lines.Add($"Ориентировочный стоп-лосс: {levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}");
+            lines.Add($"Цель 1: {levels.TakeProfit1!.Value.ToString(CultureInfo.InvariantCulture)}; цель 2: {levels.TakeProfit2!.Value.ToString(CultureInfo.InvariantCulture)}");
+            lines.Add("Уровни исследовательские: это не ордера и не цены исполнения; округление по шагу биржи не выполнено.");
         }
         else if (signal.Identity.Family != SetupType.DonchianFlowBreakout)
         {
-            lines.Add($"SL/TP: UNKNOWN ({signal.PriceLevels?.UnknownReason ?? "not-recorded-for-legacy-signal"})");
+            lines.Add($"Стоп-лосс и цели: недоступны ({ReasonText(signal.PriceLevels?.UnknownReason)})");
         }
         if (evidence.MarketContext is { } context)
         {
-            lines.Add($"UTC-session VWAP: {context.Vwap.Value?.ToString(CultureInfo.InvariantCulture) ?? context.Vwap.UnknownReason}");
-            lines.Add($"Observed-trade POC bin: {context.Poc.Price?.ToString(CultureInfo.InvariantCulture) ?? context.Poc.UnknownReason} (bin {context.Poc.BinSize.ToString(CultureInfo.InvariantCulture)}, {context.Poc.TradeCount} trades)");
+            lines.Add($"VWAP сессии UTC: {context.Vwap.Value?.ToString(CultureInfo.InvariantCulture) ?? ReasonText(context.Vwap.UnknownReason)}");
+            lines.Add($"POC наблюдаемых сделок: {context.Poc.Price?.ToString(CultureInfo.InvariantCulture) ?? ReasonText(context.Poc.UnknownReason)} (шаг {context.Poc.BinSize.ToString(CultureInfo.InvariantCulture)}, сделок: {context.Poc.TradeCount})");
             lines.Add(context.LatestLiquidation is { } liquidation
-                ? $"Sampled liquidation: {liquidation.Side} {liquidation.Quantity.ToString(CultureInfo.InvariantCulture)} @ {liquidation.Price.ToString(CultureInfo.InvariantCulture)} (incomplete feed)"
-                : "Sampled liquidations: none observed in the window (incomplete feed)");
+                ? $"Выборочная ликвидация: {TradeSideText(liquidation.Side)} {liquidation.Quantity.ToString(CultureInfo.InvariantCulture)} по {liquidation.Price.ToString(CultureInfo.InvariantCulture)} (поток неполный)"
+                : "Выборочные ликвидации: за период не наблюдались (поток неполный)");
         }
-        lines.Add($"Signal ID: {signal.Identity.SignalId}");
-        lines.Add($"Delivery ID: {item.OutboxId}");
+        lines.Add($"ID сигнала: {signal.Identity.SignalId}");
+        lines.Add($"ID доставки: {item.OutboxId}");
         string message = string.Join('\n', lines);
         if (message.Length > 4096)
         {
@@ -330,6 +340,75 @@ internal static class TelegramSignalMessageFormatter
         }
         return message;
     }
+
+    private static string DirectionText(Direction value) => value switch
+    {
+        Direction.Long => "лонг",
+        Direction.Short => "шорт",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string FamilyText(SetupType value) => value switch
+    {
+        SetupType.BoundaryRejection => "Отбой от границы",
+        SetupType.CenterRetest => "Ретест центра канала",
+        SetupType.FailedBreakoutReclaim => "Возврат после ложного пробоя",
+        SetupType.BreakoutRetestContinuation => "Продолжение после пробоя и ретеста",
+        SetupType.FlowStochasticRecovery => "Восстановление потока по стохастику",
+        SetupType.FlowRsiRecovery => "Восстановление потока по RSI",
+        SetupType.FlowAtrRecovery => "Восстановление потока по ATR",
+        SetupType.VolatilityCompressionExpansion => "Расширение после сжатия волатильности",
+        SetupType.DonchianFlowBreakout => "Пробой 55 с потоком и объёмом",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string TimeframeText(string value) => value switch
+    {
+        "5m" => "5 минут",
+        "15m" => "15 минут",
+        "30m" => "30 минут",
+        "1h" => "1 час",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string AssessmentText(SignalAssessmentState value) => value switch
+    {
+        SignalAssessmentState.Research => "исследовательская",
+        SignalAssessmentState.ConfirmedOnClosedBar => "подтверждено на закрытой свече",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string ScenarioEventText(SignalScenarioEventKind value) => value switch
+    {
+        SignalScenarioEventKind.AlertCreated => "сигнал создан",
+        SignalScenarioEventKind.Continued => "сценарий продолжается",
+        SignalScenarioEventKind.Canceled => "сценарий отменён",
+        SignalScenarioEventKind.Expired => "срок сценария истёк",
+        SignalScenarioEventKind.OverlapLinked => "связано пересечение сценариев",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string TradeSideText(TradeSide value) => value switch
+    {
+        TradeSide.Buy => "покупка",
+        TradeSide.Sell => "продажа",
+        _ => throw new ArgumentOutOfRangeException(nameof(value))
+    };
+
+    private static string ReasonText(string? value) => value switch
+    {
+        null => "не записано в старом сигнале",
+        "price-levels-signal-bar-unavailable" => "нет свечи сигнала",
+        "price-levels-atr-unavailable" => "ATR недоступен",
+        "session-history-incomplete" => "история сессии неполная",
+        "session-volume-unavailable" => "объём сессии недоступен",
+        "session-volume-overflow" => "переполнение объёма сессии",
+        "trade-window-incomplete" => "окно сделок неполное",
+        "trade-source-time-unavailable" => "нет времени источника сделки",
+        "trade-input-invalid" => "некорректные данные сделки",
+        "no-observed-trades" => "нет наблюдаемых сделок",
+        _ => $"недоступно; код: {value}"
+    };
 }
 
 internal enum TelegramSendResultKind

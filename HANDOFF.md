@@ -1,3 +1,204 @@
+## Current autonomous Demo deployment
+
+- The user waived waiting for an observed first order and explicitly approved
+  autonomous Bybit Demo execution on the existing 25-pair/five-profile scope:
+  250 USDT target notional, at most 20 positions, isolated margin/leverage <=10,
+  existing 10% discrepancy/slippage and freshness 200/60/130-second gates.
+  No real-money trading or account-setting mutation was authorized.
+- Current release `demo-066d5521f8a0-linux-x64` uses curated source tree
+  `066d5521f8a09228d80d688c77ff9d45ae2b889a`; bundle SHA-256 is
+  `a1b23b82ffd6cb1a6b1e96f3d6f95042719926f4af781504ce06dc7e7c9b1abf`.
+  Locked Linux restore and warnings-as-errors self-contained publish passed.
+  The corrected source/approval/entry/runtime filter passed 43 cases, including
+  partial availability and cancellation before/during preflight. Earlier relevant
+  Telegram/shutdown and masked-input filters passed 49 and 16 cases; the curated
+  integration baseline passed 148 cases.
+- The all-stream availability veto was the operational defect: missing/stale
+  unrelated streams prevented every fresh candidate from being considered.
+  After the first observed hourly close there were 20/25 hourly checkpoints,
+  with reconnects on other streams; the old all-100 gate still blocked all entries.
+  Availability is now candidate-local. Its own committed stream must remain
+  fresh and its exact active candidate is re-read before and after account/quote
+  preflight, including the refreshed preflight after approval. Unrelated gaps
+  remain visible as `monitoring-partial-public-streams`, not fabricated readiness.
+- The user separately approved this corrected behavior. The old V5 grant was
+  revoked and retained root-only before release cutover; execution claims were
+  zero before/after stopping. A new release/key/config-bound grant was installed
+  at 2026-11-24T16:14:36.181490Z and independently recomputed inside the live
+  credential mount/service namespace; both fingerprints matched.
+- The 2026-11-24T16:15:05Z operational proof showed enabled/active/running V6,
+  `monitoring-partial-public-streams`, zero restarts, zero execution intents/fills,
+  and no recorded private-stream faults or unmatched activity. Private health
+  passed the runtime guard. No first order was awaited or artificially generated.
+- A read-only authenticated Demo `/v5/user/query-api` call confirmed read/write
+  mode and both ContractTrade Order/Position permissions. It emitted flags only.
+  Keys, token, destination and raw private responses were not exposed.
+- Telegram intake reused the masked window with explicit storage/test consent;
+  the actual test passed. The user also approved accumulated notifications.
+  All three per-profile real delivery stores were initialized as the protected
+  service user and preserved across upgrades. The supervisor creates their
+  parent directory. Normal-pump evidence is now six Acknowledged messages,
+  eight Expired old records and one UnknownDelivery. The latter may have reached
+  Telegram; do not claim delivery or blindly resend it. All selected profile
+  senders remain enabled through the sole expected credential-mount drop-in.
+- Automatic recovery after unexpected process death was observed. V3 SIGTERM
+  once passed in 27.65 seconds with exit 0, but later V4/V5 upgrade stops again
+  timed out at 45 seconds without phase markers. This intermittent shutdown
+  issue remains unresolved; no successful V6 stop is claimed. Native exchange
+  protection is not cancelled on termination. Do not stop the active service
+  merely to wait for an order or reset its state.
+- Formal P16-M02-T004 acceptance remains BLOCKED by the intermittent stop
+  timeout and the existing CRLF/tool limitation. Neither observed first-order
+  execution nor global all-100 readiness is an activation requirement.
+
+## Bybit Demo credential handoff
+
+- The user submitted Demo credentials through the masked native window. They
+  remain encrypted on the previously authorized VPS, with root-only credential
+  directories and mode-0600 encrypted files; no secret entered chat, arguments,
+  source or logs. The server still needs no globally installed dotnet runtime.
+- Actual read-only Demo preflight passed: account connected, isolated margin,
+  and no open linear-USDT positions or orders. This is not an account-wide
+  assertion for spot/inverse/other settlement currencies or proof of order rights.
+- `tools/connect-bybit-demo.ps1` adds a native Windows masked-input window.
+  Explicit local consent permits SSH stdin transfer, systemd host-key encrypted
+  storage in a unique root-only directory, and read-only Demo preflight. The
+  existing host key is required, never initialized by intake. Authenticated HTTP
+  redirects are refused; receiver/transport budgets are 30/60 seconds. Position
+  and order cleanliness covers linear USDT only. Failed preflight retains stored
+  encrypted credentials and exits 3; uncertain transport disables resubmission.
+- PowerShell parsing and remote receiver syntax/transport passed without keys,
+  permanent server writes or private calls. A loopback HTTP probe proved redirect
+  rejection and no request after deadline. The original empty window was closed
+  before these corrections; the corrected window was opened and visually checked.
+- The user subsequently reported that Connect appeared inactive. A masked
+  screenshot showed the generic local input rejection, with consent selected;
+  the exact rejected characters were not read. With explicit user agreement,
+  that filled window was cancelled and replaced. Input now trims only edge
+  whitespace before JSON handoff and identifies key/secret/consent failures
+  separately, focusing the offending control without displaying its value.
+  Ten synthetic PowerShell regressions passed for pasted whitespace, punctuation,
+  invalid fields, masks, length and consent. The corrected empty native window
+  was visually checked before the user's successful real credential submission.
+- CREDENTIALS_DIRECTORY now selects the entire mounted pair, never mixing with
+  or falling back to stale environment values on errors. Console mode keeps its
+  session confirmation. Explicit headless mode uses a root-managed, revocable
+  scope/release/key-bound receipt; a request or missing receipt cannot authorize
+  entries. Receipt checks bracket refreshed preflight; owned safety recovery
+  continues without entry approval. SIGTERM requests cancellation.
+- The user separately approved installation and permanent monitor-only startup
+  on the VPS, not new orders. `deploy/install-bybit-demo.sh` refuses occupied unit
+  identities and existing targets, including systemd's hidden private state.
+  It verifies the bundle digest and runs public validation as a capped, protected
+  DynamicUser transient service before installing the permanent unit.
+- A curated source tree (`2307997bcc1455fb687b13e77e9ec6761a503185`) includes the
+  required existing public-feed/journal dependencies but excludes unrelated
+  uncommitted LimitedLive modules. A first partial snapshot failed to compile
+  because a selected signature addition omitted its pre-existing deletion;
+  dependency selection was corrected, not the user's worktree. The isolated
+  Release integration filter then passed 148 cases. Linux RID restore preserved
+  the original package-lock targets; a subsequent locked restore and warnings-as-
+  errors self-contained publish passed with runtime 10.0.12.
+- The verified Linux bundle SHA-256 is
+  `b104e0431a882636a22da96d213c1181ec0c3ba65ec53584aea47c80cfb0620f`.
+  Release `demo-2307997bcc14-linux-x64` is installed under the dedicated /opt
+  root. The separate `tradingbot-bybit-demo.service` is enabled and running as
+  DynamicUser with no drop-ins, ProtectSystem=strict, no new privileges,
+  MemoryMax=2560M and CPUQuota=200%. Actual Linux public validation passed for
+  all 25 symbols without credentials or orders.
+- Initial runtime evidence reached `waiting-for-public-streams` after private
+  readiness; all entry/exit/source/claim tables were empty, and the entry approval
+  receipt was absent. Full public warmup and shutdown/restart observation are
+  still pending. No Demo order was authorized or sent.
+- The first 420-second readiness observation timed out. Metadata then showed
+  intake streams 50/25/25, live triggers and journal checkpoints 46/23/0, and all
+  hourly live triggers unset. Independent producer review confirmed that REST
+  warmup deliberately emits no scenario checkpoints; only a genuine new closed
+  WebSocket setup bar does, even when it emits no signal. Do not fabricate an
+  idle checkpoint or relax the freshness gate to bypass the first-live-close wait.
+- The first actual SIGTERM test failed: after 45 seconds systemd reported
+  Result=timeout and ExecMainStatus=9. The monitor was restarted with no order
+  approval or owned intents. Existing logs did not reach the final joined/stopped
+  marker, so the precise blocking operation was not established.
+- Signal cancellation is now dispatched asynchronously, with its completion
+  retained and joined with child tasks; shutdown-phase messages were added.
+  A blocking-callback regression plus runtime cases passed 24/24 locally.
+  Actual V3 Linux verification passed (27.65 seconds, exit 0), but the later
+  V4 stop timed out again; see the current deployment section. Recompute the
+  pending approval request after any deployed release change.
+- A non-authorizing PENDING request was independently computed using the trusted
+  deployed executable inside the service mount/working-directory context,
+  dropping to its UID and clearing capabilities in a capped scope. It was not
+  copied from a service-writable request or published as an approval.
+- systemd verification warned that the unrelated root-owned regular file
+  `/etc/systemd/system/short-bot-research-collector.service` is world-writable.
+  Its contents/permissions and the unrelated bot services were not changed.
+  Review that separate host-security risk before treating the VPS as hardened.
+- Formal order-smoke acceptance and the existing CRLF issue remain outstanding;
+  successful credential intake or monitor startup is not a completed trade.
+
+## Bybit Demo implementation and verification (2026-11-22)
+
+- The separate `bybit-demo` command now composes the three selected Binance
+  signal profiles, private Demo session supervision, source selection,
+  reservations/entry dispatch, protection, target/stop executions, and recovery.
+  Existing `signal-only` remains public-only. No server was deployed.
+- The user selected Flow ATR 15m/30m, Flow Stochastic 15m and Donchian-flow
+  30m/1h on 25 pairs, 250 USDT target notional, at most 20 slots, one net position
+  per symbol, 10% quote discrepancy, 10% entry slippage, leverage up to 10x and
+  isolated margin. On 2026-11-22 the user explicitly supplied maximum ages of
+  200 seconds for signals, 60 for quotes and 130 for private heartbeat.
+  `bybit-demo.example.json` records these settings without credentials.
+- `tools/run-bybit-demo.ps1` defaults to a public-only check. Run mode requires
+  `-EnableDemoOrders`, local masked Demo credential input (or environment
+  references), an interactive terminal and first-entry scope confirmation.
+  Never ask for secrets in chat. No private account connection, demo order or
+  real-money order was made during implementation. Private verification and a
+  separately authorized first demo-order smoke remain outstanding.
+- The runtime pins private REST to `api-demo.bybit.com` and private WebSocket
+  to `stream-demo.bybit.com`. It never changes account settings. Read-only
+  ownership/settings checks precede exchange mutations; unknown/manual state
+  blocks automation. Entry preflight is repeated after interactive approval.
+  REST order/execution pagination reconstructs fills after gaps and lost
+  acknowledgements; unknown submissions are not blindly retried.
+- Schema 7 stores canonical sources, reservations/entry claims, actual entry
+  fills, immutable exit plans, stop changes, exit intents/order states and
+  deduplicated exit fills. Flow uses actual-fill rebasing, tradable half/remainder
+  quantities, and actual TP1 executions before the entry-price stop. That stop
+  is not net breakeven after fees/funding. Cancelled partial exits can continue
+  only through new bounded remainder claims. Capacity releases only after
+  complete executions, flatness and terminal owned exits.
+- Donchian monitoring continues for the actual position independently of public
+  scenario cancellation/expiry. It reconstructs closed Binance 55-channel
+  breaches after entry, including after restart and while a stop update is
+  unresolved. Closed OHLC does not determine intrabar wick timing. A verified
+  owned position missing its stop takes the reduce-only safety path without a
+  public-market dependency. Conditional target slippage is not guaranteed by
+  the entry's explicit 10% tolerance.
+- The obsolete entry-only private execution processor and standalone stop
+  executor were removed in favor of the unified runtime. Their wiring checks
+  were replaced by actual journal-to-entry and full lifecycle fake-exchange
+  cases. The focused `BybitDemo` plus `SignalOnlyJournalOutputTests` filter
+  passed 123 tests, including 21 runtime cases and server-clock calibration.
+  Release integration build passed with warnings as errors. CLI help and
+  unauthenticated public validation for all 25 symbols ran successfully.
+  The PowerShell launcher parsed without syntax errors.
+- A public smoke exposed local clock skew relative to Demo. Server-time
+  calibration now estimates UTC without modifying the OS clock, retains
+  round-trip uncertainty for entry claim bounds, and blocks entries on refresh
+  failure while preserving monitoring. The public check passed after this fix.
+- A subsequent local presence-only probe found neither Demo credential
+  environment variable set; values were never requested or printed. Native
+  CRLF patch attempts also normalized to LF; the editor/reader BOM snapshot
+  discrepancy was reported. The clock calibration regression still passed
+  after removing an extra leading BOM from that source file.
+- Formal `P16-M02-T004` is BLOCKED on acceptance, not DONE: private/account/order
+  smoke is not authorized or verified, and full formatting verification is
+  still blocked by CRLF normalization. UTF-8 BOM was applied to the new C#
+  files, and reported non-EOL whitespace was corrected. The editor normalizes
+  replacement CRLF to LF; this tool limitation was reported. Do not bypass
+  task acceptance or imply that local tests verify real exchange execution.
+
 ## Three-profile public research kit (2026-11-20)
 
 - The user requested a local kit for 25 instruments: Flow ATR on 15m/30m,

@@ -49,6 +49,86 @@ public sealed class NativePublicKlineFeedTests
     }
 
     [Fact]
+    public async Task HistoryTimeoutRetriesSamePageWithoutDuplicatingBars()
+    {
+        FixedTimeProvider clock = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), false, timeouts: 1);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(database.Path);
+
+        NativePublicKlineFeed feed = await NativePublicKlineFeed.WarmupAsync(
+            restClient, "BTCUSDT", CreateProfile(1, 1, TimeSpan.FromHours(3)), ledger,
+            clock, TestContext.Current.CancellationToken);
+
+        Assert.Equal(handler.Requests[0], handler.Requests[1]);
+        Assert.Equal(11, feed.SetupHistory.Count);
+        Assert.Equal(2, feed.ContextHistory.Count);
+        Assert.Equal(13, ledger.Read("binance-usdm-native-kline:BTCUSDT").Receipts.Count);
+    }
+
+    [Fact]
+    public async Task HistoryTimeoutStopsAfterBoundedAttempts()
+    {
+        FixedTimeProvider clock = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), false, timeouts: 3);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(database.Path);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativePublicKlineFeed.WarmupAsync(
+            restClient, "BTCUSDT", CreateProfile(1, 1, TimeSpan.FromHours(3)), ledger,
+            clock, TestContext.Current.CancellationToken));
+
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Empty(ledger.Read("binance-usdm-native-kline:BTCUSDT").Receipts);
+    }
+
+    [Fact]
+    public async Task HistoryCancellationDoesNotRetry()
+    {
+        FixedTimeProvider clock = new(WarmupAt);
+        using CancellationTokenSource stop = new();
+        KlineHandler handler = new(CreateRestBars(null), false, timeouts: 1, cancel: stop);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(database.Path);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativePublicKlineFeed.WarmupAsync(
+            restClient, "BTCUSDT", CreateProfile(1, 1, TimeSpan.FromHours(3)), ledger,
+            clock, stop.Token));
+
+        Assert.Single(handler.Requests);
+        Assert.Empty(ledger.Read("binance-usdm-native-kline:BTCUSDT").Receipts);
+    }
+
+    [Fact]
+    public async Task BoundedHistoryTimeoutDoesNotExceedRequestBudget()
+    {
+        FixedTimeProvider clock = new(WarmupAt);
+        KlineHandler handler = new(CreateRestBars(null), false, timeouts: 1);
+        using HttpClient httpClient = new(handler);
+        BinancePublicRestClient restClient = new(httpClient,
+            new BinanceRestOptions(new Uri("https://fixture.test")), clock);
+        using TemporaryLedger database = new();
+        using SqliteNativeBarInputLedger ledger = SqliteNativeBarInputLedger.Open(database.Path);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativePublicKlineFeed.WarmupBoundedAsync(
+            restClient, "BTCUSDT", CreateProfile(1, 1, TimeSpan.FromHours(3)), ledger,
+            new NativePublicKlineRestHistoryBudget(1, 12),
+            new NativePublicKlineRestHistoryBudget(1, 3),
+            clock, TestContext.Current.CancellationToken));
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
     public async Task BoundedWarmupUsesOnePageAndTimeframeSpecificRawRowLimits()
     {
         FixedTimeProvider timeProvider = new(WarmupAt);
@@ -801,6 +881,33 @@ public sealed class NativePublicKlineFeedTests
     }
 
     [Fact]
+    public async Task SignalOnlyCommandReportsSqliteCodesWithoutExposingDatabaseContent()
+    {
+        using TemporaryLedger inputDatabase = new();
+        using TemporaryLedger journalDatabase = new();
+        using TemporaryLedger configFile = new();
+        File.WriteAllText(inputDatabase.Path, "database-content-sentinel");
+        SignalOnlyConfiguration configuration = new(["BTCUSDT"], inputDatabase.Path,
+            journalDatabase.Path, CreateProfile(1, 1, TimeSpan.FromHours(3)),
+            CreateScenarioPolicies());
+        File.WriteAllText(configFile.Path, configuration.ToJson());
+        using StringWriter output = new(CultureInfo.InvariantCulture);
+        using StringWriter error = new(CultureInfo.InvariantCulture);
+
+        int result = await SignalOnlyCommand.RunAsync(
+            ["signal-only", "--config", configFile.Path], output, error,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, result);
+        using JsonDocument diagnostic = JsonDocument.Parse(error.ToString());
+        Assert.Equal("signal-sqlite-failure", diagnostic.RootElement.GetProperty("kind").GetString());
+        Assert.Equal(26, diagnostic.RootElement.GetProperty("code").GetInt32());
+        Assert.Equal(26, diagnostic.RootElement.GetProperty("extendedCode").GetInt32());
+        Assert.DoesNotContain("database-content-sentinel", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(inputDatabase.Path, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ResearchReclaimIsPersistedWithLaneEvidenceAndSurvivesRestart()
     {
         using TemporaryLedger inputDatabase = new();
@@ -874,6 +981,11 @@ public sealed class NativePublicKlineFeedTests
         Assert.Equal(levels.TakeProfit2, card.GetProperty("priceLevels").GetProperty("takeProfit2").GetDecimal());
         using StringWriter liveOutput = new(CultureInfo.InvariantCulture);
         await SignalOnlyCommand.WritePublicCloseAsync(reclaimUpdate, "BTCUSDT", stream, journal, liveOutput);
+        using JsonDocument closeMetric = JsonDocument.Parse(liveOutput.ToString().Split('\n')[0]);
+        Assert.Equal(CoClose.AddMinutes(30), closeMetric.RootElement.GetProperty("candleClosedAt").GetDateTimeOffset());
+        Assert.Equal(reclaim.ReceiveTime.Value, closeMetric.RootElement.GetProperty("receivedAt").GetDateTimeOffset());
+        Assert.Equal(reclaim.AvailabilityTime.Value, closeMetric.RootElement.GetProperty("availableAt").GetDateTimeOffset());
+        Assert.NotEqual(default, closeMetric.RootElement.GetProperty("projectionObservedAt").GetDateTimeOffset());
         Assert.Contains(signal.Signal.Identity.SignalId, liveOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains($"\"stopLoss\":{levels.StopLoss!.Value.ToString(CultureInfo.InvariantCulture)}",
             liveOutput.ToString(), StringComparison.Ordinal);
@@ -900,6 +1012,7 @@ public sealed class NativePublicKlineFeedTests
     [InlineData("veto")]
     [InlineData("unknown")]
     [InlineData("recovery")]
+    [InlineData("recovery-partial")]
     [InlineData("disabled")]
     public async Task SignalOnlyConsumerPersistsConfirmedSignalAndOutbox(string laneMode)
     {
@@ -963,9 +1076,25 @@ public sealed class NativePublicKlineFeedTests
         BinanceStreamEnvelope envelope = CreateEnvelope(trigger,
             CoClose.AddMilliseconds(20));
 
-        if (laneMode == "recovery")
+        if (laneMode is "recovery" or "recovery-partial")
         {
             Assert.Equal(BinanceKlineIngestionStatus.Accepted, feed.Accept(envelope).Status);
+            if (laneMode == "recovery-partial")
+            {
+                const string stream = "binance-usdm-native-kline:BTCUSDT";
+                NativeBarInputLedgerReceipt receipt = ledger.Read(stream).Receipts
+                    .Single(item => item.EventId == triggerEventId
+                        && item.Status == NativeBarInputReceiptStatus.Accepted);
+                string earlierCandidateId = $"scenario-confirm:{triggerEventId}:BoundaryRejection:Short";
+                SignalScenarioProjectionSnapshot initial =
+                    new SignalScenarioProjectionEngine(CreateScenarioPolicies()).CreateInitialSnapshot();
+                SignalJournalDiagnostic earlierDiagnostic = SignalJournalDiagnostic.Create(
+                    stream, earlierCandidateId, receipt.RevisionHash!, "multi-lane-blocked", ["fixture"]);
+                Assert.True(journal.Append(new SignalJournalCommit(stream, 0, 1,
+                    earlierCandidateId, receipt.RevisionHash!, new UtcTimestamp(CoClose),
+                    new UtcTimestamp(CoClose.AddMinutes(1)), 1, null, initial, [],
+                    diagnostic: earlierDiagnostic)));
+            }
             NativePublicKlineFeed restoredFeed = NativePublicKlineFeed.RestoreFromLedger(
                 rest, "BTCUSDT", profile, ledger, timeProvider);
             using SignalOnlyInstrumentConsumer recovered = new("BTCUSDT", profile,
@@ -975,6 +1104,15 @@ public sealed class NativePublicKlineFeedTests
             Assert.Empty(recoveredSnapshot.Outbox);
             Assert.Contains(recoveredSnapshot.Diagnostics,
                 item => item.Code == "multi-lane-recovery-unavailable");
+            var recoveredOutput = journal.ReadOutputForEvent(
+                "binance-usdm-native-kline:BTCUSDT", triggerEventId);
+            Assert.Contains(recoveredOutput.Diagnostics,
+                item => item.Code == "multi-lane-recovery-unavailable");
+            if (laneMode == "recovery-partial")
+            {
+                Assert.True(recoveredSnapshot.Checkpoint!.AvailabilityTime.Value >= CoClose.AddMinutes(1));
+                Assert.Contains(recoveredSnapshot.Diagnostics, item => item.Code == "multi-lane-blocked");
+            }
             return;
         }
 
@@ -1050,9 +1188,9 @@ public sealed class NativePublicKlineFeedTests
                 await sender.DispatchNextAsync("binance-usdm-native-kline:BTCUSDT",
                     TestContext.Current.CancellationToken));
             Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, sent.Status);
-            Assert.Contains("UTC-session VWAP: 100", telegram.Message, StringComparison.Ordinal);
-            Assert.Contains("Observed-trade POC bin: 100", telegram.Message, StringComparison.Ordinal);
-            Assert.Contains("Sampled liquidation: Sell", telegram.Message, StringComparison.Ordinal);
+            Assert.Contains("VWAP сессии UTC: 100", telegram.Message, StringComparison.Ordinal);
+            Assert.Contains("POC наблюдаемых сделок: 100", telegram.Message, StringComparison.Ordinal);
+            Assert.Contains("Выборочная ликвидация: продажа", telegram.Message, StringComparison.Ordinal);
         }
         string contextEventId = BinanceKlineIdentity.Create("BTCUSDT", "1h",
             context.OpenTimeMilliseconds).EventId;
@@ -2077,9 +2215,11 @@ public sealed class NativePublicKlineFeedTests
     }
 
     private sealed class KlineHandler(IReadOnlyList<BinanceKline> bars,
-        bool rejectRequests, int maxRowsPerResponse = int.MaxValue) : HttpMessageHandler
+        bool rejectRequests, int maxRowsPerResponse = int.MaxValue, int timeouts = 0,
+        CancellationTokenSource? cancel = null) : HttpMessageHandler
     {
         private readonly List<BinanceKline> _bars = [.. bars];
+        private int _timeoutsRemaining = timeouts;
 
         public List<Uri> Requests { get; } = [];
 
@@ -2090,6 +2230,12 @@ public sealed class NativePublicKlineFeedTests
         {
             Uri uri = request.RequestUri!;
             Requests.Add(uri);
+            if (_timeoutsRemaining > 0)
+            {
+                _timeoutsRemaining--;
+                cancel?.Cancel();
+                throw new TaskCanceledException("fixture timeout");
+            }
             if (rejectRequests)
             {
                 throw new InvalidOperationException("Unexpected REST history request.");

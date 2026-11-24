@@ -1,4 +1,6 @@
-﻿using System.Text.Json;
+﻿using System.Diagnostics;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using TradingBot.Core;
 using TradingBot.Exchange.Binance;
 using TradingBot.Infrastructure;
@@ -89,13 +91,18 @@ public static class SignalOnlyCommand
         string? chatId = null;
         if (args.Length == 5)
         {
-            botToken = Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_BOT_TOKEN");
-            chatId = Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_CHAT_ID");
-            if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId))
+            try
             {
-                await error.WriteLineAsync(
-                    "signal-only: TRADINGBOT_TELEGRAM_BOT_TOKEN and TRADINGBOT_TELEGRAM_CHAT_ID are required")
-                    .ConfigureAwait(false);
+                string? directory = Environment.GetEnvironmentVariable("CREDENTIALS_DIRECTORY");
+                TelegramCredentials credentials = TelegramCredentials.Load(directory,
+                    directory is null ? Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_BOT_TOKEN") : null,
+                    directory is null ? Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_CHAT_ID") : null);
+                botToken = credentials.Token;
+                chatId = credentials.ChatId;
+            }
+            catch (InvalidOperationException)
+            {
+                await error.WriteLineAsync("signal-only: complete valid Telegram credentials are required");
                 return 2;
             }
 
@@ -155,6 +162,23 @@ public static class SignalOnlyCommand
                 status = (int)exception.StatusCode,
                 exchangeCode = exception.Code,
                 endpoint = exception.RequestUri?.AbsolutePath
+            })).ConfigureAwait(false);
+            return 1;
+        }
+        catch (SqliteException exception)
+        {
+            string? operation = new StackTrace(exception, false).GetFrames()
+                .Select(static frame => frame.GetMethod())
+                .Where(static method => method?.DeclaringType?.Namespace?.StartsWith(
+                    "TradingBot.", StringComparison.Ordinal) == true)
+                .Select(static method => $"{method!.DeclaringType!.Name}.{method.Name}")
+                .FirstOrDefault();
+            await error.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                kind = "signal-sqlite-failure",
+                code = exception.SqliteErrorCode,
+                extendedCode = exception.SqliteExtendedErrorCode,
+                operation
             })).ConfigureAwait(false);
             return 1;
         }
@@ -239,15 +263,17 @@ public static class SignalOnlyCommand
             return 2;
         }
 
-        string? botToken = Environment.GetEnvironmentVariable(
-            "TRADINGBOT_TELEGRAM_BOT_TOKEN");
-        string? chatId = Environment.GetEnvironmentVariable(
-            "TRADINGBOT_TELEGRAM_CHAT_ID");
-        if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId))
+        TelegramCredentials credentials;
+        try
         {
-            await error.WriteLineAsync(
-                "signal-only telegram-send: TRADINGBOT_TELEGRAM_BOT_TOKEN and TRADINGBOT_TELEGRAM_CHAT_ID are required")
-                .ConfigureAwait(false);
+            string? directory = Environment.GetEnvironmentVariable("CREDENTIALS_DIRECTORY");
+            credentials = TelegramCredentials.Load(directory,
+                directory is null ? Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_BOT_TOKEN") : null,
+                directory is null ? Environment.GetEnvironmentVariable("TRADINGBOT_TELEGRAM_CHAT_ID") : null);
+        }
+        catch (InvalidOperationException)
+        {
+            await error.WriteLineAsync("signal-only telegram-send: complete valid Telegram credentials are required");
             return 2;
         }
 
@@ -287,7 +313,7 @@ public static class SignalOnlyCommand
                 Timeout = TimeSpan.FromSeconds(30)
             };
             TelegramOutboxDeliveryService sender = new(journal, deliveryStore,
-                httpClient, SignalOutboxDeliveryPolicy.Default, botToken, chatId);
+                httpClient, SignalOutboxDeliveryPolicy.Default, credentials.Token, credentials.ChatId);
             string streamId = SignalOnlyStreamId.For(symbol, args.Length == 10 ? args[9] : "15m");
             SignalOutboxDeliverySnapshot? result =
                 await sender.DispatchNextAsync(streamId, cancellationToken)
@@ -565,6 +591,9 @@ public static class SignalOnlyCommand
         string symbol, string streamId, SqliteSignalJournalStore journal, TextWriter output,
         string setupTimeframe = "15m", SignalMarketContext? marketContext = null)
     {
+        NativePublicKlineEvaluation? evaluation = update.Evaluation;
+        BinanceKlineSourceMetadata? source = evaluation?.TriggerRevision.SourceMetadata
+            .FirstOrDefault(item => item.StableSequence == evaluation.IntakeSequence);
         await output.WriteLineAsync(JsonSerializer.Serialize(new
         {
             kind = "public-close",
@@ -572,6 +601,10 @@ public static class SignalOnlyCommand
             setupTimeframe,
             status = update.Status.ToString(),
             timeframe = update.Identity?.Timeframe,
+            candleClosedAt = evaluation?.TriggerRevision.EndExclusiveTime.Value,
+            receivedAt = source?.ReceiveTime?.Value,
+            availableAt = source?.AvailabilityTime?.Value,
+            projectionObservedAt = DateTimeOffset.UtcNow,
             marketContext,
             readiness = update.Evaluation is null ? null
                 : update.Evaluation.IsReady ? "ready" : "unknown",
@@ -583,11 +616,8 @@ public static class SignalOnlyCommand
             return;
         }
 
-        SignalJournalSnapshot snapshot = journal.Read(streamId);
-        foreach (SignalJournalDiagnostic diagnostic in snapshot.Diagnostics.Where(item =>
-            StringComparer.Ordinal.Equals(item.InputEventId, update.Identity.EventId)
-            || item.InputEventId.StartsWith($"scenario-confirm:{update.Identity.EventId}:",
-                StringComparison.Ordinal)))
+        var (signals, diagnostics) = journal.ReadOutputForEvent(streamId, update.Identity.EventId);
+        foreach (SignalJournalDiagnostic diagnostic in diagnostics)
         {
             await output.WriteLineAsync(JsonSerializer.Serialize(new
             {
@@ -598,8 +628,7 @@ public static class SignalOnlyCommand
                 reasons = diagnostic.ReasonCodes
             })).ConfigureAwait(false);
         }
-        foreach (SignalJournalSignal item in snapshot.Signals.Where(item =>
-            StringComparer.Ordinal.Equals(item.Signal.ReferencePrice.EventId, update.Identity.EventId)))
+        foreach (SignalJournalSignal item in signals)
         {
             SignalMultiLaneAssessment? lanes = item.Evidence.MultiLaneInput is { } laneInput
                 ? SignalMultiLaneResearchEvaluator.Evaluate(laneInput) : null;

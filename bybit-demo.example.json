@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "mode": "bybit-demo",
+  "targetNotionalUsdt": 250,
+  "maximumPositions": 20,
+  "maximumPriceDifferencePercent": 10,
+  "maximumSlippagePercent": 10,
+  "maximumLeverage": 10,
+  "marginMode": "isolated",
+  "maximumSignalAgeSeconds": 200,
+  "maximumQuoteAgeSeconds": 60,
+  "privateStreamFreshnessSeconds": 130,
+  "receiveWindowMilliseconds": 5000,
+  "statePath": "artifacts/bybit-demo/execution.sqlite",
+  "signalJournalPaths": [
+    "artifacts/flow-25-selected-v1/signal-journal.sqlite",
+    "artifacts/donchian-flow-30m-25-sl13-tp89/signal-journal.sqlite",
+    "artifacts/donchian-flow-25-sl13-tp89/signal-journal.sqlite"
+  ]
+}

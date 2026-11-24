@@ -624,18 +624,32 @@ public sealed class NativePublicKlineFeed
                 pageLimit = Math.Min(RestKlinePageLimit, remainingRows);
             }
 
-            if (expectedTimeframe == SetupTimeframe)
+            IReadOnlyList<BinanceKline> page;
+            for (int attempt = 0; ; attempt++)
             {
-                SetupRestPagesRequested = checked(SetupRestPagesRequested + 1);
-            }
-            else
-            {
-                ContextRestPagesRequested = checked(ContextRestPagesRequested + 1);
-            }
+                if (expectedTimeframe == SetupTimeframe)
+                {
+                    SetupRestPagesRequested = checked(SetupRestPagesRequested + 1);
+                }
+                else
+                {
+                    ContextRestPagesRequested = checked(ContextRestPagesRequested + 1);
+                }
 
-            IReadOnlyList<BinanceKline> page = await _restClient.GetKlinesAsync(_symbol,
-                expectedTimeframe, pageLimit, pageStart, requestedAt, cancellationToken)
-                .ConfigureAwait(false);
+                try
+                {
+                    page = await _restClient.GetKlinesAsync(_symbol,
+                        expectedTimeframe, pageLimit, pageStart, requestedAt, cancellationToken)
+                        .ConfigureAwait(false);
+                    break;
+                }
+                catch (OperationCanceledException) when (budget is null
+                    && !cancellationToken.IsCancellationRequested && attempt < 2)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(attempt + 1), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
             if (budget is not null)
             {
                 pagesRequested = checked(pagesRequested + 1);

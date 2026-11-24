@@ -284,6 +284,10 @@ public sealed record SignalJournalSignal(
     SignalRecord Signal,
     SignalEvidenceRecord Evidence);
 
+/// <summary>An active signal and its committed scenario alert at one journal checkpoint.</summary>
+public sealed record SignalJournalActive(SignalJournalSignal Signal,
+    SignalScenarioEpisode Episode, SignalScenarioEvent Alert, SignalJournalCheckpoint Checkpoint);
+
 /// <summary>One committed, output-only scenario event awaiting a future delivery task.</summary>
 public sealed record SignalJournalOutboxItem(
     string OutboxId,

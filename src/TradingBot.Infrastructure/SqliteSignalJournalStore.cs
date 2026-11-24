@@ -18,6 +18,9 @@ public sealed class SqliteSignalJournalStore : IDisposable
     private readonly int _commandTimeoutSeconds;
     private readonly bool _readOnly;
     private readonly long? _maximumDatabaseBytes;
+    private readonly object _writerLock = new();
+
+    internal string DatabasePath => _databasePath;
 
     private SqliteSignalJournalStore(string databasePath, int commandTimeoutSeconds,
         bool readOnly, long? maximumDatabaseBytes)
@@ -104,7 +107,15 @@ public sealed class SqliteSignalJournalStore : IDisposable
         string snapshotHash = ComputeHash(snapshotJson);
         string commitJson = SerializeCommit(commit, snapshotHash);
         string commitHash = ComputeHash(commitJson);
+        lock (_writerLock)
+        {
+            return AppendSerialized(commit, snapshotJson, snapshotHash, commitJson, commitHash);
+        }
+    }
 
+    private bool AppendSerialized(SignalJournalCommit commit, string snapshotJson,
+        string snapshotHash, string commitJson, string commitHash)
+    {
         using SqliteConnection connection = OpenConnection();
         using SqliteTransaction transaction = connection.BeginTransaction(
             IsolationLevel.Serializable, deferred: false);
@@ -189,7 +200,7 @@ public sealed class SqliteSignalJournalStore : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
         using SqliteConnection connection = OpenConnection();
-        using SqliteTransaction transaction = connection.BeginTransaction();
+        using SqliteTransaction transaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
         CurrentStateRow? state = ReadCurrentState(connection, transaction, streamId);
         transaction.Commit();
         return state is null
@@ -202,7 +213,7 @@ public sealed class SqliteSignalJournalStore : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
         using SqliteConnection connection = OpenConnection();
-        using SqliteTransaction transaction = connection.BeginTransaction();
+        using SqliteTransaction transaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
         CurrentStateRow? current = ReadCurrentState(connection, transaction, streamId);
         List<SignalJournalSignal> signals = ReadSignals(connection, transaction, streamId);
         List<SignalScenarioEvent> events = ReadScenarioEvents(connection, transaction,
@@ -221,6 +232,59 @@ public sealed class SqliteSignalJournalStore : IDisposable
             new ImmutableValueList<SignalScenarioEvent>(events),
             new ImmutableValueList<SignalJournalDiagnostic>(diagnostics),
             new ImmutableValueList<SignalJournalOutboxItem>(outbox));
+    }
+
+    /// <summary>Reads active signal evidence and its alert at a single validated checkpoint.</summary>
+    public (SignalJournalCheckpoint? Checkpoint, IReadOnlyList<SignalJournalActive> Signals) ReadActiveSignals(string streamId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
+        using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
+        CurrentStateRow? current = ReadCurrentState(connection, transaction, streamId);
+        List<SignalJournalActive> active = [];
+        if (current is not null)
+        {
+            foreach (SignalScenarioEpisode episode in current.ScenarioSnapshot.Episodes)
+            {
+                if (episode.State != SignalScenarioEpisodeState.Active)
+                {
+                    continue;
+                }
+                List<SignalJournalSignal> signals = ReadSignals(connection, transaction, streamId,
+                    selectedSignalId: episode.Identity.SignalId);
+                SignalScenarioEvent? snapshotAlert = current.ScenarioSnapshot.Events
+                    .SingleOrDefault(item => item.EventId == episode.AlertEventId);
+                SignalScenarioEvent alert = ReadScenarioAlert(connection, transaction, streamId, episode.AlertEventId);
+                if (signals.Count != 1 || signals[0].Signal.Identity != episode.Identity
+                    || snapshotAlert is null || snapshotAlert != alert
+                    || alert.Kind != SignalScenarioEventKind.AlertCreated || alert.SignalId != episode.Identity.SignalId)
+                {
+                    throw new InvalidDataException("An active signal does not match its committed scenario.");
+                }
+                active.Add(new SignalJournalActive(signals[0], episode, alert, current.Checkpoint));
+            }
+        }
+        transaction.Commit();
+        return (current?.Checkpoint, active.AsReadOnly());
+    }
+
+    /// <summary>
+    /// Reads validated records for operational output only. Full historical
+    /// integrity validation remains the responsibility of <see cref="Read"/>.
+    /// </summary>
+    public (IReadOnlyList<SignalJournalSignal> Signals, IReadOnlyList<SignalJournalDiagnostic> Diagnostics)
+        ReadOutputForEvent(string streamId, string inputEventId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(inputEventId);
+        using SqliteConnection connection = OpenRawConnection(_databasePath, _commandTimeoutSeconds,
+            SqliteOpenMode.ReadOnly);
+        connection.Open();
+        using SqliteTransaction transaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
+        List<SignalJournalSignal> signals = ReadSignals(connection, transaction, streamId, inputEventId);
+        List<SignalJournalDiagnostic> diagnostics = ReadDiagnostics(connection, transaction, streamId, inputEventId);
+        transaction.Commit();
+        return (signals, diagnostics);
     }
 
     public void Dispose()
@@ -835,17 +899,25 @@ public sealed class SqliteSignalJournalStore : IDisposable
     }
 
     private static List<SignalJournalSignal> ReadSignals(SqliteConnection connection,
-        SqliteTransaction transaction, string streamId)
+        SqliteTransaction transaction, string streamId, string? inputEventId = null, string? selectedSignalId = null)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = selectedSignalId is null ? """
             SELECT signal_id, record_hash, evidence_hash, signal_json, evidence_json
             FROM signal_journal_signals
             WHERE stream_id = $stream_id COLLATE BINARY
+              AND ($event_id IS NULL OR json_extract(signal_json, '$.referencePrice.eventId') = $event_id COLLATE BINARY)
             ORDER BY signal_id COLLATE BINARY;
+            """ : """
+            SELECT signal_id, record_hash, evidence_hash, signal_json, evidence_json
+            FROM signal_journal_signals
+            WHERE stream_id = $stream_id COLLATE BINARY AND signal_id = $signal_id COLLATE BINARY
+              AND ($event_id IS NULL OR json_extract(signal_json, '$.referencePrice.eventId') = $event_id COLLATE BINARY);
             """;
         command.Parameters.AddWithValue("$stream_id", streamId);
+        command.Parameters.AddWithValue("$event_id", (object?)inputEventId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$signal_id", (object?)selectedSignalId ?? DBNull.Value);
         List<SignalJournalSignal> signals = [];
         using SqliteDataReader reader = command.ExecuteReader();
         while (reader.Read())
@@ -889,6 +961,33 @@ public sealed class SqliteSignalJournalStore : IDisposable
         }
 
         return signals;
+    }
+
+    private static SignalScenarioEvent ReadScenarioAlert(SqliteConnection connection,
+        SqliteTransaction transaction, string streamId, string eventId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT payload_hash, event_json FROM signal_journal_scenario_events
+            WHERE stream_id = $stream_id COLLATE BINARY AND event_id = $event_id COLLATE BINARY;
+            """;
+        command.Parameters.AddWithValue("$stream_id", streamId);
+        command.Parameters.AddWithValue("$event_id", eventId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new InvalidDataException("The active signal alert is missing.");
+        }
+        string payloadHash = reader.GetString(0);
+        string json = reader.GetString(1);
+        SignalScenarioEvent alert = DeserializeScenarioEvent(json);
+        if (alert.EventId != eventId || ComputeHash(json) != payloadHash
+            || CoreJsonSerializer.Serialize(alert) != json)
+        {
+            throw new InvalidDataException("The active signal alert is inconsistent.");
+        }
+        return alert;
     }
 
     private static List<SignalScenarioEvent> ReadScenarioEvents(
@@ -942,7 +1041,7 @@ public sealed class SqliteSignalJournalStore : IDisposable
     }
 
     private static List<SignalJournalDiagnostic> ReadDiagnostics(
-        SqliteConnection connection, SqliteTransaction transaction, string streamId)
+        SqliteConnection connection, SqliteTransaction transaction, string streamId, string? inputEventId = null)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -950,9 +1049,14 @@ public sealed class SqliteSignalJournalStore : IDisposable
             SELECT diagnostic_id, payload_hash, diagnostic_json
             FROM signal_journal_diagnostics
             WHERE stream_id = $stream_id COLLATE BINARY
+              AND ($event_id IS NULL OR json_extract(diagnostic_json, '$.inputEventId') = $event_id COLLATE BINARY
+                   OR substr(json_extract(diagnostic_json, '$.inputEventId'), 1, length($prefix)) = $prefix COLLATE BINARY)
             ORDER BY input_sequence, diagnostic_id COLLATE BINARY;
             """;
         command.Parameters.AddWithValue("$stream_id", streamId);
+        command.Parameters.AddWithValue("$event_id", (object?)inputEventId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$prefix", inputEventId is null
+            ? DBNull.Value : $"scenario-confirm:{inputEventId}:");
         List<SignalJournalDiagnostic> diagnostics = [];
         using SqliteDataReader reader = command.ExecuteReader();
         while (reader.Read())

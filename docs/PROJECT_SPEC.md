@@ -6,6 +6,54 @@ This document is the indexed product/system specification for TradingBot. The ve
 
 Build a C#/.NET 10 modular monolith for autonomous, deterministic, multi-lane intraday trading research and eventual execution on Binance USD-M perpetual futures. The system must support one Core decision path for replay, backtest, shadow, paper, limited-live, and production modes, with explicit gates before real orders.
 
+## Bybit demo execution amendment — 2026-11-20
+
+The user authorized a separate Bybit Demo Trading executor for the selected
+Binance-derived public research signals. The existing signal-only mode remains
+public-only; this amendment does not authorize real-money execution. The user
+selected a 250 USDT target notional per position, at most 20 concurrent
+positions, market entries, and SL/TP distances rebased proportionally from the
+Binance reference to the actual average Bybit entry price. For Flow, close half
+at TP1, move the remaining stop to the average entry price, and close the
+remainder at TP2. Entry-price stops are not net breakeven after fees or funding.
+Donchian's separate modeled target and opposite-channel exit remain distinct.
+
+The user selected a maximum 10% signal-to-Bybit price discrepancy, 10% market
+order slippage and 10× leverage, with isolated margin. These are permissive
+demo limits, not a loss guarantee. Verify existing account settings rather than
+changing them automatically. The user subsequently selected maximum ages of
+200 seconds for a Binance signal, 60 seconds for a Bybit quote and 130 seconds
+for the private-stream heartbeat. These permissive freshness limits are explicit
+demo settings, not latency or execution guarantees. Persist intent and
+capacity before dispatch; protect actual fills, reconcile uncertain results and
+unfamiliar positions, and do not retry unknown submissions blindly. Partial
+fills, duplicated events, concurrent signals, price rounding, restart and
+protection failures must remain observable and fail closed for new entries.
+The first demo order requires a separate point-of-risk confirmation. Demo evidence
+does not waive any real-money gate or establish strategy profitability.
+
+Public source availability is candidate-local. Missing or stale unrelated
+pair/timeframe streams must not veto an otherwise eligible signal. Its own
+committed checkpoint and exact active scenario remain subject to the existing
+freshness limits and are revalidated across asynchronous entry preflight and
+approval. Partial availability must be reported rather than presented as full
+market readiness. The user waived waiting for an observed first Demo order;
+this does not waive explicit activation consent or any entry safety guard.
+
+Autonomous server operation requires a distinct, explicitly selected service
+entry gate: read-only monitoring may start before order approval, but entries
+require a revocable operator-managed receipt bound to the exact immutable
+release, effective strategy/configuration scope and Demo credential identity.
+Key-storage consent is not order consent. A new release/scope/key requires a
+new grant; revoking entry approval must not disable owned-position protection.
+No receipt can authorize production endpoints or waive real-money gates.
+
+Bybit does not support the explicit market-order slippage-tolerance parameter
+on conditional TP/SL orders. A triggered conditional market target can fill
+partially or at a worse price; it must be reconciled and cannot be represented
+as having the entry's 10% tolerance guarantee. This limitation does not remove
+the requirement to protect any remaining position.
+
 ## Primary public research strategies — 2026-11-20
 
 The user selected Flow ATR Recovery on 15m/30m, Flow Stochastic Recovery on

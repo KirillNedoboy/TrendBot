@@ -55,6 +55,49 @@ public sealed class SqliteSignalJournalStoreTests
     }
 
     [Fact]
+    public void ReadersObserveCommittedSnapshotWhileAnotherConnectionHoldsWriter()
+    {
+        using TemporaryDatabase database = new();
+        ScenarioFixture fixture = new();
+        SignalJournalCommit first = fixture.FirstCommit();
+        using SqliteSignalJournalStore store = SqliteSignalJournalStore.Open(database.Path, 1);
+        Assert.True(store.Append(first));
+        using SqliteConnection writer = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = database.Path,
+            Pooling = false
+        }.ToString());
+        writer.Open();
+        using SqliteTransaction heldWrite = writer.BeginTransaction(deferred: false);
+
+        Assert.Equal(first.InputEventId, store.ReadCurrentState(StreamId).Checkpoint!.InputEventId);
+        Assert.Equal(first.SignalRecord, Assert.Single(store.Read(StreamId).Signals).Signal);
+        Assert.Equal(first.SignalRecord, Assert.Single(
+            store.ReadOutputForEvent(StreamId, first.SignalRecord!.ReferencePrice.EventId).Signals).Signal);
+    }
+
+    [Fact]
+    public void OutputReadReturnsOnlyRecordsForTheRequestedInput()
+    {
+        using TemporaryDatabase database = new();
+        ScenarioFixture fixture = new();
+        SignalJournalCommit first = fixture.FirstCommit();
+        using SqliteSignalJournalStore store = SqliteSignalJournalStore.Open(database.Path);
+        Assert.True(store.Append(first));
+        string inputEventId = first.SignalRecord!.ReferencePrice.EventId;
+
+        var matching = store.ReadOutputForEvent(StreamId, inputEventId);
+        var unrelated = store.ReadOutputForEvent(StreamId, "unrelated-input");
+
+        Assert.Equal(first.SignalRecord, Assert.Single(matching.Signals).Signal);
+        Assert.Equal(first.EvidenceRecord, matching.Signals[0].Evidence);
+        Assert.Empty(matching.Diagnostics);
+        Assert.Empty(unrelated.Signals);
+        Assert.Empty(unrelated.Diagnostics);
+        Assert.Equal(first.SignalRecord, Assert.Single(store.Read(StreamId).Signals).Signal);
+    }
+
+    [Fact]
     public void BoundedSignalJournalReopensWithoutChangingCommittedOutput()
     {
         using TemporaryDatabase database = new();
@@ -120,6 +163,9 @@ public sealed class SqliteSignalJournalStoreTests
         Assert.Equal(first.NewScenarioEvents, snapshot.ScenarioEvents);
         Assert.Single(snapshot.Outbox);
         Assert.Equal(diagnostic, Assert.Single(snapshot.Diagnostics));
+        var output = store.ReadOutputForEvent(StreamId, late.EventId);
+        Assert.Empty(output.Signals);
+        Assert.Equal(diagnostic, Assert.Single(output.Diagnostics));
     }
 
     [Fact]

@@ -2,6 +2,43 @@
 
 Execution is deferred to Phase 12 and remains disabled during bootstrap, shadow, and initial research. The future state machine must handle accepted, rejected, partially filled, cancelled, unknown, timed-out, and reconciled orders with idempotent client identities and native protective orders where supported.
 
+## Bybit Demo signal executor
+
+The separately authorized `bybit-demo` composition consumes the three selected
+Binance research journals without changing `signal-only` into a private client.
+One serial runtime owns account reconciliation and entry/stop/target dispatch.
+Private Demo WebSocket revisions/heartbeat gate entries; paginated REST order
+and execution facts rebuild state after gaps and process restarts.
+
+The separate demo database uses schema 7: canonical source records, atomic
+reservations and one-time entry dispatch claims, entry fills, immutable actual-fill
+exit plans, stop changes, exit intents/order observations and deduplicated exit
+fills. Stop/TP changes and market exits acquire durable identities before calls.
+Acknowledgements never constitute fills or confirmed protection. Confirmed TP1
+fill quantity, not its price touch or API acceptance, permits the Flow
+entry-price stop. Remaining quantity is entry fills minus exit fills.
+
+Read-only ownership/settings checks precede automated exchange mutations.
+Missing protection on a verified position takes a reduce-only safety path without
+depending on a public quote or channel response. Target trigger source/direction,
+price, side, type and reduce-only semantics must match their durable intents.
+Cancelled partial exits can be continued only with a new bounded remainder
+intent; an unknown submission cannot be resubmitted. Historical observed stop
+identities can be imported for a flat trade so cancelled/replaced stops do not
+prevent completion. Flatness alone does not release a slot while owned exits
+remain unresolved. The operational entry/credential/confirmation boundary is
+documented in [operations](operations.md#bybit-demo-executor).
+
+Console-session approval and persistent service approval are separate entry
+gates. Explicit headless mode can monitor/recover while approval is absent.
+Only a root-managed receipt bound to the exact immutable release, effective
+executor/public-profile scope and Demo key enables new entries; a pending request
+does not. Each candidate checks the receipt before and after refreshed preflight.
+Missing, malformed, revoked or changed-scope approval blocks entries without
+disabling permitted recovery/protection of already-owned exposure. Credential
+mount failures never select a stale environment pair. Linux SIGTERM cancels new
+work; durable dispatch ambiguity survives forced termination for reconciliation.
+
 ## Local paper configuration (P16-M01-T001)
 
 `LocalPaperConfiguration` is an immutable App contract with format version,

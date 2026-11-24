@@ -761,6 +761,12 @@ public sealed class SignalOnlyInstrumentConsumer : IDisposable
         SignalJournalDiagnostic diagnostic = SignalJournalDiagnostic.Create(
             _streamId, eventId, inputHash, code, reasons);
         long stableSequence = NextStableSequence(intakeSequence);
+        // The journal cursor orders projections; the original receipt time remains in the input ledger.
+        if (_currentState.Checkpoint is { } checkpoint
+            && availabilityTime.Value < checkpoint.AvailabilityTime.Value)
+        {
+            availabilityTime = checkpoint.AvailabilityTime;
+        }
         Commit(new SignalJournalCommit(_streamId, CurrentInputSequence,
             checked(CurrentInputSequence + 1), eventId, inputHash, eventTime,
             availabilityTime, stableSequence, null, _scenarioSnapshot, [],

@@ -6,6 +6,43 @@ The startup selector chooses the first `READY` task in document order whose depe
 
 Every replay-facing milestone preserves the causal tuple of event time, exchange time when available, receive/availability time, and stable processing sequence. Shared risk math is kept separate from fill simulation. Private execution, local paper simulation, exchange test execution, and real-money activation are separate gates.
 
+## Bybit demo execution amendment — 2026-11-20
+
+The user authorized `P16-M02-T004` as a separate Bybit Demo executor, not a
+change to `signal-only` or permission to trade real funds. Implement the full
+path from committed selected Binance signals to demo-market execution:
+
+1. Pin Bybit demo authentication and private endpoints; validate current
+   instrument metadata, symbol identity, account mode, freshness and explicit
+   execution/slippage/discrepancy limits. Never send secrets to logs or source.
+2. Persist signal consumption, order intent and portfolio capacity before
+   submission; deduplicate across the three independent signal journals and
+   reconcile unknown/manual state, timeouts, restarts and duplicate fills.
+3. Rebase protective distances on actual Bybit fills. Protect every filled
+   quantity, implement Flow partial TP1 and entry-price stop for the remainder,
+   and preserve Donchian's separate target and opposite-channel exit. Stop
+   new entries on uncertain protection; preserve exchange-side protection.
+4. Verify isolated deterministic lifecycle/rounding/restart and failure
+   scenarios, strict demo-only endpoints, selected strategies, and the real
+   public instrument metadata. A demo-order smoke requires separately supplied
+   credentials, explicit safety limits and point-of-risk user confirmation.
+5. Prepare an isolated systemd composition with encrypted credential mounts and
+   graceful shutdown. Keep headless entries blocked until a separate explicit
+   interactive grant binds the immutable release, effective selected profiles,
+   executor limits and Demo key. Verify revocation during preflight and recovery
+   without entry approval; do not conflate credential intake, local tests, unit
+   syntax validation, server deployment and actual exchange-order evidence.
+
+The user selected a 250 USDT target notional, at most 20 concurrent positions,
+up to 10% signal-to-Bybit price discrepancy, 10% market-order slippage and
+10× leverage, with isolated margin verified without changing account settings.
+These permissive demo limits do not guarantee execution or limit realized loss.
+On 2026-11-22 the user selected explicit signal/quote/private-heartbeat limits
+of 200/60/130 seconds. Missing limits still block entry. Bybit's
+[demo documentation](https://bybit-exchange.github.io/docs/v5/demo) and
+[market order contract](https://bybit-exchange.github.io/docs/v5/order/create-order)
+must be rechecked when implementing.
+
 ## Multi-timeframe public research amendment — 2026-11-13
 
 The user subsequently authorized the four setup/context profiles documented in

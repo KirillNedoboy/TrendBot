@@ -4,6 +4,219 @@ The target deployment is a Linux VPS managed by systemd. Logs are structured JSO
 
 Docker, Kafka, Kubernetes, and ML are outside V1 scope. Secrets must come from the environment or a secret store and must never enter source, logs, docs, or test fixtures.
 
+## Bybit Demo executor
+
+`bybit-demo.example.json` contains the user's selected 250 USDT target notional,
+20 slots, 10% signal/Bybit discrepancy, 10% entry slippage, leverage up to 10x
+and isolated margin. Signal/quote/private-heartbeat maximum ages are explicitly
+200/60/130 seconds. These are permissive demo settings, not loss guarantees.
+The actual fill notional can differ from the target because of market execution.
+Only Flow ATR 15m/30m, Flow Stochastic 15m and Donchian-flow 30m/1h are admitted.
+One position/reservation per symbol prevents strategies from sharing a net position.
+
+Build `src/TradingBot.App` in Release, then from the repository root:
+
+```powershell
+pwsh -File tools/run-bybit-demo.ps1 -Mode Check
+pwsh -File tools/run-bybit-demo.ps1 -Mode Run -EnableDemoOrders
+```
+
+`Check` performs public-only instrument/quantity validation for the 25 symbols.
+`Run` asks locally for missing Demo API credentials using masked terminal input;
+it does not write them to configuration. Alternatively set
+`TRADINGBOT_BYBIT_DEMO_API_KEY` and `TRADINGBOT_BYBIT_DEMO_API_SECRET` through a
+local secret manager. Never paste credentials into chat or store them in Git.
+Use keys created inside Bybit Demo Trading, with trading permissions and no
+withdrawal permission. Private REST is pinned to `api-demo.bybit.com` and the
+private socket to `stream-demo.bybit.com`; no production fallback exists.
+
+For assisted setup on the previously authorized VPS, Windows operators can use
+`pwsh -STA -File tools/connect-bybit-demo.ps1`. Its native window masks both
+credentials and requires an unchecked-by-default consent box before SSH transfer
+to `root@138.124.108.146` through the existing `short-bot` alias with strict host
+checking. Credentials travel only on SSH standard input, never command arguments.
+
+Input trims whitespace only at the edges before creating the handoff JSON.
+Invalid key/secret format and missing consent have separate field-specific
+messages; values are never displayed. Internal whitespace and non-ASCII masked
+placeholders remain invalid. Rejected input does not initiate SSH or API calls.
+
+The receiver creates a unique root-only directory under `/etc/credstore.encrypted/`
+and encrypts both credentials without overwriting earlier files. A pre-provisioned
+systemd host credential key is required; intake
+does not initialize shared host key material. It performs read-only Demo account
+checks plus positions/open orders specifically in the `linear-USDT` scope, not
+an account-wide cleanliness assertion. HTTP redirects are refused, the receiver
+has a 30-second deadline, and transport allows 60 seconds before reporting an
+uncertain result. Output contains status flags and the encrypted directory path,
+not keys or raw account responses. Failed preflight retains successfully stored
+encrypted credentials and returns exit 3; an uncertain transport outcome disables
+resubmission for review. `-ValidateOnly` checks transport and receiver syntax
+without credentials, server writes or private API calls. This helper does not
+deploy/start a bot, authorize orders or configure server credential mounts.
+
+The command starts all three Binance public profiles in the same process.
+Telegram is off unless `--telegram` is supplied. Use `-ExternalSignals` to attach
+to already running profiles and preserve their existing delivery; it cannot be
+combined with supervised `--telegram`. Do not start duplicate signal
+writers. The launcher/profile and execution file locks reject competing launches
+that use the same locks; direct external writers still rely on journal guards.
+The execution database must remain separate from every public input database.
+
+In console mode, before the first new entry in each process session the terminal
+shows the candidate and ongoing demo scope and requires `ENABLE BYBIT DEMO`.
+Redirected input is refused unless explicit service approval mode is selected.
+After approval the account, positions, orders and market inputs are read again,
+followed by a final entry-authorization check. Margin/leverage/position-mode
+settings are checked, never changed automatically. Ctrl+C and Linux SIGTERM stop
+the process without cancelling native protection; restarting reconciles durable
+claims and fills before new entries.
+
+### Unattended Demo service approval
+
+`deploy/systemd/tradingbot-bybit-demo.service` is a separate DynamicUser service
+for a self-contained Linux x64 release under `/opt/tradingbot-bybit-demo/current`.
+Its working/state directory is `/var/lib/tradingbot-bybit-demo`; the release,
+configuration and approval directories must be root-managed and not writable by
+the service. Change a release only while stopped; never hot-replace an approved
+release or its `current` link. Resource caps are operating limits, not evidence
+that the full warmed workload fits or that long-duration growth is bounded.
+Install neither this unit nor its credential files over an existing deployment
+without inspecting that exact target. Do not restart unrelated services.
+
+`deploy/install-bybit-demo.sh` is a root-only first-install operation taking the
+bundle path, expected SHA-256, release identity and selected encrypted credential
+directory. It refuses existing public/private state paths, occupied unit names
+and unexpected drop-ins rather than adopting old claims or replacing a service.
+The archive cannot contain traversal paths, links or special files. Public-only
+validation runs as an isolated DynamicUser transient service with the same
+2.5 GiB/two-CPU ceiling; it never runs application network code as unrestricted
+root. Failed activation disables only the new service and retains its files for
+inspection. Initial `active` status still requires public/private readiness and
+restart evidence before order activation.
+
+The unit loads the selected encrypted pair from the dedicated
+`/etc/credstore.encrypted/tradingbot-bybit-demo/` directory. At runtime,
+`CREDENTIALS_DIRECTORY` selects both `bybit-demo-api-key` and
+`bybit-demo-api-secret`; missing, unreadable or malformed files fail closed and
+never fall back to environment values. Environment pairs remain supported only
+when that directory variable is absent.
+
+`run --confirm-demo-orders --service-approval <absolute-path>` permits headless
+monitoring/recovery, not implicit entry authorization. A missing or invalid
+receipt blocks new entries. A strict format-1 `bybit-demo-service` receipt must
+contain `ENABLE BYBIT DEMO SERVICE`, a nonfuture UTC authorization timestamp,
+and matching SHA-256 bindings to the Demo API key, effective executor/profile
+configurations, execution-mode flags and every immutable release file. A
+different key, release or profile requires a new grant.
+
+`service-approval-request` with the same config/profile/service arguments prints
+a `PENDING` request without network calls, state writes or a valid grant. An
+operator must independently compute it from the trusted deployed release and
+credential mount, present the actual order scope, and obtain explicit interactive
+point-of-risk approval before publishing the root-managed receipt at
+`/etc/tradingbot-bybit-demo/service-approval.json`. Never convert an untrusted
+service log or service-writable pending request directly into a grant.
+
+With DynamicUser, compute the trusted request in the running unit's mount
+namespace and working directory, dropping to the service UID with no capabilities
+and applying a small bounded resource scope. Use the same explicit profile and
+service arguments. Host-root path resolution of the private StateDirectory
+alias need not match the application's namespace; never alter a digest merely
+to bypass an authorization mismatch. Do not expose mounted credential values.
+
+Approval is checked before and after refreshed entry preflight, without caching
+a prior service grant. Delete the receipt to block subsequent new entries;
+restoring the same valid receipt restores the same grant. Grants have no automatic
+expiry and cover restarts only within the approved exact scope. Revocation
+cannot recall an already-dispatched request, including a request accepted just
+after the final check. Owned-position protection/reconciliation remains active
+without a new-entry receipt. Exchange-resident stops can survive process death;
+process-dependent target/channel handling is unavailable during downtime.
+
+### Telegram for the supervised Demo profiles
+
+`pwsh -STA -File tools/connect-bybit-demo.ps1 -Telegram` reuses the masked
+intake and SSH-stdin transport for a bot token and signed numeric Chat ID.
+Its unchecked consent explicitly covers encrypted storage, one displayed test
+message and subsequent signal notifications to that destination. The receiver
+refuses redirects, checks `getMe`/`getChat`, and sends the exact displayed test
+message once. It prints flags only, never token, chat identity or API responses.
+An ambiguous send is not retried automatically. A successful test is separate
+from the signal delivery journal and does not authorize Demo orders.
+
+After successful intake and explicit notification authorization, copy only
+the selected encrypted `telegram-bot-token.cred` and `telegram-chat-id.cred`
+into a new root-only `/etc/credstore.encrypted/tradingbot-telegram/` directory.
+Install `deploy/systemd/tradingbot-bybit-demo-telegram.conf` as the sole expected
+`/etc/systemd/system/tradingbot-bybit-demo.service.d/telegram.conf` drop-in.
+It adds both mounted credentials and expands the unit's optional Telegram
+argument to `--telegram`. Reload and restart only this dedicated service.
+Mounted credentials select a complete pair; file errors never use environment
+fallback. Keep the Bybit credential mounts unchanged.
+
+The three profile delivery files are respectively
+`artifacts/bybit-demo/telegram/profile-0.sqlite`, `profile-1.sqlite` and
+`profile-2.sqlite`, relative to the service StateDirectory. Their order is Flow,
+Donchian 30m and Donchian 1h. The supervisor creates their parent directory.
+Do not exchange these files, delete their receipts, or reset journals to force
+delivery. Existing outboxes with missing delivery state fail closed. For the
+first connection of journals that have never had a sender, obtain explicit
+approval for accumulated messages, preserve all journals, create that parent
+as the service user, and initialize each real delivery database through the
+existing `signal-only telegram-send` command with its corresponding journal,
+delivery file, symbol and timeframe. Run it as the same protected DynamicUser
+with only Telegram mounts, not unrestricted root. It can send an approved
+pending signal; inspect its durable outcome before retrying an uncertain send.
+The normal pump then resumes the same state, with acknowledgments, expiry and
+unknown-delivery handling intact.
+
+Public profile startup, first-input and stream diagnostics are forwarded to
+the service journal. A first open candle proves receipt, not close-driven
+scenario freshness. REST backfill cannot fabricate a live scenario checkpoint.
+The operator may waive waiting for an observed first Demo order; this does not
+waive explicit activation consent, account checks or the public freshness gate.
+
+Availability is candidate-local: an unrelated stale or missing checkpoint must
+not veto a fresh signal from another pair/timeframe. The candidate's own exact
+committed active scenario and checkpoint are revalidated before and after the
+account/quote preflight, including the refreshed preflight after approval.
+The existing freshness limits are unchanged. `monitoring-partial-public-streams`
+reports unavailable streams while permitting eligible candidates; it does not
+assert that all 100 streams are healthy. If every stream is unavailable, the
+runtime reports `waiting-for-public-streams`. Account/private-health checks,
+capacity, symbol ownership, approval and protection gates remain global where
+required.
+
+
+
+The runtime records the source, slot and dispatch claim before entry. Market
+orders carry an initial stop; actual fills rebase levels to the Bybit average.
+Flow targets use rounded tradable half/remainder quantities; only actual TP1
+executions authorize the entry-price stop. Donchian's opposite-channel monitor
+continues independently of public scenario expiry/cancellation, replaying closed
+Binance candles after entry when recovering. Closed OHLC cannot establish when
+within a candle a wick occurred. This is not an intrabar execution reconstruction.
+Conditional TP/SL orders do not support the entry's explicit slippage parameter.
+
+REST order/execution history (including pagination) resolves private-stream gaps,
+duplicate fills and lost acknowledgements. A missing order is not proof that a
+submission failed: unresolved claims are never blindly repeated. Recognized
+terminal partial exits can generate a new claim for only the unfilled remainder.
+Unknown/manual account state blocks automation for operator review; unrelated
+orders are never cancelled. A verified owned position with missing protection
+requests a durable reduce-only safety exit even if public pricing is unavailable.
+Capacity is released only after complete executions, a flat position and terminal
+owned exits. If ownership or exchange evidence is unavailable, retain the block
+and inspect Bybit manually; do not delete the execution database to clear it.
+
+Demo server-time calibration does not modify the OS clock. Calibration failure
+blocks new entries while existing positions continue to be monitored with the
+last calibrated clock. The command emits sanitized state/error types, not private
+payloads or signatures. Local deterministic tests and public checks are not a
+private-account or order smoke; that requires separately supplied credentials
+and explicit point-of-risk approval. No server deployment is implied.
+
 ## Hourly Donchian-flow research profile
 
 `signal-only.donchian-flow.example.json` is an isolated public-only format-7

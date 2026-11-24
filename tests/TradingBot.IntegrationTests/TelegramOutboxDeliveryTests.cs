@@ -139,10 +139,39 @@ public sealed class TelegramOutboxDeliveryTests
         SignalOutboxDeliverySnapshot result = Assert.IsType<SignalOutboxDeliverySnapshot>(
             await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
         Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, result.Status);
-        Assert.Contains("Reference close (not a fill): 100", postedText, StringComparison.Ordinal);
-        Assert.Contains("Indicative SL: 97", postedText, StringComparison.Ordinal);
-        Assert.Contains("TP1: 103; TP2: 106", postedText, StringComparison.Ordinal);
-        Assert.Contains("not orders", postedText, StringComparison.Ordinal);
+        Assert.Contains("Цена закрытия для ориентира (не цена исполнения): 100", postedText, StringComparison.Ordinal);
+        Assert.Contains("Ориентировочный стоп-лосс: 97", postedText, StringComparison.Ordinal);
+        Assert.Contains("Цель 1: 103; цель 2: 106", postedText, StringComparison.Ordinal);
+        Assert.Contains("это не ордера", postedText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(SetupType.BoundaryRejection, "Отбой от границы")]
+    [InlineData(SetupType.CenterRetest, "Ретест центра канала")]
+    [InlineData(SetupType.FailedBreakoutReclaim, "Возврат после ложного пробоя")]
+    [InlineData(SetupType.BreakoutRetestContinuation, "Продолжение после пробоя и ретеста")]
+    [InlineData(SetupType.FlowStochasticRecovery, "Восстановление потока по стохастику")]
+    [InlineData(SetupType.FlowRsiRecovery, "Восстановление потока по RSI")]
+    [InlineData(SetupType.FlowAtrRecovery, "Восстановление потока по ATR")]
+    [InlineData(SetupType.VolatilityCompressionExpansion, "Расширение после сжатия волатильности")]
+    public void TelegramMessageLocalizesEveryStrategy(SetupType family, string expected)
+    {
+        using TemporaryDatabase journalDatabase = new("journal");
+        using TemporaryDatabase deliveryDatabase = new("delivery");
+        ScenarioFixture fixture = new(direction: Direction.Short, family: family);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fixture);
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        SignalOutboxLease lease = Assert.IsType<SignalOutboxLease>(
+            delivery.ClaimNext(journal, StreamId, CreatePolicy(), DeliveryStart));
+
+        string message = TelegramSignalMessageFormatter.Format(lease.Item, lease.Signal, lease.Evidence);
+
+        Assert.Contains($"Стратегия: {expected}", message, StringComparison.Ordinal);
+        Assert.Contains("Направление: шорт", message, StringComparison.Ordinal);
+        Assert.Contains("подтверждено на закрытой свече", message, StringComparison.Ordinal);
+        Assert.Contains("Статистическая проверка: неизвестно", message, StringComparison.Ordinal);
+        Assert.Contains("Стоп-лосс и цели: недоступны", message, StringComparison.Ordinal);
+        Assert.Contains(fixture.FirstOutboxId, message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -263,6 +292,120 @@ public sealed class TelegramOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task ConcurrentInstrumentCommitsRemainAtomicAndIdempotent()
+    {
+        using TemporaryDatabase journalDatabase = new("concurrent-journal");
+        using SqliteSignalJournalStore journal = SqliteSignalJournalStore.Open(journalDatabase.Path, 1);
+        string[] symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT",
+            "AVAXUSDT", "ADAUSDT", "SUIUSDT", "HYPEUSDT", "DOGEUSDT", "1000PEPEUSDT"];
+        string[] timeframes = ["5m", "15m", "30m", "1h"];
+        ScenarioFixture[] fixtures = symbols.SelectMany(symbol => timeframes.Select(
+            timeframe => new ScenarioFixture(timeframe, closeMinute: 60, symbol: symbol))).ToArray();
+        using ManualResetEventSlim start = new(false);
+        Task<bool>[] commits = Enumerable.Range(0, fixtures.Length * 2).Select(index => Task.Run(() =>
+        {
+            start.Wait(TestContext.Current.CancellationToken);
+            return journal.Append(fixtures[index % fixtures.Length].FirstCommit);
+        }, TestContext.Current.CancellationToken)).ToArray();
+        start.Set();
+
+        bool[] results = await Task.WhenAll(commits);
+
+        Assert.Equal(fixtures.Length, results.Count(static committed => committed));
+        foreach (ScenarioFixture fixture in fixtures)
+        {
+            SignalJournalSnapshot snapshot = journal.Read(fixture.StreamId);
+            Assert.Single(snapshot.Signals);
+            Assert.Single(snapshot.Outbox);
+        }
+    }
+
+    [Fact]
+    public async Task IdleQueueCheckDoesNotHideConflictingDeliveryIdentity()
+    {
+        using TemporaryDatabase journalDatabase = new("idle-conflict-journal");
+        using TemporaryDatabase deliveryDatabase = new("idle-conflict-delivery");
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, new ScenarioFixture());
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        using HttpClient http = new(new DelegateHandler((_, _) => Task.FromResult(
+            JsonResponse(HttpStatusCode.OK, "{\"ok\":true,\"result\":{\"message_id\":41}}"))));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http, CreatePolicy(),
+            TestBotToken, TestChatId, new MutableTimeProvider(DeliveryStart));
+        Assert.NotNull(await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
+        Assert.False(delivery.HasPotentialWork(journal, StreamId));
+        using (Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={deliveryDatabase.Path};Pooling=False"))
+        {
+            connection.Open();
+            using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE telegram_outbox_delivery SET payload_hash = $hash;";
+            command.Parameters.AddWithValue("$hash", new string('a', 64));
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        Assert.True(delivery.HasPotentialWork(journal, StreamId));
+        Assert.Throws<InvalidDataException>(() =>
+            delivery.ClaimNext(journal, StreamId, CreatePolicy(), DeliveryStart));
+    }
+
+    [Fact]
+    public async Task IdleQueueCheckFindsNewAndPendingWorkWithoutRepeatingAcknowledgedDelivery()
+    {
+        using TemporaryDatabase journalDatabase = new("idle-journal");
+        using TemporaryDatabase deliveryDatabase = new("idle-delivery");
+        ScenarioFixture fixture = new();
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fixture);
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        int requests = 0;
+        using HttpClient http = new(new DelegateHandler((_, _) =>
+        {
+            requests++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, "{\"ok\":true,\"result\":{\"message_id\":41}}"));
+        }));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http, CreatePolicy(),
+            TestBotToken, TestChatId, new MutableTimeProvider(DeliveryStart.AddMinutes(1)));
+
+        Assert.True(delivery.HasPotentialWork(journal, StreamId));
+        Assert.NotNull(await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
+        Assert.False(delivery.HasPotentialWork(journal, StreamId));
+        Assert.True(journal.Append(fixture.ContinuationCommit()));
+        Assert.True(delivery.HasPotentialWork(journal, StreamId));
+        Assert.NotNull(await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
+        Assert.False(delivery.HasPotentialWork(journal, StreamId));
+        Assert.Equal(2, requests);
+    }
+
+    [Fact]
+    public async Task ContinuousPumpDetectsCorruptedHistoryEvenWhenQueueIsIdle()
+    {
+        using TemporaryDatabase journalDatabase = new("idle-audit-journal");
+        using TemporaryDatabase deliveryDatabase = new("idle-audit-delivery");
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, new ScenarioFixture());
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        int requests = 0;
+        using HttpClient http = new(new DelegateHandler((_, _) =>
+        {
+            requests++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, "{\"ok\":true,\"result\":{\"message_id\":41}}"));
+        }));
+        TelegramOutboxDeliveryService sender = new(journal, delivery, http, CreatePolicy(),
+            TestBotToken, TestChatId, new MutableTimeProvider(DeliveryStart));
+        Assert.NotNull(await sender.DispatchNextAsync(StreamId, TestContext.Current.CancellationToken));
+        using (Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={journalDatabase.Path};Pooling=False"))
+        {
+            connection.Open();
+            using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE signal_journal_inputs SET commit_json = commit_json || ' ';";
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+        using StringWriter output = new();
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            SignalOnlyTelegramPump.RunAsync(sender, [[StreamId]], output,
+                TimeSpan.FromMilliseconds(10), TestContext.Current.CancellationToken));
+        Assert.Equal(1, requests);
+    }
+
+    [Fact]
     public async Task ContinuousPumpDeliversCommittedRowsOnceAndStopsOnCancellation()
     {
         using TemporaryDatabase journalDatabase = new("pump-journal");
@@ -302,11 +445,19 @@ public sealed class TelegramOutboxDeliveryTests
         Assert.Equal(2, delivery.Read(StreamId).Count);
         Assert.All(posted, text =>
         {
-            Assert.Contains("RESEARCH", text, StringComparison.Ordinal);
-            Assert.Contains("UNKNOWN", text, StringComparison.Ordinal);
-            Assert.Contains("Decision time (UTC):", text, StringComparison.Ordinal);
-            Assert.Contains("Scenario time (UTC):", text, StringComparison.Ordinal);
+            Assert.Contains("Исследовательский сигнал", text, StringComparison.Ordinal);
+            Assert.Contains("Статистическая проверка: неизвестно", text, StringComparison.Ordinal);
+            Assert.Contains("Время решения (UTC):", text, StringComparison.Ordinal);
+            Assert.Contains("Время события сценария (UTC):", text, StringComparison.Ordinal);
         });
+        foreach (string line in output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using JsonDocument measurement = JsonDocument.Parse(line);
+            Assert.Equal("Acknowledged", measurement.RootElement.GetProperty("status").GetString());
+            Assert.True(measurement.RootElement.GetProperty("queueMilliseconds").GetDouble() >= 0);
+            Assert.True(measurement.RootElement.GetProperty("apiMilliseconds").GetDouble() >= 0);
+            Assert.True(measurement.RootElement.GetProperty("pollMilliseconds").GetDouble() >= 0);
+        }
         Assert.DoesNotContain(TestBotToken, output.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain(TestChatId, output.ToString(), StringComparison.Ordinal);
         Assert.Null(await sender.DispatchNextAsync(StreamId,
@@ -391,8 +542,8 @@ public sealed class TelegramOutboxDeliveryTests
 
         Assert.Equal(1, calls);
         Assert.Equal(2, results.Count);
-        Assert.Contains("Timeframe: 15m", text, StringComparison.Ordinal);
-        Assert.Contains("Timeframe: 30m", text, StringComparison.Ordinal);
+        Assert.Contains("Таймфрейм: 15 минут", text, StringComparison.Ordinal);
+        Assert.Contains("Таймфрейм: 30 минут", text, StringComparison.Ordinal);
         Assert.Contains(fast.FirstOutboxId, text, StringComparison.Ordinal);
         Assert.Contains(slow.FirstOutboxId, text, StringComparison.Ordinal);
         SignalOutboxDeliveryStatus expected = mode switch
@@ -459,8 +610,8 @@ public sealed class TelegramOutboxDeliveryTests
         Assert.Equal(2, messages.Count);
         Assert.Equal(2, results.Count);
         Assert.All(results, item => Assert.Equal(SignalOutboxDeliveryStatus.Acknowledged, item.Status));
-        Assert.Contains("Direction: Long", messages[0], StringComparison.Ordinal);
-        Assert.Contains("Direction: Short", messages[1], StringComparison.Ordinal);
+        Assert.Contains("Направление: лонг", messages[0], StringComparison.Ordinal);
+        Assert.Contains("Направление: шорт", messages[1], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -594,6 +745,79 @@ public sealed class TelegramOutboxDeliveryTests
         Assert.Empty(expired.Receipts);
     }
 
+    [Theory]
+    [InlineData("5m", 5)]
+    [InlineData("15m", 15)]
+    [InlineData("30m", 30)]
+    [InlineData("1h", 60)]
+    public void UnsentAlertExpiresAtNextBarClose(string timeframe, int minutes)
+    {
+        using TemporaryDatabase journalDatabase = new("freshness-journal");
+        using TemporaryDatabase deliveryDatabase = new("freshness-delivery");
+        ScenarioFixture fixture = new(timeframe, closeMinute: 60);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fixture);
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        DateTimeOffset deadline = At(60).AddMinutes(minutes);
+
+        Assert.Null(delivery.ClaimNext(journal, fixture.StreamId, CreatePolicy(), deadline));
+
+        SignalOutboxDeliverySnapshot expired = Assert.Single(delivery.Read(fixture.StreamId));
+        Assert.Equal(SignalOutboxDeliveryStatus.Expired, expired.Status);
+        Assert.Equal(0, expired.AttemptsStarted);
+        Assert.Equal(deadline, expired.ExpiresAt);
+        Assert.Empty(expired.Receipts);
+    }
+
+    [Fact]
+    public void LeaseCannotBeginSendingAtFreshnessDeadline()
+    {
+        using TemporaryDatabase journalDatabase = new("freshness-lease-journal");
+        using TemporaryDatabase deliveryDatabase = new("freshness-lease-delivery");
+        ScenarioFixture fixture = new("5m", closeMinute: 60);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fixture);
+        using SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+        DateTimeOffset deadline = At(65);
+        SignalOutboxLease lease = Assert.IsType<SignalOutboxLease>(
+            delivery.ClaimNext(journal, fixture.StreamId, CreatePolicy(), deadline.AddSeconds(-1)));
+
+        Assert.False(delivery.BeginAttempt(lease, CreatePolicy(), deadline));
+        SignalOutboxDeliverySnapshot expired = Assert.Single(delivery.Read(fixture.StreamId));
+        Assert.Equal(SignalOutboxDeliveryStatus.Expired, expired.Status);
+        Assert.Equal(0, expired.AttemptsStarted);
+    }
+
+    [Fact]
+    public void ExistingPendingAlertUsesNewFreshnessDeadlineAfterReopen()
+    {
+        using TemporaryDatabase journalDatabase = new("freshness-existing-journal");
+        using TemporaryDatabase deliveryDatabase = new("freshness-existing-delivery");
+        ScenarioFixture fixture = new("5m", closeMinute: 60);
+        using SqliteSignalJournalStore journal = CreateJournal(journalDatabase.Path, fixture);
+        using (SqliteSignalOutboxDeliveryStore delivery = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path))
+        {
+            Assert.NotNull(delivery.ClaimNext(journal, fixture.StreamId, CreatePolicy(), At(60)));
+        }
+        using (Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={deliveryDatabase.Path};Pooling=False"))
+        {
+            connection.Open();
+            using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE telegram_outbox_delivery
+                SET status = 'Pending', expires_at_ticks = $old_expiry,
+                    lease_token = NULL, lease_until_ticks = NULL;
+                """;
+            command.Parameters.AddWithValue("$old_expiry", At(60).AddHours(24).UtcDateTime.Ticks);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+        using SqliteSignalOutboxDeliveryStore reopened = SqliteSignalOutboxDeliveryStore.Open(deliveryDatabase.Path);
+
+        Assert.Null(reopened.ClaimNext(journal, fixture.StreamId, CreatePolicy(), At(65)));
+        SignalOutboxDeliverySnapshot expired = Assert.Single(reopened.Read(fixture.StreamId));
+        Assert.Equal(SignalOutboxDeliveryStatus.Expired, expired.Status);
+        Assert.Equal(At(65), expired.ExpiresAt);
+        Assert.Equal(0, expired.AttemptsStarted);
+    }
+
     private static SignalOutboxDeliveryPolicy CreatePolicy(int maxAttempts = 5,
         TimeSpan? maxAge = null) => new(maxAttempts,
         maxAge ?? TimeSpan.FromHours(24), TimeSpan.FromSeconds(1),
@@ -634,14 +858,15 @@ public sealed class TelegramOutboxDeliveryTests
         private readonly int _closeMinute;
 
         public ScenarioFixture(string setupTimeframe = "15m",
-            Direction direction = Direction.Long, int closeMinute = 15, bool includeLevels = false)
+            Direction direction = Direction.Long, int closeMinute = 15, bool includeLevels = false,
+            SetupType family = SetupType.BoundaryRejection, string symbol = "BTCUSDT")
         {
             Assert.True(PublicSignalTimeframes.TryGetDurationMilliseconds(setupTimeframe, out long setupMs));
             string contextTimeframe = PublicSignalTimeframes.ContextForSetup(setupTimeframe)!;
             Assert.True(PublicSignalTimeframes.TryGetDurationMilliseconds(contextTimeframe, out long contextMs));
             int openMinute = closeMinute - (int)(setupMs / 60_000);
             int contextMinute = openMinute - (int)(contextMs / 60_000);
-            StreamId = SignalOnlyStreamId.For("BTCUSDT", setupTimeframe);
+            StreamId = SignalOnlyStreamId.For(symbol, setupTimeframe);
             _closeMinute = closeMinute;
             SignalScenarioPolicySet policies = new(
                 SignalScenarioPolicySet.CurrentFormatVersion,
@@ -655,9 +880,9 @@ public sealed class TelegramOutboxDeliveryTests
                     SignalScenarioInvalidationPolicy.CurrentFormatVersion,
                     "invalidation-v1", true, true));
             _engine = new SignalScenarioProjectionEngine(policies);
-            _anchor = SignalScenarioAnchor.Create(new InstrumentId("BTCUSDT"),
+            _anchor = SignalScenarioAnchor.Create(new InstrumentId(symbol),
                 "BINANCE_USDM", setupTimeframe, direction,
-                SetupType.BoundaryRejection, "profile-v1",
+                family, "profile-v1",
                 "boundary-rejection-v1", "anchor-event", UtcAt(openMinute), 1);
             _firstInput = SignalScenarioInput.Confirm(StreamId,
                 "first-confirmation", _anchor, UtcAt(closeMinute), UtcAt(closeMinute), 2);
@@ -678,7 +903,7 @@ public sealed class TelegramOutboxDeliveryTests
                 ["fixture-reviewed"]);
             SignalPriceLevels? levels = includeLevels
                 ? new SignalPriceLevels(1, "fixture-levels", SignalPriceLevelPolicy.CurrentFormulaVersion,
-                    14, new SignalPriceLevelParameters(SetupType.BoundaryRejection, 1.5m, 0.1m, 1m, 2m),
+                    14, new SignalPriceLevelParameters(family, 1.5m, 0.1m, 1m, 2m),
                     setupTimeframe, direction, "anchor-event", 100m,
                     direction == Direction.Long ? 99m : 101m, 2m, SignalPriceLevelsState.Ready,
                     direction == Direction.Long ? 97m : 103m,

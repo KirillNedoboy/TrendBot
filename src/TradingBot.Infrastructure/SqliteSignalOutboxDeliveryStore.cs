@@ -36,6 +36,43 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
         return new SqliteSignalOutboxDeliveryStore(fullPath, commandTimeoutSeconds);
     }
 
+    /// <summary>Checks whether delivery work may exist without claiming or validating a signal.</summary>
+    public bool HasPotentialWork(SqliteSignalJournalStore journal, string streamId)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamId);
+        using SqliteConnection connection = OpenRawConnection(_databasePath, _commandTimeoutSeconds);
+        connection.Open();
+        using (SqliteCommand attach = connection.CreateCommand())
+        {
+            attach.CommandText = "ATTACH DATABASE $path AS signal_journal;";
+            attach.Parameters.AddWithValue("$path", journal.DatabasePath);
+            attach.ExecuteNonQuery();
+        }
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1 FROM telegram_outbox_delivery
+                WHERE stream_id = $stream_id COLLATE BINARY
+                  AND status NOT IN ('Acknowledged', 'UnknownDelivery', 'PermanentFailure', 'RetryExhausted', 'Expired')
+            ) OR EXISTS (
+                SELECT 1 FROM signal_journal.signal_journal_outbox AS o
+                LEFT JOIN telegram_outbox_delivery AS d
+                  ON d.stream_id = o.stream_id AND d.outbox_id = o.outbox_id
+                WHERE o.stream_id = $stream_id COLLATE BINARY
+                  AND (d.outbox_id IS NULL OR d.payload_hash <> o.payload_hash
+                       OR d.signal_id <> o.signal_id OR d.signal_record_hash <> o.signal_record_hash)
+            ) OR EXISTS (
+                SELECT 1 FROM telegram_outbox_delivery AS d
+                LEFT JOIN signal_journal.signal_journal_outbox AS o
+                  ON o.stream_id = d.stream_id AND o.outbox_id = d.outbox_id
+                WHERE d.stream_id = $stream_id COLLATE BINARY AND o.outbox_id IS NULL
+            );
+            """;
+        command.Parameters.AddWithValue("$stream_id", streamId);
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0;
+    }
+
     /// <summary>Claims one eligible row from the validated, committed signal journal.</summary>
     public SignalOutboxLease? ClaimNext(SqliteSignalJournalStore journal,
         string streamId, SignalOutboxDeliveryPolicy policy, DateTimeOffset now)
@@ -578,17 +615,46 @@ public sealed class SqliteSignalOutboxDeliveryStore : IDisposable
                 throw new InvalidDataException(
                     "A committed Telegram outbox row has invalid signal provenance.");
             }
+            DateTimeOffset createdAt = item.ScenarioEvent.AvailabilityTime.Value
+                .ToUniversalTime();
+            DateTimeOffset expiresAt = AddBounded(createdAt, policy.MaxAge);
+            if (item.ScenarioEvent.Kind == SignalScenarioEventKind.AlertCreated)
+            {
+                if (!PublicSignalTimeframes.TryGetDurationMilliseconds(
+                        signal.Identity.SetupTimeframe, out long durationMilliseconds))
+                {
+                    throw new InvalidDataException("The signal timeframe is unsupported.");
+                }
+                DateTimeOffset freshnessDeadline = AddBounded(
+                    signal.BarInterval.CloseTime.Value, TimeSpan.FromMilliseconds(durationMilliseconds));
+                if (freshnessDeadline < expiresAt)
+                {
+                    expiresAt = freshnessDeadline;
+                }
+            }
             DeliveryRow? existing = FindDelivery(connection, transaction,
                 streamId, item.OutboxId);
             if (existing is not null)
             {
                 ValidateOutboxIdentity(existing, item, signal);
+                if (existing.Status is SignalOutboxDeliveryStatus.Pending or SignalOutboxDeliveryStatus.Leased
+                    && expiresAt < existing.ExpiresAt)
+                {
+                    using SqliteCommand shorten = connection.CreateCommand();
+                    shorten.Transaction = transaction;
+                    shorten.CommandText = """
+                        UPDATE telegram_outbox_delivery
+                        SET expires_at_ticks = $expires_at_ticks
+                        WHERE stream_id = $stream_id COLLATE BINARY
+                          AND outbox_id = $outbox_id COLLATE BINARY;
+                        """;
+                    shorten.Parameters.AddWithValue("$expires_at_ticks", ToTicks(expiresAt));
+                    shorten.Parameters.AddWithValue("$stream_id", streamId);
+                    shorten.Parameters.AddWithValue("$outbox_id", item.OutboxId);
+                    shorten.ExecuteNonQuery();
+                }
                 continue;
             }
-
-            DateTimeOffset createdAt = item.ScenarioEvent.AvailabilityTime.Value
-                .ToUniversalTime();
-            DateTimeOffset expiresAt = AddBounded(createdAt, policy.MaxAge);
             using SqliteCommand insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = """
